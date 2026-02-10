@@ -8,6 +8,7 @@ venv/
 env/
 .venv/
 chroma_db/
+faiss_db/
 *.db
 *.sqlite
 .DS_Store
