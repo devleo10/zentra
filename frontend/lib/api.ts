@@ -22,6 +22,7 @@ export interface VerdictResponse {
 }
 
 export async function runAnalysis(): Promise<VerdictResponse> {
+  // Run real analysis - no fallback to demo
   const response = await fetch(`${API_BASE_URL}/api/analyze`, {
     method: "POST",
     headers: {
@@ -30,7 +31,20 @@ export async function runAnalysis(): Promise<VerdictResponse> {
   })
 
   if (!response.ok) {
-    throw new Error(`Analysis failed: ${response.statusText}`)
+    const errorText = await response.text()
+    throw new Error(`Analysis failed: ${response.statusText} - ${errorText}`)
+  }
+
+  return response.json()
+}
+
+export async function runDemoAnalysis(): Promise<VerdictResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/demo`, {
+    method: "GET",
+  })
+
+  if (!response.ok) {
+    throw new Error(`Demo analysis failed: ${response.statusText}`)
   }
 
   return response.json()
@@ -52,4 +66,5 @@ export async function healthCheck() {
   const response = await fetch(`${API_BASE_URL}/api/health`)
   return response.json()
 }
+
 
