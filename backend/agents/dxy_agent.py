@@ -5,7 +5,11 @@ from langchain_core.prompts import PromptTemplate
 from typing import Dict, Any
 
 from .base_agent import BaseAgent
+from .signal_validator import SignalValidator
+from models.schemas import ValidatedSignal, DataSource, SignalValidationStatus
 from data_fetchers import yahoo_data, coingecko_data
+from typing import List
+from datetime import datetime
 
 
 class DXYAgent(BaseAgent):
@@ -19,11 +23,40 @@ class DXYAgent(BaseAgent):
         dxy = yahoo_data.get_dxy_data()
         btc = coingecko_data.get_btc_price()
         
+        data_sources = [
+            SignalValidator.create_data_source(
+                "Yahoo Finance", "^DX-Y.NYB", "https://finance.yahoo.com/quote/DX-Y.NYB"
+            )
+        ]
+        
         return {
             "dxy": dxy,
             "btc": btc,
-            "correlation_note": "Bitcoin is anti-Dollar. When DXY falls, BTC typically rises."
+            "correlation_note": "Bitcoin is anti-Dollar. When DXY falls, BTC typically rises.",
+            "_data_sources": data_sources
         }
+    
+    def validate_signals(self, data: Dict[str, Any]) -> List[ValidatedSignal]:
+        """Validate DXY signals"""
+        validated_signals = []
+        validator = SignalValidator()
+        dxy = data.get("dxy", {})
+        
+        data_sources = data.get("_data_sources", [])
+        source = data_sources[0] if data_sources else SignalValidator.create_data_source("Yahoo Finance")
+        
+        current_price = dxy.get("current_price")
+        week_change = dxy.get("week_change", 0)
+        
+        if current_price and abs(week_change) >= 0.5:
+            signal = validator.validate_dxy_trend(
+                current_price,
+                current_price * (1 - week_change/100),  # Approximate week-ago price
+                source
+            )
+            validated_signals.append(signal)
+        
+        return validated_signals
     
     def create_prompt(self) -> PromptTemplate:
         """Create prompt for DXY analysis"""

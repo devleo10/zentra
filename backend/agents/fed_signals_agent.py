@@ -5,7 +5,11 @@ from langchain_core.prompts import PromptTemplate
 from typing import Dict, Any
 
 from .base_agent import BaseAgent
+from .signal_validator import SignalValidator
+from models.schemas import ValidatedSignal, DataSource, SignalValidationStatus
 from data_fetchers import news_data
+from typing import List
+from datetime import datetime
 
 
 class FedSignalsAgent(BaseAgent):
@@ -19,10 +23,57 @@ class FedSignalsAgent(BaseAgent):
         articles = news_data.get_fed_speeches(days=7)
         keyword_analysis = news_data.analyze_fed_keywords(articles)
         
+        data_sources = [
+            SignalValidator.create_data_source(
+                name="NewsAPI",
+                url="https://newsapi.org",
+                data_as_of=datetime.now()
+            )
+        ]
+        
         return {
             "recent_articles": articles[:5],  # Top 5 most recent
-            "keyword_analysis": keyword_analysis
+            "keyword_analysis": keyword_analysis,
+            "_data_sources": data_sources
         }
+    
+    def validate_signals(self, data: Dict[str, Any]) -> List[ValidatedSignal]:
+        """Validate Fed signal keywords"""
+        validated_signals = []
+        keyword_analysis = data.get("keyword_analysis", {})
+        
+        data_sources = data.get("_data_sources", [])
+        source = data_sources[0] if data_sources else SignalValidator.create_data_source("NewsAPI")
+        
+        dovish_count = keyword_analysis.get("dovish_count", 0)
+        hawkish_count = keyword_analysis.get("hawkish_count", 0)
+        
+        if dovish_count > hawkish_count:
+            validated_signals.append(ValidatedSignal(
+                name=f"Dovish tone detected ({dovish_count} dovish keywords)",
+                value=dovish_count,
+                previous_value=hawkish_count,
+                trend_direction="down",
+                validation_status=SignalValidationStatus.VALIDATED,
+                validation_check=f"dovish_count ({dovish_count}) > hawkish_count ({hawkish_count})",
+                validation_result=True,
+                score_contribution=20.0,
+                data_source=source
+            ))
+        elif hawkish_count > dovish_count:
+            validated_signals.append(ValidatedSignal(
+                name=f"Hawkish tone detected ({hawkish_count} hawkish keywords)",
+                value=hawkish_count,
+                previous_value=dovish_count,
+                trend_direction="up",
+                validation_status=SignalValidationStatus.VALIDATED,
+                validation_check=f"hawkish_count ({hawkish_count}) > dovish_count ({dovish_count})",
+                validation_result=True,
+                score_contribution=0.0,
+                data_source=source
+            ))
+        
+        return validated_signals
     
     def create_prompt(self) -> PromptTemplate:
         """Create prompt for Fed signals analysis"""

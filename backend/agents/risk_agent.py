@@ -5,7 +5,11 @@ from langchain_core.prompts import PromptTemplate
 from typing import Dict, Any
 
 from .base_agent import BaseAgent
+from .signal_validator import SignalValidator
+from models.schemas import ValidatedSignal, DataSource
 from data_fetchers import yahoo_data
+from typing import List
+from datetime import datetime
 
 
 class RiskAgent(BaseAgent):
@@ -20,11 +24,32 @@ class RiskAgent(BaseAgent):
         sp500 = yahoo_data.get_sp500_data()
         gold = yahoo_data.get_gold_data()
         
+        data_sources = [
+            SignalValidator.create_data_source("CBOE", "^VIX", "https://www.cboe.com/tradable_products/vix/")
+        ]
+        
         return {
             "vix": vix,
             "sp500": sp500,
-            "gold": gold
+            "gold": gold,
+            "_data_sources": data_sources
         }
+    
+    def validate_signals(self, data: Dict[str, Any]) -> List[ValidatedSignal]:
+        """Validate risk sentiment signals"""
+        validated_signals = []
+        validator = SignalValidator()
+        vix = data.get("vix", {})
+        
+        data_sources = data.get("_data_sources", [])
+        source = data_sources[0] if data_sources else SignalValidator.create_data_source("CBOE")
+        
+        vix_value = vix.get("current_value")
+        if vix_value:
+            signal = validator.validate_vix_level(vix_value, source)
+            validated_signals.append(signal)
+        
+        return validated_signals
     
     def create_prompt(self) -> PromptTemplate:
         """Create prompt for risk sentiment analysis"""

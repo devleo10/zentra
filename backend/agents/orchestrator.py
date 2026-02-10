@@ -1,7 +1,8 @@
 """
 Orchestrator to run all 7 agents in sequence
+Production-grade with raw data collection for regime detection
 """
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from models.schemas import SectionScore, VerdictResponse
 
 from .inflation_agent import InflationAgent
@@ -14,18 +15,32 @@ from .verdict_agent import VerdictAgent
 
 
 class AgentOrchestrator:
-    """Orchestrates all analysis agents"""
+    """Orchestrates all analysis agents with data collection"""
     
     def __init__(self):
-        self.agents = {
-            "inflation": InflationAgent(),
-            "fed": FedSignalsAgent(),
-            "liquidity": LiquidityAgent(),
-            "dxy": DXYAgent(),
-            "risk": RiskAgent(),
-            "bitcoin": BitcoinAgent()
-        }
+        # Lazy initialization - agents will be created on first use
+        self._agents = None
         self.verdict_agent = VerdictAgent()
+    
+    @property
+    def agents(self):
+        """Lazy load agents"""
+        if self._agents is None:
+            try:
+                self._agents = {
+                    "inflation": InflationAgent(),
+                    "fed": FedSignalsAgent(),
+                    "liquidity": LiquidityAgent(),
+                    "dxy": DXYAgent(),
+                    "risk": RiskAgent(),
+                    "bitcoin": BitcoinAgent()
+                }
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to initialize agents. Vector store may not be initialized. "
+                    f"Run 'python -m rag.ingest' first. Error: {str(e)}"
+                )
+        return self._agents
     
     def run_full_analysis(self, sections: Optional[List[str]] = None) -> VerdictResponse:
         """
@@ -39,16 +54,25 @@ class AgentOrchestrator:
             VerdictResponse with all scores and final verdict
         """
         section_scores: List[SectionScore] = []
+        raw_data: Dict[str, Any] = {}  # Collect raw data for regime detection
         
         # Determine which sections to run
         sections_to_run = sections if sections else list(self.agents.keys())
         
-        # Run each agent
+        # Run each agent and collect raw data
         for section_name in sections_to_run:
             if section_name in self.agents:
                 try:
                     print(f"Running {section_name} agent...")
                     agent = self.agents[section_name]
+                    
+                    # Fetch raw data before analysis
+                    agent_data = agent.fetch_data()
+                    
+                    # Store in raw_data dict for verdict agent
+                    raw_data[section_name] = agent_data
+                    
+                    # Run analysis
                     score = agent.analyze()
                     section_scores.append(score)
                     print(f"{section_name} agent completed: Score {score.score}")
@@ -59,11 +83,14 @@ class AgentOrchestrator:
                         name=agent.section_name if 'agent' in locals() else section_name,
                         score=50,
                         signals=[],
-                        reasoning=f"Error during analysis: {str(e)}"
+                        reasoning=f"Error during analysis: {str(e)}",
+                        validated_signals=[],
+                        data_sources=[],
+                        validation_summary={}
                     ))
         
-        # Calculate final verdict
-        verdict = self.verdict_agent.calculate_verdict(section_scores)
+        # Calculate final verdict with raw data for regime detection
+        verdict = self.verdict_agent.calculate_verdict(section_scores, raw_data)
         
         return verdict
     
@@ -82,4 +109,3 @@ class AgentOrchestrator:
         
         agent = self.agents[section_name]
         return agent.analyze()
-
