@@ -98,3 +98,4 @@ def get_gold_data() -> Dict:
         "trend": "strengthening" if week_change > 0 else "weakening" if week_change < 0 else "stable"
     }
 
+

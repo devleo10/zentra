@@ -153,3 +153,4 @@ def get_macro_news(days: int = 7) -> List[Dict]:
         print(f"Error fetching macro news: {e}")
         return []
 
+

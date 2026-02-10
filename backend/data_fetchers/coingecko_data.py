@@ -121,3 +121,4 @@ def get_crypto_summary() -> Dict:
         "eth_btc_ratio": get_eth_btc_ratio()
     }
 
+

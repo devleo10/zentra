@@ -144,3 +144,4 @@ def get_fed_balance_sheet() -> Dict:
         "trend": "expanding" if mom_change > 0 else "contracting" if mom_change < 0 else "stable"
     }
 
+
