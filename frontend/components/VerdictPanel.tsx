@@ -48,3 +48,4 @@ export function VerdictPanel({ verdict }: VerdictPanelProps) {
   )
 }
 
+
