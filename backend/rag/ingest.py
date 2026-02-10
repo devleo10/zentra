@@ -5,7 +5,6 @@ import os
 import pickle
 from pathlib import Path
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from dotenv import load_dotenv
 
@@ -18,38 +17,79 @@ PERSIST_DIRECTORY = Path(__file__).parent.parent / "faiss_db"
 KNOWLEDGE_BASE_DIR = Path(__file__).parent.parent / "knowledge_base"
 
 
+def get_embeddings():
+    """Get embeddings - try Gemini first, fallback to OpenAI"""
+    # Try Gemini first
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if gemini_key:
+        try:
+            from langchain_google_genai import GoogleGenerativeAIEmbeddings
+            print("Using Gemini embeddings...")
+            return GoogleGenerativeAIEmbeddings(
+                model="models/gemini-embedding-001",
+                google_api_key=gemini_key
+            )
+        except ImportError:
+            print("langchain_google_genai not installed, trying alternative...")
+            try:
+                from langchain_community.embeddings import GooglePalmEmbeddings
+                print("Using Google Palm embeddings...")
+                return GooglePalmEmbeddings(google_api_key=gemini_key)
+            except ImportError:
+                print("Google embeddings not available, falling back to OpenAI...")
+    
+    # Fallback to OpenAI
+    from langchain_openai import OpenAIEmbeddings
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if not openai_key:
+        raise ValueError("Neither GEMINI_API_KEY nor OPENAI_API_KEY found in environment variables")
+    print("Using OpenAI embeddings...")
+    return OpenAIEmbeddings(model="text-embedding-3-small")
+
+
 def ingest_knowledge_base():
     """Chunk, embed, and store knowledge base documents in FAISS"""
     
-    # Check for OpenAI API key
-    if not os.getenv("OPENAI_API_KEY"):
-        raise ValueError("OPENAI_API_KEY not found in environment variables")
+    # Initialize embeddings (Gemini or OpenAI)
+    embeddings = get_embeddings()
     
-    # Initialize embeddings
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-    
-    # Load documents
+    # Load documents - try knowledge_base directory first, then context.md
     documents = []
-    doc_files = [
-        "chat1_money_rotation.txt",
-        "chat2_btc_macro_analysis.txt",
-        "chat3_macro_geopolitics.txt"
-    ]
     
-    for doc_file in doc_files:
-        file_path = KNOWLEDGE_BASE_DIR / doc_file
-        if file_path.exists():
-            with open(file_path, 'r', encoding='utf-8') as f:
+    # Try knowledge_base directory
+    if KNOWLEDGE_BASE_DIR.exists():
+        doc_files = [
+            "chat1_money_rotation.txt",
+            "chat2_btc_macro_analysis.txt",
+            "chat3_macro_geopolitics.txt"
+        ]
+        
+        for doc_file in doc_files:
+            file_path = KNOWLEDGE_BASE_DIR / doc_file
+            if file_path.exists():
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    documents.append({
+                        'content': content,
+                        'metadata': {'source': doc_file}
+                    })
+            else:
+                print(f"Warning: {doc_file} not found")
+    
+    # Fallback to context.md if knowledge_base doesn't exist or is empty
+    if not documents:
+        context_file = Path(__file__).parent.parent / "context.md"
+        if context_file.exists():
+            print(f"Using context.md as knowledge base...")
+            with open(context_file, 'r', encoding='utf-8') as f:
                 content = f.read()
                 documents.append({
                     'content': content,
-                    'metadata': {'source': doc_file}
+                    'metadata': {'source': 'context.md'}
                 })
-        else:
-            print(f"Warning: {doc_file} not found")
     
     if not documents:
-        raise ValueError("No documents found in knowledge_base directory")
+        raise ValueError("No documents found. Please ensure context.md exists or knowledge_base directory has files.")
     
     # Split documents into chunks
     text_splitter = RecursiveCharacterTextSplitter(
