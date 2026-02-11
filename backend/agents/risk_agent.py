@@ -18,11 +18,11 @@ class RiskAgent(BaseAgent):
     def __init__(self):
         super().__init__("Risk Sentiment")
     
-    def fetch_data(self) -> Dict[str, Any]:
-        """Fetch risk sentiment indicators"""
-        vix = yahoo_data.get_vix_data()
-        sp500 = yahoo_data.get_sp500_data()
-        gold = yahoo_data.get_gold_data()
+    def fetch_data(self, timeframe: str = "current") -> Dict[str, Any]:
+        """Fetch risk sentiment indicators with timeframe support"""
+        vix = yahoo_data.get_vix_data(timeframe)
+        sp500 = yahoo_data.get_sp500_data(timeframe)
+        gold = yahoo_data.get_gold_data(timeframe)
         
         data_sources = [
             SignalValidator.create_data_source("CBOE", "^VIX", "https://www.cboe.com/tradable_products/vix/")

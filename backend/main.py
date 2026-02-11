@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 import os
 
 from models.schemas import (
-    AnalysisRequest, VerdictResponse, HealthResponse, SectionScore
+    AnalysisRequest, VerdictResponse, HealthResponse, SectionScore, TimeFrame
 )
 from agents.orchestrator import AgentOrchestrator
 
@@ -156,6 +156,7 @@ async def demo_analysis():
     verdict = VerdictResponse(
         timestamp=datetime.now(),
         data_timestamp=datetime.now(),
+        timeframe=TimeFrame.CURRENT,
         sections=sample_sections,
         final_score=63,
         bias=BiasType.BULLISH,
@@ -178,27 +179,34 @@ async def demo_analysis():
 @app.post("/api/analyze", response_model=VerdictResponse)
 async def analyze(request: AnalysisRequest = None):
     """
-    Run full 7-section analysis
+    Run full 7-section analysis with optional timeframe filter
     
+    Timeframe options: current (real-time), week (7d), month (30d), year (365d)
     Returns complete verdict with all section scores and final bias
     """
     try:
-        sections = request.sections if request else None
-        verdict = get_orchestrator().run_full_analysis(sections=sections)
+        if request is None:
+            request = AnalysisRequest()
+        sections = request.sections
+        timeframe = request.timeframe
+        verdict = get_orchestrator().run_full_analysis(sections=sections, timeframe=timeframe)
         return verdict
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
 @app.get("/api/analyze/{section}", response_model=SectionScore)
-async def analyze_section(section: str):
+async def analyze_section(section: str, timeframe: TimeFrame = TimeFrame.CURRENT):
     """
-    Run analysis for a single section
+    Run analysis for a single section with optional timeframe
     
     Available sections: inflation, fed, liquidity, dxy, risk, bitcoin
+    Timeframe options: current (real-time), week (7d), month (30d), year (365d)
     """
     try:
-        score = get_orchestrator().run_single_section(section)
+        score = get_orchestrator().run_single_section(section, timeframe=timeframe)
         return score
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

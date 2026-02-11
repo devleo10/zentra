@@ -18,10 +18,10 @@ class LiquidityAgent(BaseAgent):
     def __init__(self):
         super().__init__("Liquidity & Bonds")
     
-    def fetch_data(self) -> Dict[str, Any]:
-        """Fetch bond yields and Fed balance sheet data"""
-        yields = fred_data.get_treasury_yields()
-        balance_sheet = fred_data.get_fed_balance_sheet()
+    def fetch_data(self, timeframe: str = "current") -> Dict[str, Any]:
+        """Fetch bond yields and Fed balance sheet data with timeframe support"""
+        yields = fred_data.get_treasury_yields(timeframe)
+        balance_sheet = fred_data.get_fed_balance_sheet(timeframe)
         
         data_sources = [
             SignalValidator.create_data_source("FRED", "DGS10", "https://fred.stlouisfed.org/series/DGS10")

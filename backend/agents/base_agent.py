@@ -59,9 +59,12 @@ class BaseAgent(ABC):
         return "\n\n".join([doc.page_content for doc in docs])
     
     @abstractmethod
-    def fetch_data(self) -> Dict[str, Any]:
+    def fetch_data(self, timeframe: str = "current") -> Dict[str, Any]:
         """
         Fetch relevant real-time data
+        
+        Args:
+            timeframe: One of 'current', 'week', 'month', 'year'
         
         Returns:
             Dictionary with data and DataSource metadata
@@ -86,10 +89,10 @@ class BaseAgent(ABC):
         """Create the prompt template for this agent"""
         pass
     
-    def analyze(self) -> SectionScore:
+    def analyze(self, timeframe: str = "current") -> SectionScore:
         """Run the full analysis pipeline with validation"""
-        # Fetch data
-        data = self.fetch_data()
+        # Fetch data with timeframe
+        data = self.fetch_data(timeframe=timeframe)
         
         # Extract data sources
         data_sources = data.pop("_data_sources", [])
@@ -106,12 +109,23 @@ class BaseAgent(ABC):
         # Create prompt
         prompt_template = self.create_prompt()
         
+        # Get timeframe label for prompt
+        timeframe_labels = {
+            "current": "real-time/latest",
+            "week": "7-day",
+            "month": "30-day",
+            "year": "365-day (annual)"
+        }
+        timeframe_label = timeframe_labels.get(timeframe, "current")
+        
         # Format data for prompt (include validated signals)
         data_str = self._format_data(data)
         validated_signals_str = self._format_validated_signals(validated_signals)
         
-        # Build full prompt
+        # Build full prompt with timeframe context
         query = f"""
+        ANALYSIS TIMEFRAME: {timeframe_label} analysis
+        
         Current market data:
         {data_str}
         
@@ -121,13 +135,13 @@ class BaseAgent(ABC):
         Knowledge Base Context:
         {knowledge}
         
-        Using the knowledge base framework, analyze this data and provide:
+        Using the knowledge base framework, analyze this data for the {timeframe_label} timeframe and provide:
         1. A score from 0-100 (considering validated signals only)
         2. Key signals detected (must match validated signals)
-        3. Reasoning for the score
+        3. Reasoning for the score specific to the {timeframe_label} perspective
         
         IMPORTANT: Only use signals that passed validation. If a signal was neutralized, 
-        do not claim it in your analysis. Be factually accurate.
+        do not claim it in your analysis. Be factually accurate. Focus on the {timeframe_label} trends.
         """
         
         # Run LLM

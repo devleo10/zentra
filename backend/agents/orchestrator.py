@@ -3,7 +3,7 @@ Orchestrator to run all 7 agents in sequence
 Production-grade with raw data collection for regime detection
 """
 from typing import List, Optional, Dict, Any
-from models.schemas import SectionScore, VerdictResponse
+from models.schemas import SectionScore, VerdictResponse, TimeFrame
 
 from .inflation_agent import InflationAgent
 from .fed_signals_agent import FedSignalsAgent
@@ -42,19 +42,25 @@ class AgentOrchestrator:
                 )
         return self._agents
     
-    def run_full_analysis(self, sections: Optional[List[str]] = None) -> VerdictResponse:
+    def run_full_analysis(
+        self, 
+        sections: Optional[List[str]] = None,
+        timeframe: TimeFrame = TimeFrame.CURRENT
+    ) -> VerdictResponse:
         """
         Run full analysis across all sections
         
         Args:
             sections: Optional list of specific sections to analyze.
                      If None, analyzes all 6 sections.
+            timeframe: Timeframe for analysis (current, week, month, year)
         
         Returns:
             VerdictResponse with all scores and final verdict
         """
         section_scores: List[SectionScore] = []
         raw_data: Dict[str, Any] = {}  # Collect raw data for regime detection
+        timeframe_str = timeframe.value if isinstance(timeframe, TimeFrame) else timeframe
         
         # Determine which sections to run
         sections_to_run = sections if sections else list(self.agents.keys())
@@ -63,17 +69,17 @@ class AgentOrchestrator:
         for section_name in sections_to_run:
             if section_name in self.agents:
                 try:
-                    print(f"Running {section_name} agent...")
+                    print(f"Running {section_name} agent with timeframe={timeframe_str}...")
                     agent = self.agents[section_name]
                     
-                    # Fetch raw data before analysis
-                    agent_data = agent.fetch_data()
+                    # Fetch raw data with timeframe
+                    agent_data = agent.fetch_data(timeframe=timeframe_str)
                     
                     # Store in raw_data dict for verdict agent
                     raw_data[section_name] = agent_data
                     
-                    # Run analysis
-                    score = agent.analyze()
+                    # Run analysis with timeframe
+                    score = agent.analyze(timeframe=timeframe_str)
                     section_scores.append(score)
                     print(f"{section_name} agent completed: Score {score.score}")
                 except Exception as e:
@@ -90,16 +96,25 @@ class AgentOrchestrator:
                     ))
         
         # Calculate final verdict with raw data for regime detection
-        verdict = self.verdict_agent.calculate_verdict(section_scores, raw_data)
+        verdict = self.verdict_agent.calculate_verdict(
+            section_scores, 
+            raw_data, 
+            timeframe=timeframe
+        )
         
         return verdict
     
-    def run_single_section(self, section_name: str) -> SectionScore:
+    def run_single_section(
+        self, 
+        section_name: str,
+        timeframe: TimeFrame = TimeFrame.CURRENT
+    ) -> SectionScore:
         """
         Run analysis for a single section
         
         Args:
             section_name: Name of section to analyze
+            timeframe: Timeframe for analysis
         
         Returns:
             SectionScore for that section
@@ -107,5 +122,6 @@ class AgentOrchestrator:
         if section_name not in self.agents:
             raise ValueError(f"Unknown section: {section_name}")
         
+        timeframe_str = timeframe.value if isinstance(timeframe, TimeFrame) else timeframe
         agent = self.agents[section_name]
-        return agent.analyze()
+        return agent.analyze(timeframe=timeframe_str)

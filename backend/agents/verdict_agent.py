@@ -6,7 +6,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 
 from models.schemas import (
-    SectionScore, VerdictResponse, BiasType, ActionType, RegimeType, ConfidenceLevel
+    SectionScore, VerdictResponse, BiasType, ActionType, RegimeType, ConfidenceLevel, TimeFrame
 )
 from .regime_detector import RegimeDetector
 from .confidence_calculator import ConfidenceCalculator
@@ -22,7 +22,8 @@ class VerdictAgent:
     def calculate_verdict(
         self,
         sections: List[SectionScore],
-        raw_data: Optional[Dict[str, Any]] = None
+        raw_data: Optional[Dict[str, Any]] = None,
+        timeframe: TimeFrame = TimeFrame.CURRENT
     ) -> VerdictResponse:
         """
         Calculate final weighted score and determine bias/action
@@ -30,6 +31,7 @@ class VerdictAgent:
         Args:
             sections: List of 6 section scores
             raw_data: Raw data dictionary for regime detection
+            timeframe: Timeframe of the analysis
         
         Returns:
             VerdictResponse with final score, bias, action, confidence, regime, invalidation conditions
@@ -37,6 +39,9 @@ class VerdictAgent:
         if raw_data is None:
             raw_data = {}
         
+        # Convert timeframe to enum if string
+        if isinstance(timeframe, str):
+            timeframe = TimeFrame(timeframe)
         # 1. Detect regime
         regime = self.regime_detector.detect_regime(sections, raw_data)
         
@@ -105,6 +110,7 @@ class VerdictAgent:
         return VerdictResponse(
             timestamp=datetime.now(),
             data_timestamp=data_timestamp,
+            timeframe=timeframe,
             sections=sections,
             final_score=final_score,
             bias=bias,

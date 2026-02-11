@@ -8,6 +8,14 @@ from datetime import datetime
 from enum import Enum
 
 
+class TimeFrame(str, Enum):
+    """Timeframe for analysis"""
+    CURRENT = "current"  # Real-time / latest data point
+    WEEK = "week"  # 7-day analysis
+    MONTH = "month"  # 30-day analysis
+    YEAR = "year"  # 365-day analysis
+
+
 class BiasType(str, Enum):
     """BTC bias classification"""
     STRONG_BULL = "Strong Bull"
@@ -99,6 +107,7 @@ class VerdictResponse(BaseModel):
     """Final verdict and aggregated analysis with full audit trail"""
     timestamp: datetime = Field(default_factory=datetime.now, description="Report generation timestamp")
     data_timestamp: datetime = Field(..., description="Most recent data timestamp across all sources")
+    timeframe: TimeFrame = Field(default=TimeFrame.CURRENT, description="Timeframe of the analysis")
     sections: List[SectionScore] = Field(..., description="All 6 section scores")
     final_score: int = Field(..., ge=0, le=100, description="Weighted final score 0-100")
     bias: BiasType = Field(..., description="BTC bias classification")
@@ -120,6 +129,10 @@ class AnalysisRequest(BaseModel):
     sections: Optional[List[str]] = Field(
         default=None,
         description="Specific sections to analyze. If None, analyzes all 6 sections"
+    )
+    timeframe: TimeFrame = Field(
+        default=TimeFrame.CURRENT,
+        description="Timeframe for analysis: current (real-time), week (7d), month (30d), year (365d)"
     )
 
 

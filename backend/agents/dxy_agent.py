@@ -18,10 +18,10 @@ class DXYAgent(BaseAgent):
     def __init__(self):
         super().__init__("US Dollar (DXY)")
     
-    def fetch_data(self) -> Dict[str, Any]:
-        """Fetch DXY and BTC correlation data"""
-        dxy = yahoo_data.get_dxy_data()
-        btc = coingecko_data.get_btc_price()
+    def fetch_data(self, timeframe: str = "current") -> Dict[str, Any]:
+        """Fetch DXY and BTC correlation data with timeframe support"""
+        dxy = yahoo_data.get_dxy_data(timeframe)
+        btc = coingecko_data.get_btc_price(timeframe)
         
         data_sources = [
             SignalValidator.create_data_source(
@@ -46,12 +46,12 @@ class DXYAgent(BaseAgent):
         source = data_sources[0] if data_sources else SignalValidator.create_data_source("Yahoo Finance")
         
         current_price = dxy.get("current_price")
-        week_change = dxy.get("week_change", 0)
+        change = dxy.get("change", dxy.get("week_change", 0))
         
-        if current_price and abs(week_change) >= 0.5:
+        if current_price and abs(change) >= 0.5:
             signal = validator.validate_dxy_trend(
                 current_price,
-                current_price * (1 - week_change/100),  # Approximate week-ago price
+                current_price * (1 - change/100),  # Approximate comparison price
                 source
             )
             validated_signals.append(signal)

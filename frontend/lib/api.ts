@@ -3,6 +3,8 @@
  */
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
+export type TimeFrame = "current" | "week" | "month" | "year"
+
 export interface SectionScore {
   name: string
   score: number
@@ -13,6 +15,7 @@ export interface SectionScore {
 
 export interface VerdictResponse {
   timestamp: string
+  timeframe: TimeFrame
   sections: SectionScore[]
   final_score: number
   bias: string
@@ -21,13 +24,19 @@ export interface VerdictResponse {
   summary: string
 }
 
-export async function runAnalysis(): Promise<VerdictResponse> {
-  // Run real analysis - no fallback to demo
+export interface AnalysisRequest {
+  sections?: string[]
+  timeframe?: TimeFrame
+}
+
+export async function runAnalysis(timeframe: TimeFrame = "current"): Promise<VerdictResponse> {
+  // Run real analysis with timeframe filter
   const response = await fetch(`${API_BASE_URL}/api/analyze`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
+    body: JSON.stringify({ timeframe }),
   })
 
   if (!response.ok) {
@@ -50,8 +59,8 @@ export async function runDemoAnalysis(): Promise<VerdictResponse> {
   return response.json()
 }
 
-export async function analyzeSection(section: string): Promise<SectionScore> {
-  const response = await fetch(`${API_BASE_URL}/api/analyze/${section}`, {
+export async function analyzeSection(section: string, timeframe: TimeFrame = "current"): Promise<SectionScore> {
+  const response = await fetch(`${API_BASE_URL}/api/analyze/${section}?timeframe=${timeframe}`, {
     method: "GET",
   })
 

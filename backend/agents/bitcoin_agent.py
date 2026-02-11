@@ -18,38 +18,44 @@ class BitcoinAgent(BaseAgent):
     def __init__(self):
         super().__init__("Bitcoin Focus")
     
-    def fetch_data(self) -> Dict[str, Any]:
-        """Fetch Bitcoin-specific data with DataSource metadata"""
-        btc = coingecko_data.get_btc_price()
-        dominance = coingecko_data.get_btc_dominance()
-        stablecoins = coingecko_data.get_stablecoin_data()
-        eth_btc = coingecko_data.get_eth_btc_ratio()
-        sp500 = yahoo_data.get_sp500_data()
+    def fetch_data(self, timeframe: str = "current") -> Dict[str, Any]:
+        """Fetch Bitcoin-specific data with DataSource metadata and timeframe support"""
+        btc = coingecko_data.get_btc_price(timeframe)
+        dominance = coingecko_data.get_btc_dominance(timeframe)
+        stablecoins = coingecko_data.get_stablecoin_data(timeframe)
+        eth_btc = coingecko_data.get_eth_btc_ratio(timeframe)
+        sp500 = yahoo_data.get_sp500_data(timeframe)
         
-        # Calculate BTC vs S&P performance
-        btc_perf = btc.get("change_7d", 0)
-        sp500_perf = sp500.get("week_change", 0)
+        # Calculate BTC vs S&P performance based on timeframe
+        btc_perf = btc.get("change", btc.get("change_24h", btc.get("change_7d", 0)))
+        sp500_perf = sp500.get("change", 0)
         outperforming = btc_perf > sp500_perf
         
-        # Create data sources
+        # Create data sources — safely parse dates
+        def _safe_parse_date(date_str):
+            try:
+                return datetime.strptime(date_str, "%Y-%m-%d") if date_str else datetime.now()
+            except (ValueError, TypeError):
+                return datetime.now()
+        
         data_sources = [
             SignalValidator.create_data_source(
                 name="CoinGecko",
                 series_id="bitcoin",
                 url="https://www.coingecko.com/en/coins/bitcoin",
-                data_as_of=datetime.strptime(btc.get("date", datetime.now().strftime("%Y-%m-%d")), "%Y-%m-%d")
+                data_as_of=_safe_parse_date(btc.get("date"))
             ),
             SignalValidator.create_data_source(
                 name="CoinGecko",
                 series_id="btc_dominance",
                 url="https://www.coingecko.com/en/global-charts",
-                data_as_of=datetime.strptime(dominance.get("date", datetime.now().strftime("%Y-%m-%d")), "%Y-%m-%d")
+                data_as_of=_safe_parse_date(dominance.get("date"))
             ),
             SignalValidator.create_data_source(
                 name="Yahoo Finance",
                 series_id="^GSPC",
                 url="https://finance.yahoo.com/quote/%5EGSPC",
-                data_as_of=datetime.strptime(sp500.get("date", datetime.now().strftime("%Y-%m-%d")), "%Y-%m-%d")
+                data_as_of=_safe_parse_date(sp500.get("date"))
             )
         ]
         

@@ -18,9 +18,12 @@ class FedSignalsAgent(BaseAgent):
     def __init__(self):
         super().__init__("Federal Reserve Signals")
     
-    def fetch_data(self) -> Dict[str, Any]:
-        """Fetch Fed speeches and analyze keywords"""
-        articles = news_data.get_fed_speeches(days=7)
+    def fetch_data(self, timeframe: str = "current") -> Dict[str, Any]:
+        """Fetch Fed speeches and analyze keywords with timeframe support"""
+        # Map timeframe to days for news search
+        days_map = {"current": 3, "week": 7, "month": 30, "year": 90}
+        days = days_map.get(timeframe, 7)
+        articles = news_data.get_fed_speeches(days=days)
         keyword_analysis = news_data.analyze_fed_keywords(articles)
         
         data_sources = [
