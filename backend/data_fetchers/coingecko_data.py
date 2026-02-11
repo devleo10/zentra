@@ -3,14 +3,22 @@ Fetch cryptocurrency data from CoinGecko API
 """
 import requests
 from typing import Dict, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
 
+# Timeframe to days mapping for historical data
+TIMEFRAME_DAYS = {
+    "current": 1,
+    "week": 7,
+    "month": 30,
+    "year": 365
+}
 
-def get_btc_price() -> Dict:
-    """Get Bitcoin current price and basic data"""
+
+def get_btc_price(timeframe: str = "current") -> Dict:
+    """Get Bitcoin price data with timeframe support"""
     url = f"{COINGECKO_BASE_URL}/simple/price"
     params = {
         "ids": "bitcoin",
@@ -26,17 +34,62 @@ def get_btc_price() -> Dict:
         
         btc_data = data.get("bitcoin", {})
         
-        return {
+        result = {
             "price_usd": btc_data.get("usd", 0),
             "change_24h": round(btc_data.get("usd_24h_change", 0), 2),
             "change_7d": round(btc_data.get("usd_7d_change", 0), 2),
-            "date": datetime.now().strftime("%Y-%m-%d")
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "timeframe": timeframe
         }
+        
+        # For timeframe-specific change, use appropriate field
+        if timeframe == "current":
+            result["change"] = result["change_24h"]
+        elif timeframe == "week":
+            result["change"] = result["change_7d"]
+        else:
+            # For month/year, we need historical data
+            hist_data = get_btc_historical(TIMEFRAME_DAYS.get(timeframe, 30))
+            if "change" in hist_data:
+                result["change"] = hist_data["change"]
+            else:
+                result["change"] = result["change_7d"]  # fallback
+        
+        return result
+    except Exception as e:
+        return {"error": str(e), "timeframe": timeframe}
+
+
+def get_btc_historical(days: int = 30) -> Dict:
+    """Get Bitcoin historical data for calculating change over period"""
+    url = f"{COINGECKO_BASE_URL}/coins/bitcoin/market_chart"
+    params = {
+        "vs_currency": "usd",
+        "days": days
+    }
+    
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        prices = data.get("prices", [])
+        if len(prices) >= 2:
+            start_price = prices[0][1]
+            end_price = prices[-1][1]
+            change = ((end_price - start_price) / start_price) * 100
+            return {
+                "start_price": round(start_price, 2),
+                "end_price": round(end_price, 2),
+                "change": round(change, 2),
+                "days": days
+            }
+        return {"error": "Insufficient historical data"}
     except Exception as e:
         return {"error": str(e)}
 
 
-def get_btc_dominance() -> Dict:
+def get_btc_dominance(timeframe: str = "current") -> Dict:
     """Get Bitcoin market dominance"""
     url = f"{COINGECKO_BASE_URL}/global"
     
@@ -50,13 +103,14 @@ def get_btc_dominance() -> Dict:
         
         return {
             "btc_dominance": round(btc_dominance, 2),
-            "date": datetime.now().strftime("%Y-%m-%d")
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "timeframe": timeframe
         }
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "timeframe": timeframe}
 
 
-def get_stablecoin_data() -> Dict:
+def get_stablecoin_data(timeframe: str = "current") -> Dict:
     """Get stablecoin market cap data"""
     url = f"{COINGECKO_BASE_URL}/global"
     
@@ -76,13 +130,14 @@ def get_stablecoin_data() -> Dict:
             "usdt_dominance": round(usdt_dom, 2),
             "usdc_dominance": round(usdc_dom, 2),
             "total_stablecoin_dominance": round(total_stable_dom, 2),
-            "date": datetime.now().strftime("%Y-%m-%d")
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "timeframe": timeframe
         }
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "timeframe": timeframe}
 
 
-def get_eth_btc_ratio() -> Dict:
+def get_eth_btc_ratio(timeframe: str = "current") -> Dict:
     """Get ETH/BTC ratio"""
     url = f"{COINGECKO_BASE_URL}/simple/price"
     params = {
@@ -104,20 +159,23 @@ def get_eth_btc_ratio() -> Dict:
                 "eth_btc_ratio": round(ratio, 6),
                 "eth_price": eth_price,
                 "btc_price": btc_price,
-                "date": datetime.now().strftime("%Y-%m-%d")
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "timeframe": timeframe
             }
         else:
-            return {"error": "Invalid price data"}
+            return {"error": "Invalid price data", "timeframe": timeframe}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "timeframe": timeframe}
 
 
-def get_crypto_summary() -> Dict:
-    """Get comprehensive crypto market summary"""
+def get_crypto_summary(timeframe: str = "current") -> Dict:
+    """Get comprehensive crypto market summary with timeframe support"""
     return {
-        "btc": get_btc_price(),
-        "btc_dominance": get_btc_dominance(),
-        "stablecoins": get_stablecoin_data(),
-        "eth_btc_ratio": get_eth_btc_ratio()
+        "btc": get_btc_price(timeframe),
+        "btc_dominance": get_btc_dominance(timeframe),
+        "stablecoins": get_stablecoin_data(timeframe),
+        "eth_btc_ratio": get_eth_btc_ratio(timeframe),
+        "timeframe": timeframe
     }
+
 

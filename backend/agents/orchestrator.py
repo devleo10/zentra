@@ -1,8 +1,9 @@
 """
 Orchestrator to run all 7 agents in sequence
+Production-grade with raw data collection for regime detection
 """
-from typing import List, Optional
-from models.schemas import SectionScore, VerdictResponse
+from typing import List, Optional, Dict, Any
+from models.schemas import SectionScore, VerdictResponse, TimeFrame
 
 from .inflation_agent import InflationAgent
 from .fed_signals_agent import FedSignalsAgent
@@ -14,42 +15,71 @@ from .verdict_agent import VerdictAgent
 
 
 class AgentOrchestrator:
-    """Orchestrates all analysis agents"""
+    """Orchestrates all analysis agents with data collection"""
     
     def __init__(self):
-        self.agents = {
-            "inflation": InflationAgent(),
-            "fed": FedSignalsAgent(),
-            "liquidity": LiquidityAgent(),
-            "dxy": DXYAgent(),
-            "risk": RiskAgent(),
-            "bitcoin": BitcoinAgent()
-        }
+        # Lazy initialization - agents will be created on first use
+        self._agents = None
         self.verdict_agent = VerdictAgent()
     
-    def run_full_analysis(self, sections: Optional[List[str]] = None) -> VerdictResponse:
+    @property
+    def agents(self):
+        """Lazy load agents"""
+        if self._agents is None:
+            try:
+                self._agents = {
+                    "inflation": InflationAgent(),
+                    "fed": FedSignalsAgent(),
+                    "liquidity": LiquidityAgent(),
+                    "dxy": DXYAgent(),
+                    "risk": RiskAgent(),
+                    "bitcoin": BitcoinAgent()
+                }
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to initialize agents. Vector store may not be initialized. "
+                    f"Run 'python -m rag.ingest' first. Error: {str(e)}"
+                )
+        return self._agents
+    
+    def run_full_analysis(
+        self, 
+        sections: Optional[List[str]] = None,
+        timeframe: TimeFrame = TimeFrame.CURRENT
+    ) -> VerdictResponse:
         """
         Run full analysis across all sections
         
         Args:
             sections: Optional list of specific sections to analyze.
                      If None, analyzes all 6 sections.
+            timeframe: Timeframe for analysis (current, week, month, year)
         
         Returns:
             VerdictResponse with all scores and final verdict
         """
         section_scores: List[SectionScore] = []
+        raw_data: Dict[str, Any] = {}  # Collect raw data for regime detection
+        timeframe_str = timeframe.value if isinstance(timeframe, TimeFrame) else timeframe
         
         # Determine which sections to run
         sections_to_run = sections if sections else list(self.agents.keys())
         
-        # Run each agent
+        # Run each agent and collect raw data
         for section_name in sections_to_run:
             if section_name in self.agents:
                 try:
-                    print(f"Running {section_name} agent...")
+                    print(f"Running {section_name} agent with timeframe={timeframe_str}...")
                     agent = self.agents[section_name]
-                    score = agent.analyze()
+                    
+                    # Fetch raw data with timeframe
+                    agent_data = agent.fetch_data(timeframe=timeframe_str)
+                    
+                    # Store in raw_data dict for verdict agent
+                    raw_data[section_name] = agent_data
+                    
+                    # Run analysis with timeframe
+                    score = agent.analyze(timeframe=timeframe_str)
                     section_scores.append(score)
                     print(f"{section_name} agent completed: Score {score.score}")
                 except Exception as e:
@@ -59,20 +89,32 @@ class AgentOrchestrator:
                         name=agent.section_name if 'agent' in locals() else section_name,
                         score=50,
                         signals=[],
-                        reasoning=f"Error during analysis: {str(e)}"
+                        reasoning=f"Error during analysis: {str(e)}",
+                        validated_signals=[],
+                        data_sources=[],
+                        validation_summary={}
                     ))
         
-        # Calculate final verdict
-        verdict = self.verdict_agent.calculate_verdict(section_scores)
+        # Calculate final verdict with raw data for regime detection
+        verdict = self.verdict_agent.calculate_verdict(
+            section_scores, 
+            raw_data, 
+            timeframe=timeframe
+        )
         
         return verdict
     
-    def run_single_section(self, section_name: str) -> SectionScore:
+    def run_single_section(
+        self, 
+        section_name: str,
+        timeframe: TimeFrame = TimeFrame.CURRENT
+    ) -> SectionScore:
         """
         Run analysis for a single section
         
         Args:
             section_name: Name of section to analyze
+            timeframe: Timeframe for analysis
         
         Returns:
             SectionScore for that section
@@ -80,6 +122,6 @@ class AgentOrchestrator:
         if section_name not in self.agents:
             raise ValueError(f"Unknown section: {section_name}")
         
+        timeframe_str = timeframe.value if isinstance(timeframe, TimeFrame) else timeframe
         agent = self.agents[section_name]
-        return agent.analyze()
-
+        return agent.analyze(timeframe=timeframe_str)

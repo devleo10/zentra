@@ -109,3 +109,4 @@ Action plan based on macro conditions:
 
 **Remember:** Bitcoin does not react to news. It reacts to liquidity expectations.
 
+
