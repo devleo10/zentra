@@ -1,0 +1,35 @@
+{
+  "headline_classification": {
+    "model": "gpt-4o",
+    "temperature": 0,
+    "max_tokens": 256,
+    "prompt_version": "1.0.0",
+    "_doc": "LLM is ONLY used for headline classification. Never for numeric scoring."
+  },
+
+  "headline_keywords": [
+    "Federal Reserve", "FOMC", "Interest Rate", "Rate Cut", "Rate Hike",
+    "Inflation", "CPI", "PCE", "PPI",
+    "Treasury", "Yield", "Bond",
+    "Debt Ceiling", "Government Shutdown",
+    "Jobs Report", "Nonfarm Payrolls", "Unemployment",
+    "GDP", "Recession",
+    "Quantitative Easing", "Quantitative Tightening", "QE", "QT",
+    "Jerome Powell", "Fed Chair", "FOMC Minutes",
+    "Bank Failure", "Credit Crisis", "Liquidity Crisis",
+    "Tariff", "Trade War", "Sanctions"
+  ],
+
+  "headline_prompt_template": "You are a macro-economic event classifier. Given the following news headline and description, classify it strictly.\n\nHeadline: \"{headline}\"\nDescription: \"{description}\"\n\nClassify into this exact JSON format (no extra text):\n{{\n  \"event_bias\": \"hawkish\" | \"dovish\" | \"neutral\",\n  \"risk_impact\": \"risk_on\" | \"risk_off\" | \"neutral\",\n  \"confidence\": <float 0.0 to 1.0>,\n  \"reason\": \"<one sentence explanation>\"\n}}\n\nRules:\n- hawkish = tighter monetary policy, higher rates, inflation persistent\n- dovish = looser monetary policy, rate cuts, easing\n- risk_on = positive for risk assets (stocks, crypto)\n- risk_off = negative for risk assets (flight to safety)\n- confidence = how certain you are (0.0 = unsure, 1.0 = very certain)\n- Output ONLY valid JSON. No markdown. No explanation outside the JSON.",
+
+  "output_schema": {
+    "type": "object",
+    "required": ["event_bias", "risk_impact", "confidence", "reason"],
+    "properties": {
+      "event_bias": { "type": "string", "enum": ["hawkish", "dovish", "neutral"] },
+      "risk_impact": { "type": "string", "enum": ["risk_on", "risk_off", "neutral"] },
+      "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+      "reason": { "type": "string", "maxLength": 200 }
+    }
+  }
+}

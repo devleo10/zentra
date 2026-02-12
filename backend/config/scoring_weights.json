@@ -1,0 +1,138 @@
+{
+  "_version": "2.0.0",
+  "_description": "Deterministic scoring weights and thresholds. All numeric scoring is driven by this config. No LLM involvement in numeric scores.",
+  "_last_updated": "2026-02-12",
+
+  "section_weights": {
+    "inflation": 0.20,
+    "fed_policy": 0.25,
+    "liquidity": 0.20,
+    "dxy": 0.20,
+    "risk_sentiment": 0.15
+  },
+
+  "inflation_thresholds": {
+    "_doc": "CPI MoM change (percentage). Falling CPI = bullish for BTC.",
+    "cpi_mom_falling_fast": { "threshold": -0.3, "score": 100 },
+    "cpi_mom_falling":      { "threshold": -0.1, "score": 80 },
+    "cpi_mom_flat":         { "threshold":  0.1, "score": 55 },
+    "cpi_mom_rising":       { "threshold":  0.3, "score": 30 },
+    "cpi_mom_rising_fast":  { "threshold":  999, "score": 10 },
+
+    "pce_weight": 0.3,
+    "cpi_weight": 0.5,
+    "oil_weight": 0.2,
+
+    "oil_change_bullish_threshold": -5.0,
+    "oil_change_bearish_threshold": 10.0,
+    "oil_bullish_score": 80,
+    "oil_neutral_score": 50,
+    "oil_bearish_score": 20
+  },
+
+  "fed_policy_thresholds": {
+    "_doc": "Keyword-based scoring. Dovish = bullish for BTC. Counts are from headline keyword matching.",
+    "dovish_strong": { "min_dovish": 4, "max_hawkish": 1, "score": 90 },
+    "dovish":        { "min_dovish": 2, "max_hawkish": 1, "score": 75 },
+    "neutral":       { "score": 50 },
+    "hawkish":       { "min_hawkish": 2, "max_dovish": 1, "score": 25 },
+    "hawkish_strong":{ "min_hawkish": 4, "max_dovish": 1, "score": 10 },
+
+    "pivot_keyword_bonus": 10,
+    "max_pivot_bonus": 20
+  },
+
+  "liquidity_thresholds": {
+    "_doc": "Yield levels and Fed balance sheet trends. Expanding liquidity = bullish for BTC.",
+    "yield_10y_low":       { "threshold": 3.0, "score": 85 },
+    "yield_10y_moderate":  { "threshold": 4.0, "score": 60 },
+    "yield_10y_high":      { "threshold": 5.0, "score": 35 },
+    "yield_10y_very_high": { "threshold": 999, "score": 15 },
+
+    "yield_curve_inverted_penalty": -15,
+    "yield_curve_steepening_bonus": 10,
+
+    "balance_sheet_expanding_bonus": 15,
+    "balance_sheet_contracting_penalty": -15,
+
+    "yield_10y_weight": 0.4,
+    "yield_curve_weight": 0.3,
+    "balance_sheet_weight": 0.3
+  },
+
+  "dxy_thresholds": {
+    "_doc": "DXY change over 7 days (percentage). Falling DXY = bullish for BTC.",
+    "dxy_falling_fast":  { "threshold": -2.0, "score": 95 },
+    "dxy_falling":       { "threshold": -0.5, "score": 75 },
+    "dxy_flat":          { "threshold":  0.5, "score": 50 },
+    "dxy_rising":        { "threshold":  2.0, "score": 25 },
+    "dxy_rising_fast":   { "threshold":  999, "score": 5 }
+  },
+
+  "risk_sentiment_thresholds": {
+    "_doc": "VIX levels and S&P 500 trend. Risk-on = bullish for BTC.",
+    "vix_very_low":  { "threshold": 12, "score": 80 },
+    "vix_low":       { "threshold": 16, "score": 70 },
+    "vix_moderate":  { "threshold": 20, "score": 50 },
+    "vix_high":      { "threshold": 30, "score": 25 },
+    "vix_extreme":   { "threshold": 999, "score": 10 },
+
+    "sp500_rising_bonus": 10,
+    "sp500_falling_penalty": -10,
+    "sp500_change_threshold": 1.0,
+
+    "gold_safe_haven_penalty": -5,
+    "gold_change_threshold": 3.0,
+
+    "vix_weight": 0.5,
+    "sp500_weight": 0.3,
+    "gold_weight": 0.2
+  },
+
+  "headline_adjustment": {
+    "_doc": "Caps and rules for headline-based macro event score adjustment.",
+    "max_positive_adjustment": 10,
+    "max_negative_adjustment": -10,
+
+    "dovish_risk_on":    7,
+    "dovish_neutral":    4,
+    "dovish_risk_off":   0,
+
+    "hawkish_risk_off": -7,
+    "hawkish_neutral":  -4,
+    "hawkish_risk_on":   0,
+
+    "neutral_adjustment": 0,
+
+    "min_confidence_to_apply": 0.5,
+    "confidence_scaling": true
+  },
+
+  "bias_thresholds": {
+    "strong_bull":  { "min": 80 },
+    "bullish":      { "min": 65 },
+    "neutral":      { "min": 40 },
+    "bearish":      { "min": 20 },
+    "high_risk":    { "min": 0 }
+  },
+
+  "confidence_formula": {
+    "_doc": "confidence = (section_agreement_weight * agreement_pct) + (distance_weight * distance_from_50) + (headline_confidence_weight * headline_conf)",
+    "section_agreement_weight": 0.40,
+    "distance_weight": 0.35,
+    "headline_confidence_weight": 0.25,
+    "max_distance_score": 50
+  },
+
+  "data_freshness": {
+    "cpi_max_age_days": 35,
+    "pce_max_age_days": 35,
+    "btc_price_max_age_minutes": 10,
+    "yields_max_age_hours": 24,
+    "dxy_max_age_hours": 24,
+    "vix_max_age_hours": 24,
+    "sp500_max_age_hours": 24,
+    "headlines_max_age_hours": 48,
+    "fed_balance_sheet_max_age_days": 10
+  }
+}
