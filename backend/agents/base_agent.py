@@ -18,6 +18,21 @@ load_dotenv()
 
 def get_llm():
     """Get LLM - try Gemini first, fallback to OpenAI"""
+    # Prefer OpenAI when an OpenAI key is provided
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if openai_key:
+        try:
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+                temperature=0.3,
+                api_key=openai_key
+            )
+        except Exception:
+            # If langchain_openai isn't available, fall back to trying Gemini
+            pass
+
+    # If OpenAI not present or failed, try Gemini (optional)
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key:
         try:
@@ -28,19 +43,11 @@ def get_llm():
                 temperature=0.3,
                 google_api_key=gemini_key
             )
-        except ImportError:
+        except Exception:
+            # Could not initialize Gemini client
             pass
-    
-    # Fallback to OpenAI
-    from langchain_openai import ChatOpenAI
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if not openai_key:
-        raise ValueError("Neither GEMINI_API_KEY nor OPENAI_API_KEY found in environment variables")
-    return ChatOpenAI(
-        model="gpt-4o",
-        temperature=0.3,
-        api_key=openai_key
-    )
+
+    raise ValueError("Neither OPENAI_API_KEY nor GEMINI_API_KEY (optional) could be used to initialize an LLM.\nPlease set OPENAI_API_KEY or a valid GEMINI_API_KEY in backend/.env")
 
 
 class BaseAgent(ABC):
