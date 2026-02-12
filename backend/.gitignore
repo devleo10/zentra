@@ -13,4 +13,7 @@ faiss_db/
 *.sqlite
 .DS_Store
 
+# Ignore logs
+logs/
+
 
