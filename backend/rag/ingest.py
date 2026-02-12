@@ -18,8 +18,18 @@ KNOWLEDGE_BASE_DIR = Path(__file__).parent.parent / "knowledge_base"
 
 
 def get_embeddings():
-    """Get embeddings - try Gemini first, fallback to OpenAI"""
-    # Try Gemini first
+    """Get embeddings - prefer OpenAI, optionally use Gemini as fallback"""
+    # Prefer OpenAI embeddings when available
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if openai_key:
+        try:
+            from langchain_openai import OpenAIEmbeddings
+            print("Using OpenAI embeddings...")
+            return OpenAIEmbeddings(model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
+        except Exception:
+            print("langchain_openai not available or failed, trying Gemini embeddings...")
+
+    # Try Gemini/Google embeddings if OpenAI isn't configured or failed
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key:
         try:
@@ -29,22 +39,16 @@ def get_embeddings():
                 model="models/gemini-embedding-001",
                 google_api_key=gemini_key
             )
-        except ImportError:
-            print("langchain_google_genai not installed, trying alternative...")
+        except Exception:
+            print("langchain_google_genai not installed or failed, trying alternative...")
             try:
                 from langchain_community.embeddings import GooglePalmEmbeddings
                 print("Using Google Palm embeddings...")
                 return GooglePalmEmbeddings(google_api_key=gemini_key)
-            except ImportError:
-                print("Google embeddings not available, falling back to OpenAI...")
-    
-    # Fallback to OpenAI
-    from langchain_openai import OpenAIEmbeddings
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if not openai_key:
-        raise ValueError("Neither GEMINI_API_KEY nor OPENAI_API_KEY found in environment variables")
-    print("Using OpenAI embeddings...")
-    return OpenAIEmbeddings(model="text-embedding-3-small")
+            except Exception:
+                print("Google embeddings not available, falling back if OpenAI present...")
+
+    raise ValueError("No embeddings available: set OPENAI_API_KEY or GEMINI_API_KEY in environment variables")
 
 
 def ingest_knowledge_base():
