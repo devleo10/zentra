@@ -1,0 +1,16 @@
+# Repository-level ignores
+# Ignore OpenSpec change artifacts and generated apply context
+/.openspec*/
+openspec/
+
+# Ignore Claude and cursor local folders
+.claude/
+.cusror/
+.cursor/
+
+# Ignore GitHub workflow or repo-level metadata (if you want to exclude .github)
+.github/
+
+# Historical/alternate names
+openspecs/
+
