@@ -12,8 +12,18 @@ PERSIST_DIRECTORY = Path(__file__).parent.parent / "faiss_db"
 
 
 def get_embeddings():
-    """Get embeddings - try Gemini first, fallback to OpenAI"""
-    # Try Gemini first
+    """Get embeddings - prefer OpenAI, optionally use Gemini as fallback"""
+    # Prefer OpenAI embeddings when available
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if openai_key:
+        try:
+            from langchain_openai import OpenAIEmbeddings
+            return OpenAIEmbeddings(model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
+        except Exception:
+            # If langchain_openai isn't installed, fall through to try Gemini
+            pass
+
+    # Try Gemini/Google embeddings if OpenAI isn't configured or failed
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key:
         try:
@@ -22,19 +32,14 @@ def get_embeddings():
                 model="models/gemini-embedding-001",
                 google_api_key=gemini_key
             )
-        except ImportError:
+        except Exception:
             try:
                 from langchain_community.embeddings import GooglePalmEmbeddings
                 return GooglePalmEmbeddings(google_api_key=gemini_key)
-            except ImportError:
+            except Exception:
                 pass
-    
-    # Fallback to OpenAI
-    from langchain_openai import OpenAIEmbeddings
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if not openai_key:
-        raise ValueError("Neither GEMINI_API_KEY nor OPENAI_API_KEY found in environment variables")
-    return OpenAIEmbeddings(model="text-embedding-3-small")
+
+    raise ValueError("No embeddings available: set OPENAI_API_KEY or GEMINI_API_KEY in environment variables")
 
 
 def get_retriever(k=5):

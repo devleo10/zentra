@@ -1,21 +1,21 @@
-# FastAPI and server
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-python-dotenv==1.0.0
-pydantic==2.5.3
+# FastAPI and server (Python 3.14 compatible)
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-dotenv>=1.0.0
+pydantic>=2.10.0
 
-# LangChain and RAG
-langchain==0.1.6
-langchain-openai==0.0.2
-langchain-community==0.0.20
-faiss-cpu>=1.7.4
+# OpenAI SDK
+openai>=1.0.0
+google-generativeai>=0.3.0
 
-# Data fetching
-yfinance==0.2.32
-requests==2.31.0
-pandas>=2.2.0
-numpy>=2.0.0
+# Data fetching and processing
+yfinance>=0.2.40
+requests>=2.31.0
 
-# Date/time handling
-python-dateutil==2.8.2
+# Date/time handling  
+python-dateutil>=2.8.2
+
+# Scientific computing
+numpy
+pandas
 
