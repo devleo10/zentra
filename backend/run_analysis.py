@@ -56,6 +56,7 @@ from scoring_engine.verdict import compute_final_verdict
 from scoring_engine.freshness import validate_data_freshness
 from headline_engine.fetcher import HeadlineFetcher, HeadlineFetchError
 from headline_engine.classifier import HeadlineClassifier
+from headline_engine.report import generate_market_report
 from storage.db import save_snapshot
 
 
@@ -251,11 +252,56 @@ def run_analysis():
             for c in classified[:3]:
                 logger.info(f"    {c.get('event_bias')}/{c.get('risk_impact')} "
                            f"conf={c.get('confidence', 0):.2f}: {c.get('_headline_title', '')[:60]}")
+            # ── Boosting: elevate confidence and optionally force bias for explicit decisions
+            try:
+                for i, cl in enumerate(classified):
+                    if i >= len(headlines):
+                        break
+                    original = headlines[i]
+                    # If fetcher or official scraper annotated explicit decision, boost
+                    if original.get("_explicit_decision"):
+                        # Force high confidence and, for rate decisions / FOMC docs, set bias/impact
+                        cl_conf = float(cl.get("confidence", 0) or 0)
+                        if cl_conf < 0.98:
+                            cl["confidence"] = 0.98
+                            logger.info(f"Boosted headline confidence to 0.98 for explicit decision: {original.get('title','')[:140]}")
+                        dtype = original.get("_decision_type")
+                        if dtype in ("rate_hike", "rate_cut", "rate_hold", "fomc_doc"):
+                            # Map decision types to forced bias/impact
+                            if dtype == "rate_hike":
+                                cl["event_bias"] = "hawkish"
+                                cl["risk_impact"] = "risk_off"
+                            elif dtype == "rate_cut":
+                                cl["event_bias"] = "dovish"
+                                cl["risk_impact"] = "risk_on"
+                            elif dtype == "rate_hold":
+                                cl["event_bias"] = "neutral"
+                                cl["risk_impact"] = "neutral"
+                            elif dtype == "fomc_doc":
+                                # Let classifier decide bias, but ensure high confidence
+                                cl["confidence"] = max(cl.get("confidence", 0), 0.95)
+                            logger.info(f"Forced classification for decision_type={dtype}: bias={cl.get('event_bias')} impact={cl.get('risk_impact')}")
+                    else:
+                        # Authority-based boost for trusted sources
+                        if original.get("_authority_score", 0) >= 2:
+                            cl["confidence"] = max(cl.get("confidence", 0), 0.9)
+                            logger.info(f"Boosted confidence for authoritative source {original.get('source')} title={original.get('title','')[:120]}")
+            except Exception as _e:
+                logger.warning(f"Headline boosting step failed: {_e}")
         except Exception as e:
             logger.warning(f"  Headline classification failed (non-critical): {e}")
             logger.warning("  Proceeding without headline adjustment.")
     else:
         logger.info("  No headlines to classify. Headline adjustment = 0.")
+
+    # ── REPORT: Generate market news report for auditability ───────────
+    try:
+        report_text, report_meta = generate_market_report(classified)
+        logger.info("Market report generated:\n%s", report_text)
+    except Exception as e:
+        logger.warning(f"Failed to generate market report: {e}")
+        report_text = ""
+        report_meta = {}
 
     # ── STEP 6: Compute headline adjustment ───────────────────────────
     logger.info("[6/9] Computing headline adjustment...")
@@ -309,6 +355,8 @@ def run_analysis():
         ],
         "headline_adjustment": headline_adj,
         "headline_reasoning": headline_reasoning,
+        "headline_report": report_text,
+        "headline_report_meta": report_meta,
         "final_score": verdict["final_score"],
         "bias": verdict["bias"],
         "action": verdict["action"],
