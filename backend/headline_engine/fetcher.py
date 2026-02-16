@@ -6,10 +6,11 @@ Filters by relevant keywords.
 Returns only headlines from last 24-48 hours.
 """
 import os
+import re
 import requests
 import xml.etree.ElementTree as ET
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta
 from urllib.parse import quote
 from dotenv import load_dotenv
@@ -35,6 +36,20 @@ MACRO_KEYWORDS = [
     "Tariff", "Trade War", "Sanctions",
 ]
 
+# Patterns for explicit decision detection (high-confidence signals)
+DECISION_PATTERNS = [
+    (re.compile(r"\brate (?:hike|increase|raised)\b|\braises rates?\b|\badds bps\b", re.I), "rate_hike"),
+    (re.compile(r"\brate (?:cut|cutting|cut by)\b|\breduces rates?\b|\bcut bps\b", re.I), "rate_cut"),
+    (re.compile(r"\bhold rates?\b|\bmaintains rate\b|\bno change to rates\b", re.I), "rate_hold"),
+    (re.compile(r"\bdebt ceiling\b|\bdebt-limit\b|\braising the debt ceiling\b|\bdebt deal\b", re.I), "debt_ceiling"),
+    (re.compile(r"\bjobs report\b|\bnonfarm payrolls\b|\bNFP\b|\bunemployment rate\b|\bpayrolls (?:beat|miss)\b", re.I), "jobs_print"),
+    (re.compile(r"\bGovernment Shutdown\b|\bshutdown averts\b", re.I), "gov_shutdown"),
+    (re.compile(r"\bFOMC statement\b|\bFOMC minutes?\b|\bpress release\b", re.I), "fomc_doc"),
+]
+
+# Authoritative news sources to prioritize
+HIGH_AUTH_SOURCES = ["Reuters", "Bloomberg", "Associated Press", "AP", "Wall Street Journal", "WSJ", "CNBC", "Federal Reserve", "Fed", "BLS", "BEA"]
+
 
 class HeadlineFetcher:
     """Fetches and filters macro headlines."""
@@ -56,6 +71,27 @@ class HeadlineFetcher:
         headlines = []
         errors = []
         
+        # Source 0: Official sources (Federal Reserve, BLS) — highest priority
+        try:
+            from headline_engine.sources import fetch_fomc_releases, fetch_bls_releases
+            try:
+                fomc = fetch_fomc_releases()
+                if fomc:
+                    headlines.extend(fomc)
+                    logger.info(f"Fetched {len(fomc)} FOMC/Fed releases")
+            except Exception as _e:
+                logger.warning(f"FOMC fetch failed: {_e}")
+
+            try:
+                bls = fetch_bls_releases()
+                if bls:
+                    headlines.extend(bls)
+                    logger.info(f"Fetched {len(bls)} BLS releases")
+            except Exception as _e:
+                logger.warning(f"BLS fetch failed: {_e}")
+        except Exception:
+            logger.debug("Official-source scrapers unavailable")
+
         # Source 1: NewsAPI
         if self.api_key:
             try:
@@ -92,8 +128,29 @@ class HeadlineFetcher:
         # Filter by macro keywords
         filtered = self._filter_by_keywords(unique)
         logger.info(f"After keyword filter: {len(filtered)} of {len(unique)} headlines")
-        
-        return filtered
+
+        # Annotate headlines with explicit decision detection and authority score
+        annotated = []
+        for h in filtered:
+            title = h.get("title", "")
+            desc = h.get("description", "") or ""
+            explicit, decision_type = self._is_explicit_decision(title, desc)
+            h["_explicit_decision"] = explicit
+            h["_decision_type"] = decision_type
+
+            # Authority heuristic
+            source = h.get("source", "") or ""
+            auth_score = 2 if any(src.lower() in source.lower() for src in HIGH_AUTH_SOURCES) else 0
+            h["_authority_score"] = auth_score
+            h["_priority"] = "high" if explicit or auth_score >= 2 else "normal"
+
+            # Log explicit decisions for auditing
+            if explicit:
+                logger.info(f"Explicit decision detected: type={decision_type} title={title[:120]}")
+
+            annotated.append(h)
+
+        return annotated
     
     def _fetch_newsapi(self) -> List[Dict]:
         """Fetch from NewsAPI (free tier: max 29 days lookback)."""
@@ -165,6 +222,17 @@ class HeadlineFetcher:
                 filtered.append(h)
         
         return filtered
+
+    def _is_explicit_decision(self, title: str, description: str) -> Tuple[bool, Optional[str]]:
+        """Detect high-confidence explicit decisions or official documents in headline text.
+
+        Returns: (True/False, decision_type or None)
+        """
+        text = (title + " " + (description or "")).lower()
+        for pattern, dtype in DECISION_PATTERNS:
+            if pattern.search(text):
+                return True, dtype
+        return False, None
 
 
 class HeadlineFetchError(Exception):

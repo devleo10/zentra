@@ -7,8 +7,11 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Literal, Tuple
 from dotenv import load_dotenv
+import logging
 
 load_dotenv()
+
+logger = logging.getLogger("btc_macro.data_fetchers.fred")
 
 FRED_API_KEY = os.getenv("FRED_API_KEY")
 FRED_BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
@@ -45,6 +48,55 @@ def get_timeframe_dates(timeframe: str = "current") -> Tuple[str, int]:
     }.get(timeframe, 1)
     
     return start_date, comparison_days
+
+
+def _get_last_snapshot_field(field_name: str):
+    """Return the last known value for a named snapshot field, if available."""
+    try:
+        # Import locally to avoid import cycles at module import time
+        from storage.db import get_latest_snapshots
+        snaps = get_latest_snapshots(1)
+        if snaps:
+            snap = snaps[0]
+            return snap.get(field_name)
+    except Exception:
+        logger.exception("Failed to read last snapshot for fallback")
+    return None
+
+
+def get_fred_series(series_id: str, timeframe: str = "current") -> Dict:
+    """Fetch the latest observation for a generic FRED series (lightweight wrapper).
+
+    Returns a dict with keys: value, date, _source
+    """
+    start_date, _ = get_timeframe_dates(timeframe)
+    params = {
+        "series_id": series_id,
+        "api_key": FRED_API_KEY,
+        "file_type": "json",
+        "observation_start": start_date,
+        "sort_order": "desc"
+    }
+    try:
+        if not FRED_API_KEY:
+            logger.warning("FRED API key missing; cannot fetch %s", series_id)
+            return {"error": "missing_api_key"}
+        resp = requests.get(FRED_BASE_URL, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        obs = data.get("observations", [])
+        if not obs:
+            return {"error": "no_observations"}
+        latest = obs[-1]
+        value = None
+        try:
+            value = float(latest.get("value"))
+        except Exception:
+            value = None
+        return {"value": value, "date": latest.get("date"), "_source": "FRED", "series_id": series_id}
+    except Exception as e:
+        logger.exception("Error fetching FRED series %s: %s", series_id, e)
+        return {"error": str(e)}
 
 
 def get_fred_data(series_id: str, start_date: Optional[str] = None, timeframe: str = "current") -> pd.DataFrame:
@@ -98,26 +150,38 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
     """Get CPI data based on timeframe"""
     start_date, comparison_days = get_timeframe_dates(timeframe)
     df = get_fred_data("CPIAUCSL", start_date=start_date)  # CPI All Items Urban Consumers
-    
     if df.empty:
+        # Attempt fallback to last known snapshot value
+        last_cpi = _get_last_snapshot_field("cpi_mom_change")
+        logger.warning("No CPI data from FRED; using last snapshot fallback: %s", last_cpi)
+        if last_cpi is not None:
+            return {
+                "latest_value": None,
+                "latest_date": None,
+                "comparison_date": None,
+                "mom_change": last_cpi,
+                "_fallback": True,
+                "_fallback_source": "last_snapshot",
+                "timeframe": timeframe,
+            }
         return {"error": "No CPI data available", "timeframe": timeframe}
-    
+
     latest = df.iloc[-1]
-    
+
     # Find comparison point based on timeframe
     comparison_idx = min(comparison_days, len(df) - 1)
     prev_value = df.iloc[-comparison_idx - 1] if len(df) > comparison_idx else latest
-    
+
     change = ((latest["value"] - prev_value["value"]) / prev_value["value"]) * 100 if len(df) > 1 else 0
-    
+
     timeframe_label = {
         "current": "mom",
         "week": "wow",
         "month": "mom",
         "year": "yoy"
     }.get(timeframe, "change")
-    
-    return {
+
+    result = {
         "latest_value": float(latest["value"]),
         "latest_date": latest["date"].strftime("%Y-%m-%d"),
         "comparison_date": prev_value["date"].strftime("%Y-%m-%d"),
@@ -126,6 +190,23 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
         "trend": "falling" if change < 0 else "rising" if change > 0 else "flat",
         "timeframe": timeframe
     }
+
+    # Basic plausibility checks
+    validation = {"validated": True, "reasons": []}
+    if result["latest_value"] is None:
+        validation["validated"] = False
+        validation["reasons"].append("Latest CPI value is missing")
+    else:
+        if result["latest_value"] < 0 or result["latest_value"] > 1000:
+            validation["validated"] = False
+            validation["reasons"].append("CPI value out of plausible range")
+
+    result["_validation"] = validation
+    if not validation["validated"]:
+        logger.warning("CPI validation failed: %s", validation["reasons"])
+
+    logger.info("CPI fetched: %s (date=%s)", result.get("latest_value"), result.get("latest_date"))
+    return result
 
 
 def get_pce_data(timeframe: str = "current") -> Dict:
@@ -134,22 +215,34 @@ def get_pce_data(timeframe: str = "current") -> Dict:
     df = get_fred_data("PCEPI", start_date=start_date)  # Personal Consumption Expenditures Price Index
     
     if df.empty:
+        last_pce = _get_last_snapshot_field("pce_mom_change")
+        logger.warning("No PCE data from FRED; using last snapshot fallback: %s", last_pce)
+        if last_pce is not None:
+            return {
+                "latest_value": None,
+                "latest_date": None,
+                "comparison_date": None,
+                "mom_change": last_pce,
+                "_fallback": True,
+                "_fallback_source": "last_snapshot",
+                "timeframe": timeframe,
+            }
         return {"error": "No PCE data available", "timeframe": timeframe}
-    
+
     latest = df.iloc[-1]
     comparison_idx = min(comparison_days, len(df) - 1)
     prev_value = df.iloc[-comparison_idx - 1] if len(df) > comparison_idx else latest
-    
+
     change = ((latest["value"] - prev_value["value"]) / prev_value["value"]) * 100 if len(df) > 1 else 0
-    
+
     timeframe_label = {
         "current": "mom",
         "week": "wow",
         "month": "mom",
         "year": "yoy"
     }.get(timeframe, "change")
-    
-    return {
+
+    result = {
         "latest_value": float(latest["value"]),
         "latest_date": latest["date"].strftime("%Y-%m-%d"),
         "comparison_date": prev_value["date"].strftime("%Y-%m-%d"),
@@ -158,6 +251,22 @@ def get_pce_data(timeframe: str = "current") -> Dict:
         "trend": "falling" if change < 0 else "rising" if change > 0 else "flat",
         "timeframe": timeframe
     }
+
+    validation = {"validated": True, "reasons": []}
+    if result["latest_value"] is None:
+        validation["validated"] = False
+        validation["reasons"].append("Latest PCE value is missing")
+    else:
+        if result["latest_value"] < 0 or result["latest_value"] > 1000:
+            validation["validated"] = False
+            validation["reasons"].append("PCE value out of plausible range")
+
+    result["_validation"] = validation
+    if not validation["validated"]:
+        logger.warning("PCE validation failed: %s", validation["reasons"])
+
+    logger.info("PCE fetched: %s (date=%s)", result.get("latest_value"), result.get("latest_date"))
+    return result
 
 
 def get_treasury_yields(timeframe: str = "current") -> Dict:
@@ -167,7 +276,18 @@ def get_treasury_yields(timeframe: str = "current") -> Dict:
     df_10y = get_fred_data("DGS10", start_date=start_date)  # 10-Year Treasury
     
     result = {"timeframe": timeframe}
-    
+
+    if df_2y.empty and df_10y.empty:
+        # Attempt last snapshot fallback
+        last_10y = _get_last_snapshot_field("ten_year_yield")
+        last_2y = None
+        if last_10y is not None:
+            logger.warning("No treasury yield data; using last snapshot fallback for 10y: %s", last_10y)
+            result["yield_10y"] = {"value": last_10y, "_fallback": True, "_fallback_source": "last_snapshot"}
+        else:
+            logger.error("No treasury yield data available and no snapshot fallback")
+            return {"error": "No treasury yields available", "timeframe": timeframe}
+
     if not df_2y.empty:
         latest_2y = df_2y.iloc[-1]
         comparison_idx = min(comparison_days, len(df_2y) - 1)
