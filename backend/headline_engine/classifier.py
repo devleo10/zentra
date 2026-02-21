@@ -6,13 +6,72 @@ LLM is used ONLY here — for classifying macro headlines.
 - Strict JSON output
 - Schema validation
 - No narrative generation
+- Keyword-based rule fallback when LLM fails (prevents neutral default-spam)
 """
 import os
+import re
+import time
 import json
 import logging
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from dotenv import load_dotenv
+
+# ── Keyword-based deterministic fallback ──────────────────────────────────────
+# Applied when LLM fails to return valid JSON. Prevents cascading neutral defaults.
+_HAWKISH_WORDS = [
+    "rate hike", "hawkish", "higher for longer", "inflation sticky",
+    "tighten", "premature easing", "labor market strong", "upside risk",
+    "overheat", "aggressive", "restrictive policy",
+]
+_DOVISH_WORDS = [
+    "rate cut", "dovish", "pivot", "disinflation", "policy is restrictive",
+    "easing", "balanced risks", "financial conditions tightening",
+    "slowdown", "recession fears", "soft landing",
+]
+_RISK_OFF_WORDS = [
+    "drops", "falls", "crash", "warning", "selloff", "bear",
+    "war", "tension", "sanctions", "tariff", "bank failure", "crisis",
+    "head-and-shoulders", "breakdown", "risk-off", "flight to safety",
+]
+_RISK_ON_WORDS = [
+    "rally", "surge", "bull", "breakout", "risk-on", "growth beats",
+    "strong jobs", "optimism", "record high",
+]
+
+
+def _keyword_classify(title: str, description: str) -> Dict[str, Any]:
+    """Deterministic keyword-based fallback classifier."""
+    text = (title + " " + (description or "")).lower()
+
+    hawkish_hits = sum(1 for w in _HAWKISH_WORDS if w in text)
+    dovish_hits = sum(1 for w in _DOVISH_WORDS if w in text)
+    risk_off_hits = sum(1 for w in _RISK_OFF_WORDS if w in text)
+    risk_on_hits = sum(1 for w in _RISK_ON_WORDS if w in text)
+
+    if hawkish_hits > dovish_hits:
+        bias = "hawkish"
+    elif dovish_hits > hawkish_hits:
+        bias = "dovish"
+    else:
+        bias = "neutral"
+
+    if risk_off_hits > risk_on_hits:
+        impact = "risk_off"
+    elif risk_on_hits > risk_off_hits:
+        impact = "risk_on"
+    else:
+        impact = "neutral"
+
+    conf = min(0.7, 0.3 + 0.1 * max(hawkish_hits, dovish_hits, risk_off_hits, risk_on_hits))
+
+    return {
+        "event_bias": bias,
+        "risk_impact": impact,
+        "confidence": round(conf, 2),
+        "reason": f"Keyword fallback: hawkish={hawkish_hits} dovish={dovish_hits} risk_off={risk_off_hits} risk_on={risk_on_hits}",
+        "_keyword_fallback": True,
+    }
 
 load_dotenv()
 
@@ -84,15 +143,12 @@ class HeadlineClassifier:
                 results.append(classification)
             except Exception as e:
                 logger.warning(f"Failed to classify headline: {h.get('title', '')[:60]}... Error: {e}")
-                # Return a neutral fallback — do NOT crash
-                results.append({
-                    "event_bias": "neutral",
-                    "risk_impact": "neutral",
-                    "confidence": 0.0,
-                    "reason": f"Classification failed: {str(e)}",
-                    "_headline_title": h.get("title", ""),
-                    "_error": str(e),
-                })
+                # Apply keyword-based rule fallback before defaulting to neutral
+                kw = _keyword_classify(h.get("title", ""), h.get("description", ""))
+                kw["_headline_title"] = h.get("title", "")
+                kw["_error"] = str(e)
+                kw["reason"] = f"Keyword fallback (LLM failed): {kw['reason']}"
+                results.append(kw)
         
         return results
     
@@ -112,14 +168,21 @@ class HeadlineClassifier:
         else:
             raw = self._call_openai(prompt)
         
-        # Parse and validate JSON
-        parsed = self._parse_json_response(raw)
-        validated = self._validate_output(parsed)
-        validated["_raw_response"] = raw
-        validated["_model"] = self.model
-        validated["_prompt_version"] = self.prompt_version
-        
-        return validated
+        # Parse and validate JSON. If parsing fails, apply deterministic keyword fallback
+        try:
+            parsed = self._parse_json_response(raw)
+            validated = self._validate_output(parsed)
+            validated["_raw_response"] = raw
+            validated["_model"] = self.model
+            validated["_prompt_version"] = self.prompt_version
+            return validated
+        except ValueError as e:
+            logger.warning("LLM returned invalid JSON for headline (%s): %s -- using keyword fallback", headline[:80], str(e))
+            kw = _keyword_classify(headline, description)
+            kw["_raw_response"] = raw
+            kw["_model"] = "keyword_fallback"
+            kw["_prompt_version"] = self.prompt_version
+            return kw
     
     def _call_openai(self, prompt: str) -> str:
         """Call OpenAI API with temperature=0."""
@@ -135,35 +198,102 @@ class HeadlineClassifier:
         return response.choices[0].message.content.strip()
     
     def _call_gemini(self, prompt: str) -> str:
-        """Call Gemini API with temperature=0."""
+        """Call Gemini API with temperature=0. Uses google-genai SDK with 429 retry."""
+        api_key = self.client["api_key"]
+        model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+        # Try new google.genai SDK first (recommended), fall back to legacy
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=self.client["api_key"])
-            model = genai.GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0,
-                    max_output_tokens=self.config["max_tokens"],
-                )
-            )
-            return response.text.strip()
+            from google import genai as genai_new
+            from google.genai import types as genai_types
+            client = genai_new.Client(api_key=api_key)
+            for attempt in range(3):
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=genai_types.GenerateContentConfig(
+                            temperature=0,
+                            max_output_tokens=self.config["max_tokens"],
+                            system_instruction="You are a macro-economic event classifier. Output only valid JSON.",
+                        ),
+                    )
+                    return response.text.strip()
+                except Exception as e:
+                    err = str(e)
+                    if "429" in err or "quota" in err.lower():
+                        wait = 15 * (attempt + 1)
+                        logger.warning("Gemini rate-limited (attempt %d/3), waiting %ds", attempt + 1, wait)
+                        time.sleep(wait)
+                        continue
+                    raise
+            raise RuntimeError("Gemini quota exceeded after 3 retries")
         except ImportError:
-            raise ImportError("google-generativeai package required for Gemini. pip install google-generativeai")
+            pass  # fall through to legacy SDK
+
+        # Legacy fallback: google-generativeai
+        try:
+            import google.generativeai as genai_legacy
+            genai_legacy.configure(api_key=api_key)
+            model = genai_legacy.GenerativeModel(model_name)
+            for attempt in range(3):
+                try:
+                    response = model.generate_content(
+                        prompt,
+                        generation_config=genai_legacy.types.GenerationConfig(
+                            temperature=0,
+                            max_output_tokens=self.config["max_tokens"],
+                        ),
+                    )
+                    return response.text.strip()
+                except Exception as e:
+                    err = str(e)
+                    if "429" in err or "quota" in err.lower():
+                        wait = 15 * (attempt + 1)
+                        logger.warning("Gemini (legacy) rate-limited (attempt %d/3), waiting %ds", attempt + 1, wait)
+                        time.sleep(wait)
+                        continue
+                    raise
+            raise RuntimeError("Gemini quota exceeded after 3 retries")
+        except ImportError:
+            raise ImportError("Install google-genai: pip install google-genai")
     
     def _parse_json_response(self, raw: str) -> Dict:
-        """Parse JSON from LLM response, handling markdown fences."""
+        """Parse JSON from LLM response, handling markdown fences and truncation."""
         text = raw.strip()
         # Strip markdown code fences if present
         if text.startswith("```"):
             lines = text.split("\n")
             lines = [l for l in lines if not l.strip().startswith("```")]
             text = "\n".join(lines).strip()
-        
+
+        # Try direct parse
         try:
             return json.loads(text)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"LLM returned invalid JSON: {e}. Raw: {raw[:200]}")
+        except json.JSONDecodeError:
+            pass
+
+        # Try to extract JSON object via regex (handles trailing garbage)
+        match = re.search(r'\{[^{}]+\}', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        # Try to repair truncated JSON by closing open string + object
+        repaired = text.rstrip()
+        if not repaired.endswith('}'):
+            # Close any open string then close the object
+            if repaired.count('"') % 2 == 1:
+                repaired += '"'
+            repaired += '}'
+            try:
+                return json.loads(repaired)
+            except json.JSONDecodeError:
+                pass
+
+        raise ValueError(f"LLM returned invalid JSON: {raw[:200]}")
     
     def _validate_output(self, parsed: Dict) -> Dict:
         """Validate parsed output against expected schema."""

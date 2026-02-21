@@ -10,7 +10,7 @@ import logging
 
 logger = logging.getLogger("btc_macro.headline_engine.report")
 
-from ..scoring_engine.headline_adjuster import compute_headline_adjustment
+from scoring_engine.headline_adjuster import compute_headline_adjustment
 
 
 def generate_market_report(classified_headlines: List[Dict[str, Any]]) -> Tuple[str, Dict[str, Any]]:
