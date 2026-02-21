@@ -67,14 +67,18 @@ def _config_hash() -> str:
     return hashlib.sha256(content).hexdigest()[:16]
 
 
-def run_analysis():
+def run_analysis(timeframe: str = "current"):
     """
-    Execute the full analysis pipeline.
+    Execute the full analysis pipeline with timeframe support.
+    
+    Args:
+        timeframe: Analysis timeframe - 'current', 'week', 'month', or 'year'
+    
     Returns the result dict on success, or raises SystemExit on failure.
     """
     timestamp = datetime.now().isoformat()
     logger.info("=" * 70)
-    logger.info(f"BTC MACRO ANALYSIS — {timestamp}")
+    logger.info(f"BTC MACRO ANALYSIS — {timestamp} (timeframe: {timeframe})")
     logger.info("=" * 70)
 
     # ── STEP 1: Fetch all numeric data ─────────────────────────────────
@@ -82,63 +86,63 @@ def run_analysis():
     raw_data = {}
     
     try:
-        raw_data["cpi"] = fred_data.get_cpi_data("current")
+        raw_data["cpi"] = fred_data.get_cpi_data(timeframe)
         logger.info(f"  CPI: {raw_data['cpi'].get('latest_value', 'ERROR')}")
     except Exception as e:
         logger.error(f"  CPI fetch FAILED: {e}")
         raw_data["cpi"] = {"error": str(e)}
     
     try:
-        raw_data["pce"] = fred_data.get_pce_data("current")
+        raw_data["pce"] = fred_data.get_pce_data(timeframe)
         logger.info(f"  PCE: {raw_data['pce'].get('latest_value', 'ERROR')}")
     except Exception as e:
         logger.error(f"  PCE fetch FAILED: {e}")
         raw_data["pce"] = {"error": str(e)}
     
     try:
-        raw_data["yields"] = fred_data.get_treasury_yields("current")
+        raw_data["yields"] = fred_data.get_treasury_yields(timeframe)
         logger.info(f"  10Y Yield: {raw_data['yields'].get('yield_10y', {}).get('value', 'ERROR')}")
     except Exception as e:
         logger.error(f"  Yields fetch FAILED: {e}")
         raw_data["yields"] = {"error": str(e)}
     
     try:
-        raw_data["balance_sheet"] = fred_data.get_fed_balance_sheet("current")
+        raw_data["balance_sheet"] = fred_data.get_fed_balance_sheet(timeframe)
         logger.info(f"  Fed BS trend: {raw_data['balance_sheet'].get('trend', 'ERROR')}")
     except Exception as e:
         logger.error(f"  Balance sheet fetch FAILED: {e}")
         raw_data["balance_sheet"] = {"error": str(e)}
     
     try:
-        raw_data["dxy"] = yahoo_data.get_dxy_data("current")
+        raw_data["dxy"] = yahoo_data.get_dxy_data(timeframe)
         logger.info(f"  DXY: {raw_data['dxy'].get('current_price', 'ERROR')}")
     except Exception as e:
         logger.error(f"  DXY fetch FAILED: {e}")
         raw_data["dxy"] = {"error": str(e)}
     
     try:
-        raw_data["vix"] = yahoo_data.get_vix_data("current")
+        raw_data["vix"] = yahoo_data.get_vix_data(timeframe)
         logger.info(f"  VIX: {raw_data['vix'].get('current_value', 'ERROR')}")
     except Exception as e:
         logger.error(f"  VIX fetch FAILED: {e}")
         raw_data["vix"] = {"error": str(e)}
     
     try:
-        raw_data["sp500"] = yahoo_data.get_sp500_data("current")
+        raw_data["sp500"] = yahoo_data.get_sp500_data(timeframe)
         logger.info(f"  S&P500: {raw_data['sp500'].get('current_price', 'ERROR')}")
     except Exception as e:
         logger.error(f"  S&P500 fetch FAILED: {e}")
         raw_data["sp500"] = {"error": str(e)}
     
     try:
-        raw_data["gold"] = yahoo_data.get_gold_data("current")
+        raw_data["gold"] = yahoo_data.get_gold_data(timeframe)
         logger.info(f"  Gold: {raw_data['gold'].get('current_price', 'ERROR')}")
     except Exception as e:
         logger.error(f"  Gold fetch FAILED: {e}")
         raw_data["gold"] = {"error": str(e)}
     
     try:
-        raw_data["btc"] = coingecko_data.get_btc_price("current")
+        raw_data["btc"] = coingecko_data.get_btc_price(timeframe)
         logger.info(f"  BTC: ${raw_data['btc'].get('price_usd', 'ERROR')}")
     except Exception as e:
         logger.error(f"  BTC fetch FAILED: {e}")
@@ -146,9 +150,12 @@ def run_analysis():
     
     # Fed keywords from news (for fed_policy scoring)
     try:
-        articles = news_data.get_fed_speeches(days=3)
+        # Map timeframe to days for news lookback
+        days_map = {"current": 3, "week": 7, "month": 30, "year": 90}
+        days = days_map.get(timeframe, 3)
+        articles = news_data.get_fed_speeches(days=days)
         raw_data["fed_keywords"] = news_data.analyze_fed_keywords(articles)
-        logger.info(f"  Fed keywords: {raw_data['fed_keywords']}")
+        logger.info(f"  Fed keywords ({days}d lookback): {raw_data['fed_keywords']}")
     except Exception as e:
         logger.error(f"  Fed keywords fetch FAILED: {e}")
         raw_data["fed_keywords"] = {"dovish_keywords_found": 0, "hawkish_keywords_found": 0, "pivot_keywords_found": 0}
@@ -414,6 +421,33 @@ def run_analysis():
     
     print()
     return snapshot
+
+
+if __name__ == "__main__":
+    import sys
+    
+    # Support command line timeframe argument
+    timeframe = "current"
+    if len(sys.argv) > 1:
+        tf_arg = sys.argv[1].lower()
+        if tf_arg in ["current", "week", "month", "year"]:
+            timeframe = tf_arg
+        else:
+            print(f"Invalid timeframe: {tf_arg}. Using 'current'.")
+            print("Valid timeframes: current, week, month, year")
+    
+    try:
+        result = run_analysis(timeframe)
+        print(f"\n✅ Analysis completed successfully (timeframe: {timeframe})")
+        print(f"Final Score: {result.get('final_score', 'N/A')}/100")
+        print(f"Bias: {result.get('bias', 'N/A')}")
+    except SystemExit:
+        # Already handled in run_analysis
+        pass
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        print(f"\n❌ Analysis failed: {e}")
+        sys.exit(2)
 
 
 if __name__ == "__main__":

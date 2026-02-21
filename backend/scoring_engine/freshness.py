@@ -115,26 +115,38 @@ def validate_data_freshness(data: Dict[str, Any]) -> FreshnessReport:
     report = FreshnessReport()
     
     def _parse_date(date_str: Optional[str]) -> Optional[datetime]:
+        """Parse date string. Adds market-close grace (18h) so a date-only
+        value from a trading-day close is never immediately stale."""
         if not date_str:
             return None
         try:
-            return datetime.strptime(date_str[:10], "%Y-%m-%d")
+            # Try full ISO datetime first
+            dt = datetime.fromisoformat(date_str[:19])
+            return dt
+        except ValueError:
+            pass
+        try:
+            # Date-only: treat as end-of-trading-day + 18h grace to handle
+            # weekend/holiday data that was last updated on the most-recent close
+            dt = datetime.strptime(date_str[:10], "%Y-%m-%d")
+            # Add 18 hours so a Friday close is still fresh Monday morning
+            return dt + timedelta(hours=18)
         except (ValueError, TypeError):
             return None
-    
-    # CPI (monthly release, max 90 days - FRED data can be delayed)
+
+    # CPI (monthly release, max 90 days - BLS/FRED delay can exceed a month)
     cpi_date = _parse_date(data.get("cpi", {}).get("latest_date"))
     report.add_check(
         "CPI", cpi_date,
-        timedelta(days=90),  # Increased from config - FRED releases are often delayed
-        is_critical=False  # Non-critical - we can still compute with older data
+        timedelta(days=90),
+        is_critical=False
     )
-    
-    # PCE (monthly, non-critical if CPI present)
+
+    # PCE (monthly, BEA releases ~last business day of following month → 45d max)
     pce_date = _parse_date(data.get("pce", {}).get("latest_date"))
     report.add_check(
         "PCE", pce_date,
-        timedelta(days=CONFIG["pce_max_age_days"]),
+        timedelta(days=45),  # BEA releases Dec PCE in late Jan; allow 45d window
         is_critical=False
     )
     
@@ -146,27 +158,27 @@ def validate_data_freshness(data: Dict[str, Any]) -> FreshnessReport:
         is_critical=False  # Non-critical
     )
     
-    # DXY (daily, non-critical - we have fallbacks)
+    # DXY (daily market data — allow 3 days for weekends/holidays)
     dxy_date = _parse_date(data.get("dxy", {}).get("date"))
     report.add_check(
         "DXY", dxy_date,
-        timedelta(hours=CONFIG["dxy_max_age_hours"]),
-        is_critical=False  # Changed to non-critical since we have fallback values
+        timedelta(days=3),
+        is_critical=False
     )
-    
-    # VIX (daily, non-critical)
+
+    # VIX (daily market data — allow 3 days for weekends/holidays)
     vix_date = _parse_date(data.get("vix", {}).get("date"))
     report.add_check(
         "VIX", vix_date,
-        timedelta(hours=CONFIG["vix_max_age_hours"]),
+        timedelta(days=3),
         is_critical=False
     )
-    
-    # S&P 500 (daily, non-critical)
+
+    # S&P 500 (daily market data — allow 3 days for weekends/holidays)
     sp500_date = _parse_date(data.get("sp500", {}).get("date"))
     report.add_check(
         "S&P 500", sp500_date,
-        timedelta(hours=CONFIG["sp500_max_age_hours"]),
+        timedelta(days=3),
         is_critical=False
     )
     

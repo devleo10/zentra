@@ -72,12 +72,12 @@ def score_inflation(cpi_mom_change: float, pce_mom_change: Optional[float], oil_
     final = int(round(max(0, min(100, final))))
     
     reasoning = (
-        f"CPI MoM: {cpi_mom_change:+.2f}% → score {cpi_score} | "
-        f"PCE MoM: {pce_mom_change:+.2f}% → score {pce_score} | "
-        f"Oil Δ: {oil_change:+.2f}% → score {oil_score} | "
+        f"CPI MoM: {cpi_mom_change:+.2f}% -> score {cpi_score} | "
+        f"PCE MoM: {pce_mom_change:+.2f}% -> score {pce_score} | "
+        f"Oil Δ: {oil_change:+.2f}% -> score {oil_score} | "
         f"Weighted: {final}"
     ) if pce_mom_change is not None and oil_change is not None else (
-        f"CPI MoM: {cpi_mom_change:+.2f}% → score {cpi_score} | Weighted: {final}"
+        f"CPI MoM: {cpi_mom_change:+.2f}% -> score {cpi_score} | Weighted: {final}"
     )
     
     return final, reasoning
@@ -113,7 +113,7 @@ def score_fed_policy(dovish_count: int, hawkish_count: int, pivot_count: int) ->
     score = int(round(max(0, min(100, score + pivot_bonus))))
     
     reasoning = (
-        f"Dovish kw: {dovish_count}, Hawkish kw: {hawkish_count}, Pivot kw: {pivot_count} → "
+        f"Dovish kw: {dovish_count}, Hawkish kw: {hawkish_count}, Pivot kw: {pivot_count} -> "
         f"base + pivot_bonus({pivot_bonus}) = {score}"
     )
     
@@ -172,9 +172,9 @@ def score_liquidity(
     final = int(round(max(0, min(100, final))))
     
     reasoning = (
-        f"10Y: {yield_10y}% → {yield_score} | "
-        f"Curve spread: {yield_curve_spread} → adj {curve_adj} | "
-        f"Balance sheet: {balance_sheet_trend} → adj {bs_adj} | "
+        f"10Y: {yield_10y}% -> {yield_score} | "
+        f"Curve spread: {yield_curve_spread} -> adj {curve_adj} | "
+        f"Balance sheet: {balance_sheet_trend} -> adj {bs_adj} | "
         f"Weighted: {final}"
     )
     
@@ -201,7 +201,7 @@ def score_dxy(dxy_change_7d: float) -> Tuple[int, str]:
         (cfg["dxy_rising_fast"]["threshold"],     cfg["dxy_rising_fast"]["score"]),
     ])
     
-    reasoning = f"DXY 7D change: {dxy_change_7d:+.2f}% → score {score}"
+    reasoning = f"DXY 7D change: {dxy_change_7d:+.2f}% -> score {score}"
     return score, reasoning
 
 
@@ -257,9 +257,9 @@ def score_risk_sentiment(
     final = int(round(max(0, min(100, final))))
     
     reasoning = (
-        f"VIX: {vix} → {vix_score} | "
-        f"S&P500 Δ: {sp500_change}% → adj {sp500_adj} | "
-        f"Gold Δ: {gold_change}% → adj {gold_adj} | "
+        f"VIX: {vix} -> {vix_score} | "
+        f"S&P500 Δ: {sp500_change}% -> adj {sp500_adj} | "
+        f"Gold Δ: {gold_change}% -> adj {gold_adj} | "
         f"Weighted: {final}"
     )
     
