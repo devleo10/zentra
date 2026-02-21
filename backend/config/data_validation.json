@@ -1,0 +1,5 @@
+{
+  "dxy_tolerance_pct": 0.001,
+  "fallback_max_snapshot_age_hours": 48,
+  "use_last_snapshot_for_fallback": true
+}

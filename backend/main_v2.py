@@ -61,7 +61,10 @@ app = FastAPI(
 )
 
 # CORS middleware
-cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+cors_origins = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://localhost:3001"
+).split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
@@ -76,9 +79,12 @@ app.add_middleware(
 # ═══════════════════════════════════════════════════════════════════════════
 
 @app.post("/api/v2/analyze")
-async def v2_analyze():
+async def v2_analyze(timeframe: str = "current"):
     """
-    Run the deterministic analysis pipeline.
+    Run the deterministic analysis pipeline with timeframe support.
+    
+    Args:
+        timeframe: Analysis timeframe - 'current', 'week', 'month', or 'year'
     
     This is the new engine:
     - Numeric scoring is 100% deterministic (zero LLM)
@@ -87,9 +93,16 @@ async def v2_analyze():
     - Result is stored to SQLite automatically
     - Returns full audit trail
     """
+    # Validate timeframe
+    if timeframe not in ["current", "week", "month", "year"]:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid timeframe: {timeframe}. Must be one of: current, week, month, year"
+        )
+    
     try:
         from run_analysis import run_analysis as _run
-        result = _run()
+        result = _run(timeframe=timeframe)
         return JSONResponse(content=result, status_code=200)
     except SystemExit as e:
         raise HTTPException(
@@ -100,6 +113,160 @@ async def v2_analyze():
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@app.get("/api/v2/analyze/{timeframe}")
+async def v2_analyze_timeframe(timeframe: str):
+    """
+    Run analysis for a specific timeframe via GET request.
+    
+    Args:
+        timeframe: Analysis timeframe - 'current', 'week', 'month', or 'year'
+    """
+    if timeframe not in ["current", "week", "month", "year"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid timeframe: {timeframe}. Must be one of: current, week, month, year"
+        )
+    
+    try:
+        from run_analysis import run_analysis as _run
+        result = _run(timeframe=timeframe)
+        return JSONResponse(content=result, status_code=200)
+    except SystemExit as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Analysis aborted: critical data missing or stale (exit code {e.code})"
+        )
+    except Exception as e:
+        logger.error(f"Analysis error for timeframe {timeframe}: {e}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@app.get("/api/v2/analyze/compare")
+async def v2_compare_timeframes(
+    timeframes: str = "current,week,month"
+):
+    """
+    Compare analysis across multiple timeframes.
+    
+    Args:
+        timeframes: Comma-separated timeframes to compare (e.g., "current,week,month,year")
+    
+    Returns:
+        Comparative analysis across specified timeframes
+    """
+    try:
+        # Parse and validate timeframes
+        tf_list = [tf.strip() for tf in timeframes.split(",")]
+        valid_timeframes = ["current", "week", "month", "year"]
+        
+        for tf in tf_list:
+            if tf not in valid_timeframes:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Invalid timeframe: {tf}. Must be one of: {', '.join(valid_timeframes)}"
+                )
+        
+        from run_analysis import run_analysis as _run
+        results = {}
+        
+        for tf in tf_list:
+            try:
+                results[tf] = _run(timeframe=tf)
+            except Exception as e:
+                logger.error(f"Failed to analyze timeframe {tf}: {e}")
+                results[tf] = {"error": str(e)}
+        
+        # Add comparison summary
+        comparison = {
+            "timeframes_analyzed": tf_list,
+            "results": results,
+            "summary": _generate_comparison_summary(results),
+            "generated_at": datetime.now().isoformat()
+        }
+        
+        return JSONResponse(content=comparison, status_code=200)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Timeframe comparison error: {e}")
+        raise HTTPException(status_code=500, detail=f"Comparison failed: {str(e)}")
+
+
+def _generate_comparison_summary(results: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Generate a summary comparing results across timeframes.
+    """
+    valid_results = {k: v for k, v in results.items() if "error" not in v}
+    
+    if not valid_results:
+        return {"error": "No valid results to compare"}
+    
+    # Extract scores and biases
+    scores = {tf: result.get("final_score", 50) for tf, result in valid_results.items()}
+    biases = {tf: result.get("bias", "Unknown") for tf, result in valid_results.items()}
+    confidence_scores = {tf: result.get("confidence_pct", 50) for tf, result in valid_results.items()}
+    
+    # Calculate trends
+    score_values = list(scores.values())
+    if len(score_values) >= 2:
+        score_trend = "improving" if score_values[-1] > score_values[0] else "deteriorating" if score_values[-1] < score_values[0] else "stable"
+        score_volatility = max(score_values) - min(score_values)
+    else:
+        score_trend = "insufficient_data"
+        score_volatility = 0
+    
+    # Check bias consistency
+    unique_biases = set(biases.values())
+    bias_consistent = len(unique_biases) == 1
+    
+    # Average confidence
+    avg_confidence = sum(confidence_scores.values()) / len(confidence_scores) if confidence_scores else 0
+    
+    return {
+        "score_analysis": {
+            "scores": scores,
+            "trend": score_trend,
+            "volatility": score_volatility,
+            "range": f"{min(score_values)}-{max(score_values)}" if score_values else "N/A"
+        },
+        "bias_analysis": {
+            "biases": biases,
+            "consistent": bias_consistent,
+            "unique_biases": list(unique_biases)
+        },
+        "confidence_analysis": {
+            "scores": confidence_scores,
+            "average": round(avg_confidence, 1),
+            "stability": "high" if max(confidence_scores.values()) - min(confidence_scores.values()) < 10 else "medium" if max(confidence_scores.values()) - min(confidence_scores.values()) < 25 else "low"
+        },
+        "recommendation": _generate_timeframe_recommendation(scores, biases, avg_confidence)
+    }
+
+
+def _generate_timeframe_recommendation(scores: Dict, biases: Dict, avg_confidence: float) -> str:
+    """
+    Generate a recommendation based on timeframe comparison.
+    """
+    if not scores:
+        return "Insufficient data for recommendation"
+    
+    score_values = list(scores.values())
+    unique_biases = set(biases.values())
+    
+    if len(unique_biases) == 1:
+        dominant_bias = list(unique_biases)[0]
+        if avg_confidence > 70:
+            return f"Strong consensus: {dominant_bias} bias across all timeframes with high confidence ({avg_confidence:.1f}%)"
+        else:
+            return f"Consensus: {dominant_bias} bias across timeframes but with moderate confidence ({avg_confidence:.1f}%)"
+    else:
+        volatility = max(score_values) - min(score_values)
+        if volatility > 30:
+            return "High uncertainty: Conflicting signals across timeframes suggest caution"
+        else:
+            return "Mixed signals: Consider focusing on longer-term trends for clearer direction"
 
 
 @app.get("/api/v2/history")
@@ -169,9 +336,16 @@ async def root():
         "status": "running",
         "endpoints": {
             "/api/v2/analyze": "Run deterministic analysis (recommended)",
+            "/api/v2/analyze/{timeframe}": "Run analysis for specific timeframe (current/week/month/year)",
+            "/api/v2/analyze/compare": "Compare analysis across multiple timeframes",
             "/api/v2/history": "View past analysis results",
             "/api/v2/config": "View scoring configuration",
             "/api/health": "Health check",
+        },
+        "timeframes": ["current", "week", "month", "year"],
+        "examples": {
+            "single_timeframe": "/api/v2/analyze/week",
+            "compare_timeframes": "/api/v2/analyze/compare?timeframes=current,week,month"
         }
     }
 

@@ -8,11 +8,23 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, Optional
+import json
+from pathlib import Path
 
 logger = logging.getLogger("btc_macro.data_fetchers.yahoo")
 
-# Absolute tolerance (index points) for DXY validation against alternate sources
-DXY_VALIDATION_TOLERANCE = 0.1
+# Load data validation config (fallbacks, tolerances)
+try:
+    cfg_path = Path(__file__).parent.parent / "config" / "data_validation.json"
+    _CFG = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+except Exception:
+    _CFG = {}
+
+# DXY tolerance: 0.05 = 5% relative difference. DX-Y.NYB vs UUP naturally differ ~2-4%
+# because UUP is an ETF with a different NAV scale. We only flag egregious divergences.
+DXY_VALIDATION_TOLERANCE_PCT = float(_CFG.get("dxy_tolerance_pct", 0.05))
+FALLBACK_MAX_SNAPSHOT_AGE_HOURS = int(_CFG.get("fallback_max_snapshot_age_hours", 48))
+USE_LAST_SNAPSHOT_FOR_FALLBACK = bool(_CFG.get("use_last_snapshot_for_fallback", True))
 
 
 def _safe_date_str(ts) -> str:
@@ -54,17 +66,38 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
             if not hist.empty:
                 break
         else:
-            # Fallback: return mock data with warning
-            return {
-                "current_price": 104.0,
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "comparison_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
-                "change": 0.0,
-                "trend": "stable",
-                "timeframe": timeframe,
-                "_fallback": True,
-                "_warning": "Using fallback DXY value - all tickers unavailable"
-            }
+            # No live tickers returned. Attempt last-snapshot fallback if configured.
+            if USE_LAST_SNAPSHOT_FOR_FALLBACK:
+                try:
+                    from storage.db import get_latest_snapshots
+                    snaps = get_latest_snapshots(1)
+                    if snaps:
+                        snap = snaps[0]
+                        dxy_val = snap.get("dxy_value")
+                        timestamp = snap.get("timestamp")
+                        if dxy_val is not None:
+                            # Check freshness of snapshot
+                            try:
+                                snap_time = datetime.fromisoformat(timestamp)
+                                age_hours = (datetime.now() - snap_time).total_seconds() / 3600.0
+                            except Exception:
+                                age_hours = float('inf')
+                            if age_hours <= FALLBACK_MAX_SNAPSHOT_AGE_HOURS:
+                                logger.warning("Using last snapshot DXY fallback (age %.1f h)", age_hours)
+                                return {
+                                    "current_price": float(dxy_val),
+                                    "date": timestamp,
+                                    "comparison_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+                                    "change": 0.0,
+                                    "trend": "stable",
+                                    "timeframe": timeframe,
+                                    "_fallback": True,
+                                    "_fallback_source": "last_snapshot",
+                                }
+                except Exception:
+                    logger.exception("Error attempting last-snapshot fallback for DXY")
+
+            return {"error": "No DXY tickers available and no valid snapshot fallback", "timeframe": timeframe}
 
         if hist.empty:
             return {"error": "No DXY data available", "timeframe": timeframe}
@@ -92,12 +125,14 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
                     alt_hist = alt_t.history(period="1d")
                     if not alt_hist.empty:
                         alt_price = float(alt_hist.iloc[-1]["Close"])
-                        diff = abs(current_price - alt_price)
-                        validation["details"].append({"source": alt, "price": alt_price, "diff": round(diff, 4)})
-                        if diff > DXY_VALIDATION_TOLERANCE:
+                        diff_pct = abs(current_price - alt_price) / max(alt_price, 1e-9)
+                        validation["details"].append({"source": alt, "price": alt_price, "diff_pct": round(diff_pct, 6)})
+                        if diff_pct > DXY_VALIDATION_TOLERANCE_PCT:
                             validation["validated"] = False
-                            validation["reason"] = f"Difference {diff} exceeds tolerance {DXY_VALIDATION_TOLERANCE}"
-                            logger.warning(f"DXY validation failed vs {alt}: primary={current_price} alt={alt_price} diff={diff}")
+                            validation["reason"] = f"Difference {diff_pct:.6f} exceeds tolerance {DXY_VALIDATION_TOLERANCE_PCT} (pct)"
+                            logger.warning(
+                                f"DXY validation failed vs {alt}: primary={current_price} alt={alt_price} diff_pct={diff_pct:.6f}"
+                            )
                             break
                 except Exception:
                     # ignore alt source failures, continue to next
@@ -124,7 +159,7 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
             logger.warning("Primary DXY validation failed for %s; attempting FRED fallback", symbol)
             # Attempt fallback via FRED (generic series) if possible
             try:
-                from backend.data_fetchers.fred_data import get_fred_series
+                from data_fetchers.fred_data import get_fred_series
                 fred_res = get_fred_series("DTWEXBGS", timeframe=timeframe)
                 if fred_res and fred_res.get("value") is not None:
                     logger.info("DXY fallback success using FRED series DTWEXBGS: %s", fred_res.get("value"))
