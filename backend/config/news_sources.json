@@ -1,0 +1,9 @@
+{
+  "high_authority_sources": ["Reuters", "Bloomberg", "Associated Press", "AP", "Wall Street Journal", "WSJ", "CNBC", "Federal Reserve", "Fed", "BLS", "BEA"],
+  "rss_feeds": {
+    "cnbc": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+    "reuters": "https://www.reutersagency.com/feed/?best-topics=business-finance",
+    "federal_reserve": "https://www.federalreserve.gov/feeds/press_releases.xml",
+    "bls": "https://www.bls.gov/feed/"
+  }
+}

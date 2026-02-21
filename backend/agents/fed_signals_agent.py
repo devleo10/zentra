@@ -48,8 +48,8 @@ class FedSignalsAgent(BaseAgent):
         data_sources = data.get("_data_sources", [])
         source = data_sources[0] if data_sources else SignalValidator.create_data_source("NewsAPI")
         
-        dovish_count = keyword_analysis.get("dovish_count", 0)
-        hawkish_count = keyword_analysis.get("hawkish_count", 0)
+        dovish_count = keyword_analysis.get("dovish_keywords_found", 0)
+        hawkish_count = keyword_analysis.get("hawkish_keywords_found", 0)
         
         if dovish_count > hawkish_count:
             validated_signals.append(ValidatedSignal(
