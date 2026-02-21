@@ -49,9 +49,11 @@ class DXYAgent(BaseAgent):
         change = dxy.get("change", dxy.get("week_change", 0))
         
         if current_price and abs(change) >= 0.5:
+            # Correct calculation: if current = previous * (1 + change/100), then previous = current / (1 + change/100)
+            previous_price = current_price / (1 + change/100) if change != -100 else current_price
             signal = validator.validate_dxy_trend(
                 current_price,
-                current_price * (1 - change/100),  # Approximate comparison price
+                previous_price,
                 source
             )
             validated_signals.append(signal)
