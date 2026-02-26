@@ -105,21 +105,29 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
         latest = hist.iloc[-1]
         comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
         comparison_idx = min(comparison_days, len(hist) - 1)
-        comparison = hist.iloc[-comparison_idx - 1] if len(hist) > comparison_idx else latest
+        
+        # Avoid comparing a row to itself (produces change=0 always)
+        if len(hist) > 1:
+            comparison = hist.iloc[-comparison_idx - 1] if len(hist) > comparison_idx else hist.iloc[0]
+        else:
+            comparison = latest
+            logger.warning("DXY history has only 1 row; change will be 0 (insufficient data)")
 
         current_price = float(latest["Close"])
         comparison_price = float(comparison["Close"])
-        change = ((current_price - comparison_price) / comparison_price) * 100
+        change = ((current_price - comparison_price) / comparison_price) * 100 if comparison_price else 0.0
 
         # Log source and value for auditing
         logger.info(f"DXY fetched from {symbol}: {current_price} (date={_safe_date_str(latest.name)})")
 
-        # Lightweight validation: compare against alternate sources where possible
+        # Lightweight validation: only compare same-scale DXY tickers.
+        # UUP is an ETF (~28) and cannot be compared to DX-Y.NYB (~104) — different scales.
+        # Only cross-validate between DX-Y.NYB and DX=F which are both the DXY index.
+        SAME_SCALE_ALTS = {"DX-Y.NYB": ["DX=F"], "DX=F": ["DX-Y.NYB"]}
         validation = {"validated": True, "details": []}
         try:
-            for alt in ["DX=F", "DX-Y.NYB", "UUP"]:
-                if alt == symbol:
-                    continue
+            alts_to_check = SAME_SCALE_ALTS.get(symbol, [])
+            for alt in alts_to_check:
                 try:
                     alt_t = yf.Ticker(alt)
                     alt_hist = alt_t.history(period="1d")
@@ -135,10 +143,8 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
                             )
                             break
                 except Exception:
-                    # ignore alt source failures, continue to next
                     continue
         except Exception:
-            # validation subsystem should not crash main flow
             logger.exception("DXY validation subsystem error")
 
         result = {
@@ -152,28 +158,18 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
             "_validation": validation,
         }
 
-        # If validation failed, mark suspect and include fallback hint
+        # If validation failed, mark suspect but keep the primary value.
+        # Do NOT replace the DXY value with DTWEXBGS — that is a different index
+        # (broad trade-weighted dollar, ~120) and would show a wrong number to the client.
+        # Instead, log a warning and let the primary value through with a suspect flag.
         if not validation.get("validated", True):
             result["_suspect"] = True
-            result["_warning"] = "DXY value validation failed against alternate sources"
-            logger.warning("Primary DXY validation failed for %s; attempting FRED fallback", symbol)
-            # Attempt fallback via FRED (generic series) if possible
-            try:
-                from data_fetchers.fred_data import get_fred_series
-                fred_res = get_fred_series("DTWEXBGS", timeframe=timeframe)
-                if fred_res and fred_res.get("value") is not None:
-                    logger.info("DXY fallback success using FRED series DTWEXBGS: %s", fred_res.get("value"))
-                    result.update({
-                        "current_price": round(float(fred_res.get("value")), 2),
-                        "date": fred_res.get("date"),
-                        "source": "FRED",
-                        "_fallback": True,
-                        "_fallback_source": "FRED:DTWEXBGS",
-                    })
-                else:
-                    logger.warning("FRED fallback for DXY returned no usable value: %s", fred_res)
-            except Exception:
-                logger.exception("Error during DXY FRED fallback attempt")
+            result["_warning"] = "DXY cross-validation failed vs alternate ticker; using primary value"
+            logger.warning(
+                "DXY cross-validation failed for %s (primary=%.2f). "
+                "Keeping primary value — DTWEXBGS fallback suppressed (different index scale).",
+                symbol, current_price
+            )
 
         return result
     except Exception as e:
@@ -207,7 +203,10 @@ def get_vix_data(timeframe: str = "current") -> Dict:
         latest = hist.iloc[-1]
         comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 1)
         comparison_idx = min(comparison_days, len(hist) - 1)
-        comparison = hist.iloc[-comparison_idx - 1] if len(hist) > comparison_idx else latest
+        if len(hist) > 1:
+            comparison = hist.iloc[-comparison_idx - 1] if len(hist) > comparison_idx else hist.iloc[0]
+        else:
+            comparison = latest
 
         current_vix = float(latest["Close"])
         comparison_vix = float(comparison["Close"])
@@ -252,11 +251,14 @@ def get_sp500_data(timeframe: str = "current") -> Dict:
         latest = hist.iloc[-1]
         comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
         comparison_idx = min(comparison_days, len(hist) - 1)
-        comparison = hist.iloc[-comparison_idx - 1] if len(hist) > comparison_idx else latest
+        if len(hist) > 1:
+            comparison = hist.iloc[-comparison_idx - 1] if len(hist) > comparison_idx else hist.iloc[0]
+        else:
+            comparison = latest
 
         current_price = float(latest["Close"])
         comparison_price = float(comparison["Close"])
-        change = ((current_price - comparison_price) / comparison_price) * 100
+        change = ((current_price - comparison_price) / comparison_price) * 100 if comparison_price else 0.0
 
         return {
             "current_price": round(current_price, 2),
@@ -296,11 +298,14 @@ def get_gold_data(timeframe: str = "current") -> Dict:
         latest = hist.iloc[-1]
         comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
         comparison_idx = min(comparison_days, len(hist) - 1)
-        comparison = hist.iloc[-comparison_idx - 1] if len(hist) > comparison_idx else latest
+        if len(hist) > 1:
+            comparison = hist.iloc[-comparison_idx - 1] if len(hist) > comparison_idx else hist.iloc[0]
+        else:
+            comparison = latest
 
         current_price = float(latest["Close"])
         comparison_price = float(comparison["Close"])
-        change = ((current_price - comparison_price) / comparison_price) * 100
+        change = ((current_price - comparison_price) / comparison_price) * 100 if comparison_price else 0.0
 
         return {
             "current_price": round(current_price, 2),

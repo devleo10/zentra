@@ -7,7 +7,7 @@ from typing import Dict, Any
 from .base_agent import BaseAgent
 from .signal_validator import SignalValidator
 from models.schemas import ValidatedSignal, DataSource, SignalValidationStatus
-from data_fetchers import fred_data, yahoo_data
+from data_fetchers import fred_data
 from typing import List
 from datetime import datetime
 
@@ -22,7 +22,7 @@ class InflationAgent(BaseAgent):
         """Fetch inflation and economic data with timeframe support"""
         cpi = fred_data.get_cpi_data(timeframe)
         pce = fred_data.get_pce_data(timeframe)
-        oil = yahoo_data.get_gold_data(timeframe)
+        oil = fred_data.get_oil_data(timeframe)
         
         # Create data sources
         cpi_date_str = cpi.get("latest_date")
@@ -31,11 +31,16 @@ class InflationAgent(BaseAgent):
         except (ValueError, TypeError):
             cpi_date = datetime.now()
         
+        cpi_source_name = cpi.get("source", "FRED")
+        if cpi_source_name == "BLS":
+            ds_name, ds_series, ds_url = "BLS", "CUSR0000SA0", "https://www.bls.gov/cpi/"
+        else:
+            ds_name, ds_series, ds_url = "FRED", "CPIAUCSL", "https://fred.stlouisfed.org/series/CPIAUCSL"
         data_sources = [
             SignalValidator.create_data_source(
-                name="FRED",
-                series_id="CPIAUCSL",
-                url="https://fred.stlouisfed.org/series/CPIAUCSL",
+                name=ds_name,
+                series_id=ds_series,
+                url=ds_url,
                 data_as_of=cpi_date
             )
         ]
