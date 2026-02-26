@@ -33,6 +33,10 @@ def score_inflation(cpi_mom_change: float, pce_mom_change: Optional[float], oil_
     """
     cfg = CONFIG["inflation_thresholds"]
     
+    # Guard: treat None as 0 (neutral)
+    if cpi_mom_change is None:
+        cpi_mom_change = 0.0
+    
     # Score CPI
     cpi_score = _threshold_score(cpi_mom_change, [
         (cfg["cpi_mom_falling_fast"]["threshold"], cfg["cpi_mom_falling_fast"]["score"]),
@@ -71,13 +75,14 @@ def score_inflation(cpi_mom_change: float, pce_mom_change: Optional[float], oil_
     )
     final = int(round(max(0, min(100, final))))
     
+    _cpi_str = f"{cpi_mom_change:+.2f}%" if cpi_mom_change is not None else "N/A"
+    _pce_str = f"{pce_mom_change:+.2f}%" if pce_mom_change is not None else "N/A"
+    _oil_str = f"{oil_change:+.2f}%" if oil_change is not None else "N/A"
     reasoning = (
-        f"CPI MoM: {cpi_mom_change:+.2f}% -> score {cpi_score} | "
-        f"PCE MoM: {pce_mom_change:+.2f}% -> score {pce_score} | "
-        f"Oil Δ: {oil_change:+.2f}% -> score {oil_score} | "
+        f"CPI MoM: {_cpi_str} -> score {cpi_score} | "
+        f"PCE MoM: {_pce_str} -> score {pce_score} | "
+        f"Oil Δ: {_oil_str} -> score {oil_score} | "
         f"Weighted: {final}"
-    ) if pce_mom_change is not None and oil_change is not None else (
-        f"CPI MoM: {cpi_mom_change:+.2f}% -> score {cpi_score} | Weighted: {final}"
     )
     
     return final, reasoning
@@ -181,28 +186,60 @@ def score_liquidity(
     return final, reasoning
 
 
-def score_dxy(dxy_change_7d: float) -> Tuple[int, str]:
+def score_dxy(dxy_change_7d: float, dxy_level: Optional[float] = None) -> Tuple[int, str]:
     """
-    Score DXY section deterministically.
-    
+    Score DXY section deterministically using both momentum and absolute level.
+
     Args:
-        dxy_change_7d: DXY percentage change over 7 days
-    
+        dxy_change_7d: DXY percentage change over comparison period
+        dxy_level: Current DXY absolute value (e.g. 104.2). If None, only change is used.
+
     Returns:
         (score 0-100, reasoning string)
     """
     cfg = CONFIG["dxy_thresholds"]
-    
-    score = _threshold_score(dxy_change_7d, [
+
+    # Momentum score from 7-day change
+    change_score = _threshold_score(dxy_change_7d, [
         (cfg["dxy_falling_fast"]["threshold"],  cfg["dxy_falling_fast"]["score"]),
         (cfg["dxy_falling"]["threshold"],        cfg["dxy_falling"]["score"]),
         (cfg["dxy_flat"]["threshold"],            cfg["dxy_flat"]["score"]),
         (cfg["dxy_rising"]["threshold"],          cfg["dxy_rising"]["score"]),
         (cfg["dxy_rising_fast"]["threshold"],     cfg["dxy_rising_fast"]["score"]),
     ])
-    
-    reasoning = f"DXY 7D change: {dxy_change_7d:+.2f}% -> score {score}"
-    return score, reasoning
+
+    if dxy_level is None:
+        reasoning = f"DXY 7D change: {dxy_change_7d:+.2f}% -> score {change_score} (no level data)"
+        return change_score, reasoning
+
+    # Level adjustment: higher DXY = stronger dollar = worse for BTC
+    level_adj = cfg["dxy_level_very_strong"]["adjustment"]  # default: very strong
+    level_brackets = [
+        (cfg["dxy_level_very_weak"]["threshold"],   cfg["dxy_level_very_weak"]["adjustment"]),
+        (cfg["dxy_level_weak"]["threshold"],         cfg["dxy_level_weak"]["adjustment"]),
+        (cfg["dxy_level_neutral_low"]["threshold"],  cfg["dxy_level_neutral_low"]["adjustment"]),
+        (cfg["dxy_level_neutral"]["threshold"],      cfg["dxy_level_neutral"]["adjustment"]),
+        (cfg["dxy_level_strong"]["threshold"],       cfg["dxy_level_strong"]["adjustment"]),
+        (cfg["dxy_level_very_strong"]["threshold"],  cfg["dxy_level_very_strong"]["adjustment"]),
+    ]
+    for threshold, adj in level_brackets:
+        if dxy_level <= threshold:
+            level_adj = adj
+            break
+
+    # Weighted blend of change score and level-adjusted score
+    change_weight = cfg.get("change_weight", 0.6)
+    level_weight = cfg.get("level_weight", 0.4)
+    level_score = max(0, min(100, 50 + level_adj))
+    final = int(round(change_score * change_weight + level_score * level_weight))
+    final = max(0, min(100, final))
+
+    reasoning = (
+        f"DXY level: {dxy_level:.1f} -> level_adj {level_adj:+d} (level_score={level_score}) | "
+        f"7D change: {dxy_change_7d:+.2f}% -> change_score={change_score} | "
+        f"Weighted ({change_weight:.0%}/{level_weight:.0%}): {final}"
+    )
+    return final, reasoning
 
 
 def score_risk_sentiment(
