@@ -31,7 +31,7 @@
   },
 
   "fed_policy_thresholds": {
-    "_doc": "Keyword-based scoring. Dovish = bullish for BTC. Counts are from headline keyword matching.",
+    "_doc": "Keyword-based base score + Fed Funds Rate level and direction adjustments. Dovish/low rate = bullish for BTC.",
     "dovish_strong": { "min_dovish": 4, "max_hawkish": 1, "score": 90 },
     "dovish":        { "min_dovish": 2, "max_hawkish": 1, "score": 75 },
     "neutral":       { "score": 50 },
@@ -39,7 +39,22 @@
     "hawkish_strong":{ "min_hawkish": 4, "max_dovish": 1, "score": 10 },
 
     "pivot_keyword_bonus": 10,
-    "max_pivot_bonus": 20
+    "max_pivot_bonus": 20,
+
+    "_doc_rate": "Fed Funds Rate level adjustments applied on top of keyword base score.",
+    "fed_rate_very_low_threshold": 1.0,
+    "fed_rate_low_threshold": 2.5,
+    "fed_rate_neutral_threshold": 4.0,
+    "fed_rate_high_threshold": 5.5,
+    "fed_rate_very_low_adj": 20,
+    "fed_rate_low_adj": 10,
+    "fed_rate_neutral_adj": 0,
+    "fed_rate_high_adj": -10,
+    "fed_rate_very_high_adj": -20,
+    "fed_rate_falling_bonus": 10,
+    "fed_rate_rising_penalty": -10,
+    "fed_rate_max_total_adj": 25,
+    "fed_rate_min_total_adj": -25
   },
 
   "liquidity_thresholds": {
@@ -61,12 +76,23 @@
   },
 
   "dxy_thresholds": {
-    "_doc": "DXY change over 7 days (percentage). Falling DXY = bullish for BTC.",
+    "_doc": "DXY scoring uses both 7-day change (momentum) and absolute level. Falling/weak DXY = bullish for BTC.",
     "dxy_falling_fast":  { "threshold": -2.0, "score": 95 },
     "dxy_falling":       { "threshold": -0.5, "score": 75 },
     "dxy_flat":          { "threshold":  0.5, "score": 50 },
     "dxy_rising":        { "threshold":  2.0, "score": 25 },
-    "dxy_rising_fast":   { "threshold":  999, "score": 5 }
+    "dxy_rising_fast":   { "threshold":  999, "score": 5 },
+
+    "_doc_level": "Absolute DXY level adjustments. DXY > 105 = strong dollar headwind, < 95 = weak dollar tailwind.",
+    "dxy_level_very_weak":   { "threshold":  90, "adjustment":  15 },
+    "dxy_level_weak":        { "threshold":  95, "adjustment":  10 },
+    "dxy_level_neutral_low": { "threshold": 100, "adjustment":   5 },
+    "dxy_level_neutral":     { "threshold": 104, "adjustment":   0 },
+    "dxy_level_strong":      { "threshold": 107, "adjustment": -10 },
+    "dxy_level_very_strong": { "threshold": 999, "adjustment": -15 },
+
+    "change_weight": 0.6,
+    "level_weight":  0.4
   },
 
   "risk_sentiment_thresholds": {
@@ -109,11 +135,13 @@
   },
 
   "bias_thresholds": {
-    "strong_bull":  { "min": 80 },
-    "bullish":      { "min": 65 },
-    "neutral":      { "min": 40 },
-    "bearish":      { "min": 20 },
-    "high_risk":    { "min": 0 }
+    "strong_bull":        { "min": 80 },
+    "bullish":            { "min": 70 },
+    "cautiously_bullish": { "min": 60 },
+    "neutral_upside":     { "min": 50 },
+    "neutral_downside":   { "min": 40 },
+    "bearish":            { "min": 25 },
+    "high_risk":          { "min": 0 }
   },
 
   "confidence_formula": {

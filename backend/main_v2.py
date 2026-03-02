@@ -115,34 +115,6 @@ async def v2_analyze(timeframe: str = "current"):
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
-@app.get("/api/v2/analyze/{timeframe}")
-async def v2_analyze_timeframe(timeframe: str):
-    """
-    Run analysis for a specific timeframe via GET request.
-    
-    Args:
-        timeframe: Analysis timeframe - 'current', 'week', 'month', or 'year'
-    """
-    if timeframe not in ["current", "week", "month", "year"]:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid timeframe: {timeframe}. Must be one of: current, week, month, year"
-        )
-    
-    try:
-        from run_analysis import run_analysis as _run
-        result = _run(timeframe=timeframe)
-        return JSONResponse(content=result, status_code=200)
-    except SystemExit as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Analysis aborted: critical data missing or stale (exit code {e.code})"
-        )
-    except Exception as e:
-        logger.error(f"Analysis error for timeframe {timeframe}: {e}")
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
-
-
 @app.get("/api/v2/analyze/compare")
 async def v2_compare_timeframes(
     timeframes: str = "current,week,month"
@@ -192,6 +164,37 @@ async def v2_compare_timeframes(
     except Exception as e:
         logger.error(f"Timeframe comparison error: {e}")
         raise HTTPException(status_code=500, detail=f"Comparison failed: {str(e)}")
+
+
+@app.get("/api/v2/analyze/{timeframe}")
+async def v2_analyze_timeframe(timeframe: str):
+    """
+    Run analysis for a specific timeframe via GET request.
+
+    Must be registered AFTER /api/v2/analyze/compare so FastAPI does not
+    capture 'compare' as a timeframe path parameter.
+
+    Args:
+        timeframe: Analysis timeframe - 'current', 'week', 'month', or 'year'
+    """
+    if timeframe not in ["current", "week", "month", "year"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid timeframe: {timeframe}. Must be one of: current, week, month, year"
+        )
+
+    try:
+        from run_analysis import run_analysis as _run
+        result = _run(timeframe=timeframe)
+        return JSONResponse(content=result, status_code=200)
+    except SystemExit as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Analysis aborted: critical data missing or stale (exit code {e.code})"
+        )
+    except Exception as e:
+        logger.error(f"Analysis error for timeframe {timeframe}: {e}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
 def _generate_comparison_summary(results: Dict[str, Any]) -> Dict[str, Any]:
@@ -278,7 +281,8 @@ async def v2_history(limit: int = 10):
         # Parse JSON strings back to dicts
         for s in snapshots:
             for key in ["section_scores", "section_reasoning", "score_breakdown",
-                        "headlines_classified", "data_freshness_info"]:
+                        "headlines_classified", "data_freshness_info",
+                        "headline_report_meta"]:
                 if isinstance(s.get(key), str):
                     try:
                         s[key] = json.loads(s[key])
@@ -299,7 +303,8 @@ async def v2_history_detail(snapshot_id: int):
             raise HTTPException(status_code=404, detail=f"Snapshot {snapshot_id} not found")
         # Parse JSON strings
         for key in ["section_scores", "section_reasoning", "score_breakdown",
-                     "headlines_classified", "data_freshness_info"]:
+                     "headlines_classified", "data_freshness_info",
+                     "headline_report_meta"]:
             if isinstance(snapshot.get(key), str):
                 try:
                     snapshot[key] = json.loads(snapshot[key])
@@ -365,6 +370,7 @@ async def health_check():
         services["llm"] = "missing_key"
 
     services["fred"] = "ok" if os.getenv("FRED_API_KEY") else "missing_key"
+    services["bls"] = "ok" if os.getenv("BLS_API_KEY") else "optional (FRED fallback available)"
     services["newsapi"] = "ok" if os.getenv("NEWS_API_KEY") else "optional (Google RSS fallback available)"
 
     sqlite_db = Path(__file__).parent / "storage" / "macro_snapshots.db"
