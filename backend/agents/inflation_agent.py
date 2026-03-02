@@ -53,29 +53,89 @@ class InflationAgent(BaseAgent):
         }
     
     def validate_signals(self, data: Dict[str, Any]) -> List[ValidatedSignal]:
-        """Validate inflation signals"""
+        """Validate inflation signals: CPI, PCE, and oil price change."""
         validated_signals = []
-        validator = SignalValidator()
-        
+        data_sources = data.get("_data_sources", [])
+        cpi_source = data_sources[0] if data_sources else SignalValidator.create_data_source("FRED")
+
+        # 1. CPI MoM trend
         cpi = data.get("cpi", {})
-        cpi_change = cpi.get("change", cpi.get("mom_change", None))
-        if cpi.get("latest_value") and cpi_change is not None:
-            data_sources = data.get("_data_sources", [])
-            cpi_source = data_sources[0] if data_sources else SignalValidator.create_data_source("FRED")
-            
+        cpi_change = cpi.get("change", cpi.get("mom_change"))
+        if cpi.get("latest_value") is not None and cpi_change is not None:
             trend = cpi.get("trend", "falling" if cpi_change < 0 else "rising")
             validated_signals.append(ValidatedSignal(
-                name=f"CPI {trend}",
-                value=cpi.get("latest_value"),
+                name=f"CPI MoM {trend} ({cpi_change:+.3f}%)",
+                value=float(cpi.get("latest_value")),
                 previous_value=None,
                 trend_direction="down" if cpi_change < 0 else "up",
                 validation_status=SignalValidationStatus.VALIDATED,
-                validation_check=f"change={cpi_change:.2f}%",
+                validation_check=f"CPI MoM change = {cpi_change:+.3f}%",
                 validation_result=True,
                 score_contribution=15.0 if cpi_change < 0 else 0.0,
-                data_source=cpi_source
+                data_source=cpi_source,
             ))
-        
+
+        # 2. PCE MoM trend
+        pce = data.get("pce", {})
+        pce_change = pce.get("change", pce.get("mom_change"))
+        if pce_change is not None and not pce.get("error"):
+            pce_trend = "falling" if pce_change < 0 else "rising" if pce_change > 0 else "flat"
+            is_bullish_pce = pce_change < 0
+            validated_signals.append(ValidatedSignal(
+                name=f"PCE MoM {pce_trend} ({pce_change:+.3f}%)",
+                value=float(pce.get("latest_value", 0) or 0),
+                previous_value=None,
+                trend_direction="down" if pce_change < 0 else "up",
+                validation_status=SignalValidationStatus.VALIDATED,
+                validation_check=f"PCE MoM change = {pce_change:+.3f}%",
+                validation_result=is_bullish_pce,
+                score_contribution=10.0 if is_bullish_pce else 0.0,
+                data_source=SignalValidator.create_data_source(
+                    "FRED", "PCEPI", "https://fred.stlouisfed.org/series/PCEPI"
+                ),
+                notes=None if is_bullish_pce else "PCE rising — potential inflation persistence",
+            ))
+
+        # 3. Oil price change
+        oil = data.get("oil", {})
+        oil_change = oil.get("change")
+        if oil_change is not None and not oil.get("error"):
+            # Falling oil = bullish (lower energy costs → lower inflation pressure)
+            if oil_change <= -5.0:
+                oil_label = f"falling sharply ({oil_change:+.1f}%)"
+                oil_contrib = 12.0
+                oil_status = SignalValidationStatus.VALIDATED
+                oil_valid = True
+            elif oil_change < 0:
+                oil_label = f"falling ({oil_change:+.1f}%)"
+                oil_contrib = 6.0
+                oil_status = SignalValidationStatus.VALIDATED
+                oil_valid = True
+            elif oil_change >= 10.0:
+                oil_label = f"surging ({oil_change:+.1f}%) — inflation risk"
+                oil_contrib = 0.0
+                oil_status = SignalValidationStatus.INVALIDATED
+                oil_valid = False
+            else:
+                oil_label = f"stable/rising ({oil_change:+.1f}%)"
+                oil_contrib = 3.0
+                oil_status = SignalValidationStatus.VALIDATED
+                oil_valid = True
+
+            validated_signals.append(ValidatedSignal(
+                name=f"WTI Oil {oil_label}",
+                value=float(oil.get("current_price", 0) or 0),
+                previous_value=None,
+                trend_direction="down" if oil_change < 0 else "up",
+                validation_status=oil_status,
+                validation_check=f"oil_change={oil_change:+.1f}% (bullish if < 0, INVALIDATED if >= 10%)",
+                validation_result=oil_valid,
+                score_contribution=oil_contrib,
+                data_source=SignalValidator.create_data_source(
+                    "FRED", "DCOILWTICO", "https://fred.stlouisfed.org/series/DCOILWTICO"
+                ),
+            ))
+
         return validated_signals
     
     def create_prompt(self) -> PromptTemplate:

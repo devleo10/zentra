@@ -174,11 +174,17 @@ class BaseAgent(ABC):
         """Format validated signals for prompt"""
         lines = []
         for sig in signals:
-            status_icon = "✓" if sig.validation_status.value == "validated" else "✗"
+            status = sig.validation_status.value
+            if status == "validated":
+                status_icon = "✓"
+            elif status == "invalidated":
+                status_icon = "✗✗"
+            else:
+                status_icon = "✗"
             lines.append(
                 f"{status_icon} {sig.name}: {sig.value} "
                 f"(previous: {sig.previous_value}, trend: {sig.trend_direction}) "
-                f"[Status: {sig.validation_status.value}, Contribution: {sig.score_contribution:.1f}]"
+                f"[Status: {status}, Contribution: {sig.score_contribution:.1f}]"
             )
             if sig.notes:
                 lines.append(f"  Note: {sig.notes}")
@@ -202,12 +208,14 @@ class BaseAgent(ABC):
         # Create validation summary
         validated_count = sum(1 for s in validated_signals if s.validation_status.value == "validated")
         neutralized_count = sum(1 for s in validated_signals if s.validation_status.value == "neutralized")
+        invalidated_count = sum(1 for s in validated_signals if s.validation_status.value == "invalidated")
         total_score_contribution = sum(s.score_contribution for s in validated_signals)
-        
+
         validation_summary = {
             "total_signals": len(validated_signals),
             "validated": validated_count,
             "neutralized": neutralized_count,
+            "invalidated": invalidated_count,
             "total_contribution": round(total_score_contribution, 1),
             "validation_rate": round((validated_count / len(validated_signals) * 100) if validated_signals else 0, 1)
         }

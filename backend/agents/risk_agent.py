@@ -6,7 +6,7 @@ from typing import Dict, Any
 
 from .base_agent import BaseAgent
 from .signal_validator import SignalValidator
-from models.schemas import ValidatedSignal, DataSource
+from models.schemas import ValidatedSignal, DataSource, SignalValidationStatus
 from data_fetchers import yahoo_data
 from typing import List
 from datetime import datetime
@@ -36,19 +36,108 @@ class RiskAgent(BaseAgent):
         }
     
     def validate_signals(self, data: Dict[str, Any]) -> List[ValidatedSignal]:
-        """Validate risk sentiment signals"""
+        """Validate risk sentiment signals: VIX level, S&P 500 trend, and gold safe-haven signal."""
         validated_signals = []
         validator = SignalValidator()
         vix = data.get("vix", {})
-        
+        sp500 = data.get("sp500", {})
+        gold = data.get("gold", {})
+
         data_sources = data.get("_data_sources", [])
-        source = data_sources[0] if data_sources else SignalValidator.create_data_source("CBOE")
-        
+        vix_source = data_sources[0] if data_sources else SignalValidator.create_data_source("CBOE")
+
+        # 1. VIX level — extreme fear (>30) INVALIDATES bullish thesis
         vix_value = vix.get("current_value")
-        if vix_value:
-            signal = validator.validate_vix_level(vix_value, source)
+        if vix_value is not None:
+            signal = validator.validate_vix_level(vix_value, vix_source)
             validated_signals.append(signal)
-        
+
+        # 2. S&P 500 trend — rising equities = risk-on = bullish for BTC
+        sp500_change = sp500.get("change", sp500.get("change_7d"))
+        if sp500_change is not None and not sp500.get("error"):
+            if sp500_change > 1.0:
+                sp500_label = f"rising strongly (+{sp500_change:.1f}%) — risk-on"
+                sp500_contrib = 10.0
+                sp500_status = SignalValidationStatus.VALIDATED
+                sp500_valid = True
+                sp500_notes = None
+            elif sp500_change > 0:
+                sp500_label = f"rising ({sp500_change:+.1f}%) — mild risk-on"
+                sp500_contrib = 5.0
+                sp500_status = SignalValidationStatus.VALIDATED
+                sp500_valid = True
+                sp500_notes = None
+            elif sp500_change < -1.0:
+                sp500_label = f"falling ({sp500_change:.1f}%) — risk-off"
+                sp500_contrib = 0.0
+                sp500_status = SignalValidationStatus.NEUTRALIZED
+                sp500_valid = False
+                sp500_notes = f"S&P 500 falling {sp500_change:.1f}% — risk-off environment weighs on BTC"
+            else:
+                sp500_label = f"flat ({sp500_change:+.1f}%)"
+                sp500_contrib = 3.0
+                sp500_status = SignalValidationStatus.VALIDATED
+                sp500_valid = True
+                sp500_notes = None
+
+            validated_signals.append(ValidatedSignal(
+                name=f"S&P 500 {sp500_label}",
+                value=float(sp500.get("current_price", 0) or 0),
+                previous_value=None,
+                trend_direction="up" if sp500_change > 0 else "down",
+                validation_status=sp500_status,
+                validation_check=f"sp500_change > -1.0% (actual: {sp500_change:+.1f}%)",
+                validation_result=sp500_valid,
+                score_contribution=sp500_contrib,
+                data_source=SignalValidator.create_data_source(
+                    "Yahoo Finance", "^GSPC", "https://finance.yahoo.com/quote/%5EGSPC"
+                ),
+                notes=sp500_notes,
+            ))
+
+        # 3. Gold safe-haven signal — sharp gold rally = flight to safety = risk-off
+        gold_change = gold.get("change", gold.get("change_7d"))
+        if gold_change is not None and not gold.get("error"):
+            if gold_change > 3.0:
+                gold_label = f"safe-haven rally (+{gold_change:.1f}%) — flight to safety"
+                gold_contrib = 0.0
+                gold_status = SignalValidationStatus.INVALIDATED
+                gold_valid = False
+                gold_notes = f"Gold +{gold_change:.1f}%: strong safe-haven demand signals risk-off — bearish for BTC"
+            elif gold_change > 1.0:
+                gold_label = f"rising moderately (+{gold_change:.1f}%)"
+                gold_contrib = 2.0
+                gold_status = SignalValidationStatus.VALIDATED
+                gold_valid = True
+                gold_notes = None
+            elif gold_change < -1.0:
+                gold_label = f"falling ({gold_change:.1f}%) — risk-on"
+                gold_contrib = 5.0
+                gold_status = SignalValidationStatus.VALIDATED
+                gold_valid = True
+                gold_notes = None
+            else:
+                gold_label = f"stable ({gold_change:+.1f}%)"
+                gold_contrib = 3.0
+                gold_status = SignalValidationStatus.VALIDATED
+                gold_valid = True
+                gold_notes = None
+
+            validated_signals.append(ValidatedSignal(
+                name=f"Gold {gold_label}",
+                value=float(gold.get("current_price", 0) or 0),
+                previous_value=None,
+                trend_direction="up" if gold_change > 0 else "down",
+                validation_status=gold_status,
+                validation_check=f"gold_change <= 3.0% for non-INVALIDATED (actual: {gold_change:+.1f}%)",
+                validation_result=gold_valid,
+                score_contribution=gold_contrib,
+                data_source=SignalValidator.create_data_source(
+                    "Yahoo Finance", "GC=F", "https://finance.yahoo.com/quote/GC%3DF"
+                ),
+                notes=gold_notes,
+            ))
+
         return validated_signals
     
     def create_prompt(self) -> PromptTemplate:

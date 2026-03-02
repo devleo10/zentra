@@ -122,28 +122,47 @@ class SignalValidator:
         vix_value: float,
         data_source: DataSource
     ) -> ValidatedSignal:
-        """Validate VIX level signal"""
-        # VIX thresholds: <15 = low fear, 15-25 = normal, >25 = high fear
+        """Validate VIX level signal.
+
+        VIX > 30 = extreme fear. A bullish thesis cannot coexist with extreme fear —
+        the signal is INVALIDATED (not just scored low) to force an explicit override.
+        """
         if vix_value < 15:
-            level = "low"
-            score_contrib = 10.0  # Low VIX = risk-on
-        elif vix_value <= 25:
-            level = "normal"
+            level = "low fear"
+            score_contrib = 10.0
+            status = SignalValidationStatus.VALIDATED
+            valid_result = True
+            notes = None
+        elif vix_value <= 20:
+            level = "moderate fear"
             score_contrib = 5.0
+            status = SignalValidationStatus.VALIDATED
+            valid_result = True
+            notes = None
+        elif vix_value <= 30:
+            level = "elevated fear"
+            score_contrib = 0.0
+            status = SignalValidationStatus.VALIDATED
+            valid_result = True
+            notes = None
         else:
-            level = "high"
-            score_contrib = 0.0  # High VIX = risk-off
-        
+            level = "extreme fear"
+            score_contrib = 0.0
+            status = SignalValidationStatus.INVALIDATED
+            valid_result = False
+            notes = f"VIX {vix_value:.1f} > 30: extreme market fear — bullish bias invalidated"
+
         return ValidatedSignal(
-            name=f"VIX at {vix_value:.1f} ({level} fear)",
+            name=f"VIX at {vix_value:.1f} ({level})",
             value=vix_value,
             previous_value=None,
             trend_direction=None,
-            validation_status=SignalValidationStatus.VALIDATED,
-            validation_check=f"VIX level classification: {level}",
-            validation_result=True,
+            validation_status=status,
+            validation_check=f"VIX <= 30 for VALIDATED (actual: {vix_value:.1f})",
+            validation_result=valid_result,
             score_contribution=score_contrib,
-            data_source=data_source
+            data_source=data_source,
+            notes=notes,
         )
     
     @staticmethod
@@ -152,34 +171,48 @@ class SignalValidator:
         week_ago_cap: float,
         data_source: DataSource
     ) -> ValidatedSignal:
-        """Validate stablecoin flow signal"""
+        """Validate stablecoin flow signal.
+
+        Stablecoin outflow (capital leaving the crypto ecosystem) is bearish
+        and INVALIDATES a bullish thesis. Inflow is a positive accumulation signal.
+        """
         change_pct = ((current_cap - week_ago_cap) / week_ago_cap) * 100 if week_ago_cap > 0 else 0
-        is_inflow = change_pct > 0.5  # >0.5% increase = inflow
-        is_outflow = change_pct < -0.5  # >0.5% decrease = outflow
-        
+        is_inflow = change_pct > 0.5
+        is_outflow = change_pct < -0.5
+
         if is_inflow:
-            signal_name = "Stablecoin inflow (accumulation)"
+            signal_name = "Stablecoin inflow (accumulation signal)"
             score_contrib = 12.0
             trend = "up"
+            status = SignalValidationStatus.VALIDATED
+            valid_result = True
+            notes = None
         elif is_outflow:
-            signal_name = "Stablecoin outflow (distribution)"
+            signal_name = "Stablecoin outflow (capital leaving crypto)"
             score_contrib = 0.0
             trend = "down"
+            status = SignalValidationStatus.INVALIDATED
+            valid_result = False
+            notes = f"change={change_pct:.2f}%: stablecoin outflow invalidates bullish accumulation thesis"
         else:
             signal_name = "Stablecoin supply stable"
             score_contrib = 5.0
             trend = "flat"
-        
+            status = SignalValidationStatus.VALIDATED
+            valid_result = True
+            notes = None
+
         return ValidatedSignal(
             name=signal_name,
             value=current_cap,
             previous_value=week_ago_cap,
             trend_direction=trend,
-            validation_status=SignalValidationStatus.VALIDATED,
-            validation_check=f"change_pct = {change_pct:.2f}%",
-            validation_result=True,
+            validation_status=status,
+            validation_check=f"change_pct={change_pct:.2f}% (INVALIDATED if < -0.5%)",
+            validation_result=valid_result,
             score_contribution=score_contrib,
-            data_source=data_source
+            data_source=data_source,
+            notes=notes,
         )
     
     @staticmethod
