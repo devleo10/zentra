@@ -530,6 +530,59 @@ def get_oil_data(timeframe: str = "current") -> Dict:
     return result
 
 
+def get_fed_funds_rate(timeframe: str = "current") -> Dict:
+    """Get the effective Federal Funds Rate from FRED (FEDFUNDS series).
+
+    Returns current rate level and trend (rising/falling/stable).
+    FEDFUNDS is a monthly series, so we always fetch at least 90 days to
+    guarantee at least 2 data points for trend detection.
+    """
+    effective_start = (datetime.now() - timedelta(days=max(90, TIMEFRAME_DAYS.get(timeframe, 90)))).strftime("%Y-%m-%d")
+    df = get_fred_data("FEDFUNDS", start_date=effective_start)
+
+    if df.empty:
+        last_rate = _get_last_snapshot_field("fed_funds_rate")
+        logger.warning("No Fed Funds Rate data from FRED; using last snapshot fallback: %s", last_rate)
+        if last_rate is not None:
+            return {
+                "current_rate": last_rate,
+                "previous_rate": None,
+                "change": None,
+                "trend": "unknown",
+                "_fallback": True,
+                "_fallback_source": "last_snapshot",
+                "timeframe": timeframe,
+            }
+        return {"error": "No Fed Funds Rate data available", "timeframe": timeframe}
+
+    latest = df.iloc[-1]
+    current_rate = float(latest["value"])
+    latest_date = latest["date"].strftime("%Y-%m-%d")
+
+    prev_rate = None
+    change = None
+    trend = "stable"
+    if len(df) >= 2:
+        prev_month = df.iloc[-2]
+        prev_rate = float(prev_month["value"])
+        change = round(current_rate - prev_rate, 2)
+        if change > 0.1:
+            trend = "rising"
+        elif change < -0.1:
+            trend = "falling"
+
+    result = {
+        "current_rate": round(current_rate, 2),
+        "previous_rate": round(prev_rate, 2) if prev_rate is not None else None,
+        "change": change,
+        "trend": trend,
+        "latest_date": latest_date,
+        "timeframe": timeframe,
+    }
+    logger.info("Fed Funds Rate: %.2f%% (trend=%s, date=%s)", current_rate, trend, latest_date)
+    return result
+
+
 def get_fed_balance_sheet(timeframe: str = "current") -> Dict:
     """Get Federal Reserve balance sheet size with timeframe comparison"""
     start_date, comparison_days = get_timeframe_dates(timeframe)

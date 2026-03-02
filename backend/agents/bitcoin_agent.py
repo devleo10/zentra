@@ -25,7 +25,10 @@ class BitcoinAgent(BaseAgent):
         stablecoins = coingecko_data.get_stablecoin_data(timeframe)
         eth_btc = coingecko_data.get_eth_btc_ratio(timeframe)
         sp500 = yahoo_data.get_sp500_data(timeframe)
-        
+
+        # Fetch 200 days of OHLCV for real 200DMA and 30-day realized volatility
+        ohlcv = coingecko_data.get_btc_ohlcv_200d()
+
         # Calculate BTC vs S&P performance based on timeframe
         btc_perf = btc.get("change", btc.get("change_24h", btc.get("change_7d", 0)))
         sp500_perf = sp500.get("change", 0)
@@ -58,18 +61,20 @@ class BitcoinAgent(BaseAgent):
                 data_as_of=_safe_parse_date(sp500.get("date"))
             )
         ]
-        
-        # Calculate 200DMA (simplified - would need historical data in production)
-        # For now, use current price as proxy (in production, fetch 200 days of data)
+
         btc_price = btc.get("price_usd", 0)
-        btc_200dma = btc_price * 0.95  # Placeholder - in production, calculate from 200 days of data
+        # Use real 200DMA from OHLCV data; fall back to None so validate_signals
+        # can skip the check rather than use a fabricated value
+        btc_200dma = ohlcv.get("ma200") if not ohlcv.get("error") else None
+        realized_vol = ohlcv.get("realized_vol_30d") if not ohlcv.get("error") else None
         
         return {
             "btc_price": btc,
-            "btc_200dma": btc_200dma,  # Would be calculated from historical data
+            "btc_200dma": btc_200dma,
             "btc_dominance": dominance,
             "stablecoins": stablecoins,
             "eth_btc_ratio": eth_btc,
+            "volatility": realized_vol,
             "btc_vs_sp500": {
                 "btc_7d_change": btc_perf,
                 "sp500_7d_change": sp500_perf,
@@ -87,11 +92,11 @@ class BitcoinAgent(BaseAgent):
         data_sources = data.get("_data_sources", [])
         btc_source = data_sources[0] if data_sources else SignalValidator.create_data_source("CoinGecko")
         
-        # 1. Validate BTC above 200DMA
+        # 1. Validate BTC above 200DMA (real OHLCV-based value)
         btc_price = data.get("btc_price", {}).get("price_usd", 0)
-        btc_200dma = data.get("btc_200dma", 0)
-        
-        if btc_price > 0 and btc_200dma > 0:
+        btc_200dma = data.get("btc_200dma")
+
+        if btc_price > 0 and btc_200dma is not None and btc_200dma > 0:
             signal = validator.validate_btc_above_200dma(btc_price, btc_200dma, btc_source)
             validated_signals.append(signal)
         

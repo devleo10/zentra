@@ -65,16 +65,14 @@ class VerdictAgent:
         # 4. Determine bias with output discipline (prevent overconfidence)
         bias, action = self._determine_bias_with_discipline(final_score, sections)
         
-        # 5. Calculate confidence dynamically
-        vix_value = raw_data.get("risk", {}).get("vix", {}).get("current_value")
-        btc_volatility = raw_data.get("bitcoin", {}).get("volatility")
-        
+        # 5. Calculate confidence dynamically (unified formula: agreement + distance + headline_conf)
         confidence_score, confidence_level = self.confidence_calculator.calculate_confidence(
-            sections, vix_value, btc_volatility
+            sections,
+            final_score=float(final_score),
+            headline_confidence=0.0,
         )
-        
+
         signal_agreement_pct = self.confidence_calculator.get_signal_agreement_pct(sections)
-        data_freshness_score = self.confidence_calculator.get_data_freshness_score(sections)
         
         # 6. Identify dominant signals (top 2-3 driving the verdict)
         dominant_signals = self._identify_dominant_signals(sections, weights)
@@ -93,16 +91,17 @@ class VerdictAgent:
         )
         
         # 10. Create audit log
+        distance_from_50 = abs(final_score - 50)
+        distance_score = min(100.0, (distance_from_50 / 50.0) * 100.0)
         audit_log = {
             "regime": regime.value,
             "weights_used": weights,
             "score_breakdown": score_breakdown,
             "signal_agreement_pct": round(signal_agreement_pct, 1),
-            "data_freshness_score": round(data_freshness_score, 1),
             "confidence_components": {
-                "signal_agreement": round(signal_agreement_pct * 0.4, 1),
-                "data_freshness": round(data_freshness_score * 0.3, 1),
-                "volatility": round((100 - (vix_value or 50) * 2) * 0.3, 1) if vix_value else 15.0
+                "agreement": round(signal_agreement_pct * 0.40, 1),
+                "distance_from_50": round(distance_score * 0.35, 1),
+                "headline_confidence": 0.0,
             },
             "calculation_timestamp": datetime.now().isoformat()
         }
@@ -123,7 +122,7 @@ class VerdictAgent:
             invalidation_conditions=invalidation_conditions,
             score_breakdown=score_breakdown,
             signal_agreement_pct=round(signal_agreement_pct, 1),
-            data_freshness_score=round(data_freshness_score, 1),
+            data_freshness_score=0.0,
             audit_log=audit_log
         )
     

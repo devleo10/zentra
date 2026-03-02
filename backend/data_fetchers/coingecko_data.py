@@ -1,6 +1,7 @@
 """
 Fetch cryptocurrency data from CoinGecko API
 """
+import math
 import requests
 from typing import Dict, Optional
 from datetime import datetime, timedelta
@@ -166,6 +167,51 @@ def get_eth_btc_ratio(timeframe: str = "current") -> Dict:
             return {"error": "Invalid price data", "timeframe": timeframe}
     except Exception as e:
         return {"error": str(e), "timeframe": timeframe}
+
+
+def get_btc_ohlcv_200d() -> Dict:
+    """Fetch 200 days of BTC daily OHLCV data from CoinGecko.
+
+    Returns the real 200-day moving average and 30-day annualized realized volatility.
+    CoinGecko OHLC endpoint returns [timestamp, open, high, low, close] candles.
+    """
+    url = f"{COINGECKO_BASE_URL}/coins/bitcoin/ohlc"
+    params = {
+        "vs_currency": "usd",
+        "days": 200,
+    }
+    try:
+        response = requests.get(url, params=params, timeout=20)
+        response.raise_for_status()
+        candles = response.json()
+
+        if not candles or len(candles) < 30:
+            return {"error": "Insufficient OHLCV data from CoinGecko"}
+
+        close_prices = [c[4] for c in candles]
+
+        # 200-day simple moving average of all available close prices
+        ma200 = sum(close_prices) / len(close_prices)
+
+        # 30-day annualized realized volatility from the most recent 31 closes
+        recent = close_prices[-31:] if len(close_prices) >= 31 else close_prices
+        realized_vol_30d = None
+        if len(recent) >= 2:
+            log_returns = [
+                math.log(recent[i] / recent[i - 1])
+                for i in range(1, len(recent))
+            ]
+            mean_r = sum(log_returns) / len(log_returns)
+            variance = sum((r - mean_r) ** 2 for r in log_returns) / len(log_returns)
+            realized_vol_30d = round(math.sqrt(variance) * math.sqrt(365), 4)
+
+        return {
+            "ma200": round(ma200, 2),
+            "days_of_data": len(close_prices),
+            "realized_vol_30d": realized_vol_30d,
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def get_crypto_summary(timeframe: str = "current") -> Dict:

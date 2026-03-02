@@ -2,42 +2,50 @@
 
 import { useState } from "react"
 import { runV2Analysis, V2AnalysisResult, TimeFrame } from "@/lib/api"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import TimeframeAnalysis from "@/components/TimeframeAnalysis"
 
-const TIMEFRAME_OPTIONS: { value: TimeFrame; label: string; description: string }[] = [
-  { value: "current", label: "Current", description: "Real-time latest data" },
-  { value: "week", label: "Week", description: "7-day analysis" },
-  { value: "month", label: "Month", description: "30-day analysis" },
-  { value: "year", label: "Year", description: "365-day analysis" },
+const TIMEFRAMES: { value: TimeFrame; label: string }[] = [
+  { value: "current", label: "Now" },
+  { value: "week",    label: "7D" },
+  { value: "month",   label: "30D" },
+  { value: "year",    label: "1Y" },
 ]
 
-// Helper to get score color
-const getScoreColor = (score: number) => {
-  if (score >= 70) return "text-green-600 bg-green-50 border-green-200"
-  if (score >= 50) return "text-yellow-600 bg-yellow-50 border-yellow-200"
-  return "text-red-600 bg-red-50 border-red-200"
+const SECTION_LABELS: Record<string, string> = {
+  inflation:      "Inflation",
+  fed_policy:     "Fed Policy",
+  liquidity:      "Liquidity",
+  dxy:            "US Dollar",
+  risk_sentiment: "Risk",
 }
 
-const getBiasColor = (bias: string) => {
-  const lowerBias = bias.toLowerCase()
-  if (lowerBias.includes("bull")) return "text-green-700 bg-green-100"
-  if (lowerBias.includes("bear") || lowerBias.includes("risk")) return "text-red-700 bg-red-100"
-  return "text-yellow-700 bg-yellow-100"
+const getBiasStyle = (bias: string) => {
+  const b = bias.toLowerCase()
+  if (b.includes("strong bull")) return "bg-green-500 text-white"
+  if (b.includes("bull"))        return "bg-green-400 text-white"
+  if (b.includes("bear") || b.includes("high risk")) return "bg-red-500 text-white"
+  return "bg-yellow-400 text-gray-900"
 }
+
+const scoreColor = (s: number) =>
+  s >= 65 ? "text-green-400" : s >= 40 ? "text-yellow-400" : "text-red-400"
+
+const barColor = (s: number) =>
+  s >= 65 ? "bg-green-500" : s >= 40 ? "bg-yellow-500" : "bg-red-500"
 
 export default function Home() {
-  const [result, setResult] = useState<V2AnalysisResult | null>(null)
+  const [timeframe, setTimeframe] = useState<TimeFrame>("current")
+  const [results, setResults] = useState<Partial<Record<TimeFrame, V2AnalysisResult>>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [selectedTimeframe, setSelectedTimeframe] = useState<TimeFrame>("current")
+
+  const result = results[timeframe] ?? null
 
   const handleAnalyze = async () => {
     setLoading(true)
     setError(null)
     try {
-      const analysisResult = await runV2Analysis()
-      setResult(analysisResult)
+      const data = await runV2Analysis()
+      setResults(prev => ({ ...prev, [timeframe]: data }))
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed")
     } finally {
@@ -45,155 +53,211 @@ export default function Home() {
     }
   }
 
-  const renderQuickAnalysis = () => {
-    if (!result) return null
-
-    return (
-      <>
-        {/* Main Score Card */}
-        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-            <div>
-              <div className="text-6xl font-bold mb-2">{result.final_score}</div>
-              <div className="text-gray-400">Final Score (0-100)</div>
-            </div>
-            <div className="flex flex-col items-end gap-2">
-              <span className={`px-4 py-2 rounded-full font-semibold ${getBiasColor(result.bias)}`}>
-                {result.bias}
-              </span>
-              <span className="text-gray-300">{result.action}</span>
-              <span className="text-sm text-gray-500">
-                Confidence: {result.confidence_pct.toFixed(0)}% ({result.confidence_label})
-              </span>
-            </div>
-          </div>
-          {result.btc_price && (
-            <div className="mt-4 text-gray-400">
-              BTC Price: <span className="text-white font-mono">${result.btc_price.toLocaleString()}</span>
-            </div>
-          )}
-        </div>
-
-        {/* Section Scores Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {Object.entries(result.section_scores).map(([section, score]) => (
-            <div key={section} className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-gray-300 capitalize">{section.replace(/_/g, ' ')}</span>
-                <span className={`text-2xl font-bold ${score >= 60 ? 'text-green-400' : score >= 40 ? 'text-yellow-400' : 'text-red-400'}`}>
-                  {score}
-                </span>
-              </div>
-              <div className="w-full bg-gray-700 rounded-full h-2">
-                <div
-                  className={`h-2 rounded-full ${score >= 60 ? 'bg-green-500' : score >= 40 ? 'bg-yellow-500' : 'bg-red-500'}`}
-                  style={{ width: `${score}%` }}
-                />
-              </div>
-              {result.section_reasoning && result.section_reasoning[section] && (
-                <p className="text-xs text-gray-500 mt-2">{result.section_reasoning[section]}</p>
-              )}
-            </div>
-          ))}
-        </div>
-
-        {/* Headline Analysis */}
-        {result.headlines_fetched > 0 && (
-          <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-            <h2 className="text-xl font-semibold mb-4">📰 Headline Context</h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-              <div className="text-center">
-                <div className="text-2xl font-bold text-blue-400">{result.headlines_fetched}</div>
-                <div className="text-sm text-gray-500">Headlines Fetched</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-purple-400">{result.headline_adjustment > 0 ? '+' : ''}{result.headline_adjustment}</div>
-                <div className="text-sm text-gray-500">Score Adjustment</div>
-              </div>
-            </div>
-            {result.headline_reasoning && (
-              <p className="text-sm text-gray-400">{result.headline_reasoning}</p>
-            )}
-          </div>
-        )}
-
-        {/* Data Freshness */}
-        {result.data_freshness_info && (
-          <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-            <h2 className="text-xl font-semibold mb-4">🕐 Data Freshness</h2>
-            <div className="text-sm text-gray-400">
-              {result.data_freshness_info.warnings?.length > 0 && (
-                <div className="mb-2">
-                  <strong className="text-yellow-400">Warnings:</strong>
-                  <ul className="list-disc list-inside mt-1">
-                    {result.data_freshness_info.warnings.map((w: string, i: number) => (
-                      <li key={i}>{w}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </>
-    )
-  }
-
   return (
-    <main className="min-h-screen bg-gray-900 text-white p-8">
-      <div className="max-w-7xl mx-auto">
-        <header className="mb-8">
-          <h1 className="text-4xl font-bold mb-2">
-            🪙 BTC Macro AI Agent Dashboard
-          </h1>
-          <p className="text-gray-400">
-            Deterministic Bitcoin macro analysis — numeric scoring, headline context, full audit trail
-          </p>
-        </header>
+    <main className="min-h-screen bg-gray-950 text-white flex flex-col items-center px-4 py-10">
+      <div className="w-full max-w-xl space-y-5">
 
-        <Tabs defaultValue="quick-analysis" className="w-full">
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="quick-analysis">Quick Analysis</TabsTrigger>
-            <TabsTrigger value="timeframe-analysis">Timeframe Analysis</TabsTrigger>
-          </TabsList>
-          
-          <TabsContent value="quick-analysis" className="space-y-6">
-            <div className="mb-6 flex flex-wrap items-center gap-4">
+        {/* Header */}
+        <div className="text-center">
+          <h1 className="text-2xl font-bold tracking-tight">BTC Macro Signal</h1>
+          <p className="text-gray-500 text-sm mt-1">Real-time macro analysis for Bitcoin</p>
+        </div>
+
+        {/* Timeframe + Run */}
+        <div className="flex gap-2">
+          <div className="flex bg-gray-900 rounded-xl border border-gray-800 p-1 gap-1">
+            {TIMEFRAMES.map(tf => (
               <button
-                onClick={handleAnalyze}
-                disabled={loading}
-                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition-colors"
+                key={tf.value}
+                onClick={() => setTimeframe(tf.value)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  timeframe === tf.value
+                    ? "bg-blue-600 text-white"
+                    : "text-gray-400 hover:text-white"
+                }`}
               >
-                {loading ? "⏳ Analyzing..." : "🚀 Run Analysis"}
+                {tf.label}
               </button>
-              <span className="text-gray-500 text-sm">
-                (Deterministic v2 engine — no black-box LLM scoring)
-              </span>
-            </div>
+            ))}
+          </div>
+          <button
+            onClick={handleAnalyze}
+            disabled={loading}
+            className="flex-1 py-2 rounded-xl font-semibold text-sm bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-400 transition-colors"
+          >
+            {loading ? "Analyzing..." : "Run Analysis"}
+          </button>
+        </div>
 
-            {error && (
-              <div className="bg-red-900/50 border border-red-500 text-red-200 px-4 py-3 rounded mb-6">
-                ❌ Error: {error}
-              </div>
-            )}
+        {/* Error */}
+        {error && (
+          <div className="bg-red-900/40 border border-red-700 text-red-300 text-sm px-4 py-3 rounded-lg">
+            {error}
+          </div>
+        )}
 
-            {result && (
-              <div className="space-y-6">{renderQuickAnalysis()}</div>
-            )}
-            
-            {!result && !loading && (
-              <div className="bg-gray-800 rounded-xl p-8 border border-gray-700 text-center">
-                <div className="text-gray-400 mb-4">
-                  Click "Run Analysis" to get the latest Bitcoin macro assessment
+        {/* Empty state */}
+        {!result && !loading && (
+          <div className="text-center text-gray-600 text-sm py-10">
+            Select a timeframe and press Run Analysis
+          </div>
+        )}
+
+        {result && (
+          <>
+            {/* Verdict */}
+            <div className="bg-gray-900 rounded-2xl p-5 border border-gray-800">
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="text-5xl font-bold">{result.final_score}</div>
+                  <div className="text-gray-500 text-xs mt-1">Score / 100</div>
+                </div>
+                <div className="text-right space-y-1.5">
+                  <div className={`inline-block px-3 py-1 rounded-full text-sm font-semibold ${getBiasStyle(result.bias)}`}>
+                    {result.bias}
+                  </div>
+                  <div className="text-gray-300 text-sm">{result.action}</div>
+                  <div className="text-gray-500 text-xs">{result.confidence_pct.toFixed(0)}% confidence</div>
                 </div>
               </div>
+              {result.btc_price && (
+                <div className="mt-3 pt-3 border-t border-gray-800 text-sm text-gray-400">
+                  BTC <span className="text-white font-mono font-semibold">${result.btc_price.toLocaleString()}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Analyst Commentary */}
+            {result.narrative && (
+              <div className="bg-gray-900 rounded-2xl p-5 border border-gray-800 space-y-3">
+                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Analyst Commentary</div>
+                <p className="text-sm text-gray-200 leading-relaxed">{result.narrative}</p>
+                {(result.key_risk || result.catalyst_to_watch) && (
+                  <div className="grid grid-cols-1 gap-2 pt-2 border-t border-gray-800">
+                    {result.key_risk && (
+                      <div className="flex gap-2 text-sm">
+                        <span className="text-red-400 font-semibold shrink-0">Risk:</span>
+                        <span className="text-gray-300">{result.key_risk}</span>
+                      </div>
+                    )}
+                    {result.catalyst_to_watch && (
+                      <div className="flex gap-2 text-sm">
+                        <span className="text-blue-400 font-semibold shrink-0">Watch:</span>
+                        <span className="text-gray-300">{result.catalyst_to_watch}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
-          </TabsContent>
-          
-          <TabsContent value="timeframe-analysis">
-            <TimeframeAnalysis />
-          </TabsContent>
-        </Tabs>
+
+            {/* Section Scores */}
+            <div className="bg-gray-900 rounded-2xl p-5 border border-gray-800 space-y-3">
+              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Breakdown</div>
+              {Object.entries(result.section_scores).map(([key, score]) => (
+                <div key={key}>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-gray-300">{SECTION_LABELS[key] ?? key}</span>
+                    <span className={`font-semibold ${scoreColor(score)}`}>{score}</span>
+                  </div>
+                  <div className="w-full bg-gray-800 rounded-full h-1.5">
+                    <div className={`h-1.5 rounded-full ${barColor(score)}`} style={{ width: `${score}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Key Data */}
+            <div className="grid grid-cols-2 gap-3">
+              {/* CPI */}
+              <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+                <div className="text-xs text-gray-500 mb-1">CPI Inflation</div>
+                <div className="text-xl font-bold text-white">
+                  {result.cpi_yoy_rate != null
+                    ? `${result.cpi_yoy_rate.toFixed(1)}%`
+                    : result.cpi_mom_change != null
+                    ? `${result.cpi_mom_change > 0 ? "+" : ""}${result.cpi_mom_change.toFixed(2)}% MoM`
+                    : "—"}
+                </div>
+                <div className="text-xs text-gray-500 mt-0.5">
+                  {result.cpi_core_yoy_rate != null
+                    ? `Core ${result.cpi_core_yoy_rate.toFixed(1)}%`
+                    : result.cpi_yoy_rate != null && result.cpi_mom_change != null
+                    ? `MoM ${result.cpi_mom_change > 0 ? "+" : ""}${result.cpi_mom_change.toFixed(2)}%`
+                    : "Year-over-year"}
+                </div>
+              </div>
+
+              {/* DXY */}
+              <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+                <div className="text-xs text-gray-500 mb-1">DXY</div>
+                <div className="text-xl font-bold text-white">
+                  {result.dxy_value != null ? result.dxy_value.toFixed(2) : "—"}
+                </div>
+                <div className={`text-xs mt-0.5 ${
+                  result.dxy_change_7d != null
+                    ? result.dxy_change_7d < 0 ? "text-green-400" : result.dxy_change_7d > 0 ? "text-red-400" : "text-gray-500"
+                    : "text-gray-500"
+                }`}>
+                  {result.dxy_change_7d != null
+                    ? `7D ${result.dxy_change_7d > 0 ? "+" : ""}${result.dxy_change_7d.toFixed(2)}%`
+                    : "US Dollar Index"}
+                </div>
+              </div>
+
+              {/* Oil */}
+              <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+                <div className="text-xs text-gray-500 mb-1">WTI Oil</div>
+                <div className="text-xl font-bold text-white">
+                  {result.oil_price != null ? `$${result.oil_price.toFixed(0)}` : "—"}
+                </div>
+                <div className="text-xs text-gray-500 mt-0.5">USD / barrel</div>
+              </div>
+
+              {/* VIX */}
+              <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+                <div className="text-xs text-gray-500 mb-1">VIX</div>
+                <div className={`text-xl font-bold ${
+                  result.vix != null
+                    ? result.vix > 20 ? "text-red-400" : result.vix < 15 ? "text-green-400" : "text-white"
+                    : "text-white"
+                }`}>
+                  {result.vix != null ? result.vix.toFixed(1) : "—"}
+                </div>
+                <div className="text-xs text-gray-500 mt-0.5">
+                  {result.ten_year_yield != null ? `10Y ${result.ten_year_yield.toFixed(2)}%` : "Volatility index"}
+                </div>
+              </div>
+            </div>
+
+            {/* Score adjustments */}
+            {(result.headline_adjustment !== 0 || result.cross_signal_adjustment !== 0) && (
+              <div className="bg-gray-900 rounded-xl p-4 border border-gray-800 space-y-2 text-sm">
+                {result.headline_adjustment !== 0 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">News adjustment</span>
+                    <span className={`font-semibold ${result.headline_adjustment > 0 ? "text-green-400" : "text-red-400"}`}>
+                      {result.headline_adjustment > 0 ? "+" : ""}{result.headline_adjustment} pts
+                    </span>
+                  </div>
+                )}
+                {result.cross_signal_adjustment !== 0 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Cross-signal adjustment</span>
+                    <span className={`font-semibold ${result.cross_signal_adjustment > 0 ? "text-green-400" : "text-red-400"}`}>
+                      {result.cross_signal_adjustment > 0 ? "+" : ""}{result.cross_signal_adjustment} pts
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Timestamp */}
+            <div className="text-center text-xs text-gray-600">
+              {new Date(result.timestamp).toLocaleString()}
+            </div>
+          </>
+        )}
       </div>
     </main>
   )

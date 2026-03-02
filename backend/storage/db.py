@@ -26,18 +26,27 @@ def _get_connection() -> sqlite3.Connection:
 
 
 def _ensure_schema(conn: sqlite3.Connection):
-    """Create table if not exists."""
+    """Create table if not exists, and migrate existing tables with new columns."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS macro_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            
+
             -- Timestamp of this analysis run
             timestamp TEXT NOT NULL,
-            
+
+            -- Timeframe used for this run ('current', 'week', 'month', 'year')
+            timeframe TEXT,
+
             -- Raw numeric inputs
             cpi_mom_change REAL,
+            cpi_yoy_rate REAL,
+            cpi_core_yoy_rate REAL,
+            cpi_source TEXT,
             pce_mom_change REAL,
             oil_change REAL,
+            oil_price REAL,
+            fed_funds_rate REAL,
+            fed_rate_trend TEXT,
             dxy_value REAL,
             dxy_change_7d REAL,
             vix REAL,
@@ -47,44 +56,87 @@ def _ensure_schema(conn: sqlite3.Connection):
             sp500_change REAL,
             gold_change REAL,
             btc_price REAL,
-            
+
             -- Per-section scores (JSON dict)
             section_scores TEXT NOT NULL,
-            
+
             -- Section reasoning (JSON dict)
             section_reasoning TEXT,
-            
-            -- Weighted numeric score before headline adjustment
-            weighted_numeric_score INTEGER NOT NULL,
+
+            -- Weighted numeric score before headline adjustment (REAL to preserve fractional scores)
+            weighted_numeric_score REAL NOT NULL,
             score_breakdown TEXT,
-            
+
             -- Headline data
             headlines_fetched INTEGER DEFAULT 0,
             headlines_classified TEXT,
             headline_adjustment INTEGER DEFAULT 0,
             headline_reasoning TEXT,
-            
+
+            -- Headline market report (text + JSON meta)
+            headline_report TEXT,
+            headline_report_meta TEXT,
+
             -- Final output
-            final_score INTEGER NOT NULL,
+            final_score REAL NOT NULL,
             bias TEXT NOT NULL,
             action TEXT NOT NULL,
             confidence_pct REAL,
             confidence_label TEXT,
-            
+
             -- Data freshness report (JSON)
             data_freshness_info TEXT,
-            
+
             -- Reproducibility metadata
             config_hash TEXT,
             prompt_version TEXT,
             llm_model TEXT,
-            
+
             -- Fed keyword counts for auditability
             dovish_keyword_count INTEGER,
             hawkish_keyword_count INTEGER,
-            pivot_keyword_count INTEGER
+            pivot_keyword_count INTEGER,
+
+            -- LLM cross-signal review
+            cross_signal_adjustment INTEGER DEFAULT 0,
+            cross_signal_reasoning TEXT,
+
+            -- LLM narrative output
+            narrative TEXT,
+            key_risk TEXT,
+            catalyst_to_watch TEXT
         )
     """)
+
+    # Index on timestamp for efficient range queries
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_macro_snapshots_timestamp
+        ON macro_snapshots (timestamp)
+    """)
+    conn.commit()
+
+    # Migrate existing databases: add new columns if they don't exist yet
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(macro_snapshots)").fetchall()}
+    migrations = [
+        ("cpi_yoy_rate",          "REAL"),
+        ("cpi_core_yoy_rate",     "REAL"),
+        ("cpi_source",            "TEXT"),
+        ("oil_price",             "REAL"),
+        ("fed_funds_rate",        "REAL"),
+        ("fed_rate_trend",        "TEXT"),
+        ("timeframe",             "TEXT"),
+        ("headline_report",       "TEXT"),
+        ("headline_report_meta",  "TEXT"),
+        ("cross_signal_adjustment", "INTEGER DEFAULT 0"),
+        ("cross_signal_reasoning",  "TEXT"),
+        ("narrative",               "TEXT"),
+        ("key_risk",                "TEXT"),
+        ("catalyst_to_watch",       "TEXT"),
+    ]
+    for col_name, col_type in migrations:
+        if col_name not in existing_columns:
+            conn.execute(f"ALTER TABLE macro_snapshots ADD COLUMN {col_name} {col_type}")
+            logger.info("DB migration: added column %s %s to macro_snapshots", col_name, col_type)
     conn.commit()
 
 
@@ -102,28 +154,54 @@ def save_snapshot(snapshot: Dict[str, Any]) -> int:
     try:
         cursor = conn.execute("""
             INSERT INTO macro_snapshots (
-                timestamp,
-                cpi_mom_change, pce_mom_change, oil_change,
+                timestamp, timeframe,
+                cpi_mom_change, cpi_yoy_rate, cpi_core_yoy_rate, cpi_source,
+                pce_mom_change, oil_change, oil_price,
+                fed_funds_rate, fed_rate_trend,
                 dxy_value, dxy_change_7d,
                 vix, ten_year_yield, yield_curve_spread, fed_balance_sheet_trend,
                 sp500_change, gold_change, btc_price,
                 section_scores, section_reasoning,
                 weighted_numeric_score, score_breakdown,
                 headlines_fetched, headlines_classified, headline_adjustment, headline_reasoning,
+                headline_report, headline_report_meta,
                 final_score, bias, action, confidence_pct, confidence_label,
                 data_freshness_info,
                 config_hash, prompt_version, llm_model,
-                dovish_keyword_count, hawkish_keyword_count, pivot_keyword_count
+                dovish_keyword_count, hawkish_keyword_count, pivot_keyword_count,
+                cross_signal_adjustment, cross_signal_reasoning,
+                narrative, key_risk, catalyst_to_watch
             ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?
+                ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?,
+                ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?,
+                ?, ?,
+                ?, ?, ?, ?,
+                ?, ?,
+                ?, ?, ?, ?, ?,
+                ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?,
+                ?, ?, ?
             )
         """, (
             snapshot.get("timestamp", datetime.now().isoformat()),
+            snapshot.get("timeframe"),
             snapshot.get("cpi_mom_change"),
+            snapshot.get("cpi_yoy_rate"),
+            snapshot.get("cpi_core_yoy_rate"),
+            snapshot.get("cpi_source"),
             snapshot.get("pce_mom_change"),
             snapshot.get("oil_change"),
+            snapshot.get("oil_price"),
+            snapshot.get("fed_funds_rate"),
+            snapshot.get("fed_rate_trend"),
             snapshot.get("dxy_value"),
             snapshot.get("dxy_change_7d"),
             snapshot.get("vix"),
@@ -141,6 +219,8 @@ def save_snapshot(snapshot: Dict[str, Any]) -> int:
             json.dumps(snapshot.get("headlines_classified", [])),
             snapshot.get("headline_adjustment", 0),
             snapshot.get("headline_reasoning", ""),
+            snapshot.get("headline_report", ""),
+            json.dumps(snapshot.get("headline_report_meta", {})),
             snapshot.get("final_score", 50),
             snapshot.get("bias", "Neutral"),
             snapshot.get("action", "Small positions only"),
@@ -153,6 +233,11 @@ def save_snapshot(snapshot: Dict[str, Any]) -> int:
             snapshot.get("dovish_keyword_count"),
             snapshot.get("hawkish_keyword_count"),
             snapshot.get("pivot_keyword_count"),
+            snapshot.get("cross_signal_adjustment", 0),
+            snapshot.get("cross_signal_reasoning", ""),
+            snapshot.get("narrative", ""),
+            snapshot.get("key_risk", ""),
+            snapshot.get("catalyst_to_watch", ""),
         ))
         conn.commit()
         row_id = cursor.lastrowid

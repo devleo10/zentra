@@ -57,10 +57,18 @@ export interface V2AnalysisResult {
   hawkish_keyword_count: number
   pivot_keyword_count: number
   cpi_mom_change: number | null
+  cpi_yoy_rate: number | null       // YoY inflation rate e.g. 3.1 = "CPI is 3.1%"
+  cpi_core_yoy_rate: number | null  // Core CPI YoY (ex food & energy) — from BLS only
   dxy_value: number | null
   dxy_change_7d: number | null
   vix: number | null
   ten_year_yield: number | null
+  oil_price: number | null
+  cross_signal_adjustment: number
+  cross_signal_reasoning: string
+  narrative: string
+  key_risk: string
+  catalyst_to_watch: string
 }
 
 export interface V2HistoryEntry extends V2AnalysisResult {

@@ -88,20 +88,32 @@ def score_inflation(cpi_mom_change: float, pce_mom_change: Optional[float], oil_
     return final, reasoning
 
 
-def score_fed_policy(dovish_count: int, hawkish_count: int, pivot_count: int) -> Tuple[int, str]:
+def score_fed_policy(
+    dovish_count: int,
+    hawkish_count: int,
+    pivot_count: int,
+    fed_rate: Optional[float] = None,
+    rate_trend: str = "stable",
+) -> Tuple[int, str]:
     """
-    Score Fed policy section deterministically from keyword counts.
-    
+    Score Fed policy section deterministically.
+
+    Combines keyword-based tone (60% of signal) with the actual Fed Funds Rate
+    level and direction (40% of signal). Low/falling rates = bullish for BTC.
+
     Args:
-        dovish_count: Number of dovish keywords found in headlines
-        hawkish_count: Number of hawkish keywords found in headlines
-        pivot_count: Number of pivot keywords found
-    
+        dovish_count: Number of dovish keywords found in news
+        hawkish_count: Number of hawkish keywords found in news
+        pivot_count: Number of pivot/cut-signal keywords found
+        fed_rate: Current effective Fed Funds Rate (%), or None if unavailable
+        rate_trend: "rising", "falling", or "stable"
+
     Returns:
         (score 0-100, reasoning string)
     """
     cfg = CONFIG["fed_policy_thresholds"]
-    
+
+    # Base score from keyword tone
     if dovish_count >= 4 and hawkish_count <= 1:
         score = cfg["dovish_strong"]["score"]
     elif dovish_count >= 2 and hawkish_count <= 1:
@@ -112,16 +124,53 @@ def score_fed_policy(dovish_count: int, hawkish_count: int, pivot_count: int) ->
         score = cfg["hawkish"]["score"]
     else:
         score = cfg["neutral"]["score"]
-    
+
     # Pivot bonus (capped)
     pivot_bonus = min(pivot_count * cfg["pivot_keyword_bonus"], cfg["max_pivot_bonus"])
-    score = int(round(max(0, min(100, score + pivot_bonus))))
-    
+    score += pivot_bonus
+
+    rate_adj = 0
+    rate_note = "n/a"
+    if fed_rate is not None:
+        # Rate level adjustment
+        if fed_rate <= cfg.get("fed_rate_very_low_threshold", 1.0):
+            rate_level_adj = cfg.get("fed_rate_very_low_adj", 20)
+            rate_note = f"{fed_rate:.2f}% (ultra-low)"
+        elif fed_rate <= cfg.get("fed_rate_low_threshold", 2.5):
+            rate_level_adj = cfg.get("fed_rate_low_adj", 10)
+            rate_note = f"{fed_rate:.2f}% (low)"
+        elif fed_rate <= cfg.get("fed_rate_neutral_threshold", 4.0):
+            rate_level_adj = cfg.get("fed_rate_neutral_adj", 0)
+            rate_note = f"{fed_rate:.2f}% (neutral)"
+        elif fed_rate <= cfg.get("fed_rate_high_threshold", 5.5):
+            rate_level_adj = cfg.get("fed_rate_high_adj", -10)
+            rate_note = f"{fed_rate:.2f}% (restrictive)"
+        else:
+            rate_level_adj = cfg.get("fed_rate_very_high_adj", -20)
+            rate_note = f"{fed_rate:.2f}% (deeply restrictive)"
+
+        # Direction adjustment
+        if rate_trend == "falling":
+            rate_dir_adj = cfg.get("fed_rate_falling_bonus", 10)
+        elif rate_trend == "rising":
+            rate_dir_adj = cfg.get("fed_rate_rising_penalty", -10)
+        else:
+            rate_dir_adj = 0
+
+        rate_adj = max(
+            cfg.get("fed_rate_min_total_adj", -25),
+            min(cfg.get("fed_rate_max_total_adj", 25), rate_level_adj + rate_dir_adj),
+        )
+        score += rate_adj
+
+    score = int(round(max(0, min(100, score))))
+
     reasoning = (
         f"Dovish kw: {dovish_count}, Hawkish kw: {hawkish_count}, Pivot kw: {pivot_count} -> "
-        f"base + pivot_bonus({pivot_bonus}) = {score}"
+        f"pivot_bonus={pivot_bonus} | Rate: {rate_note} trend={rate_trend} -> rate_adj={rate_adj:+d} | "
+        f"Final: {score}"
     )
-    
+
     return score, reasoning
 
 

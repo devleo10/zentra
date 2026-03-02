@@ -39,11 +39,12 @@ class ActionType(str, Enum):
 
 class SignalValidationStatus(str, Enum):
     """Signal validation status"""
-    VALIDATED = "validated"  # Boolean check passed
-    NEUTRALIZED = "neutralized"  # Boolean check failed, signal downgraded
-    STALE_DATA = "stale_data"  # Data too old
+    VALIDATED = "validated"      # Boolean check passed — signal contributes to score
+    NEUTRALIZED = "neutralized"  # Boolean check failed — signal contribution zeroed, thesis not fully invalidated
+    INVALIDATED = "invalidated"  # Hard condition failed — entire bullish/bearish thesis invalidated
+    STALE_DATA = "stale_data"    # Data too old
     MISSING_DATA = "missing_data"  # Data unavailable
-    PENDING = "pending"  # Not yet validated
+    PENDING = "pending"          # Not yet validated
 
 
 class DataSource(BaseModel):

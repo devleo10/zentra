@@ -22,31 +22,20 @@ def compute_final_verdict(
     weighted_numeric_score: int,
     headline_adjustment: int,
     section_scores: Dict[str, int],
-    headline_confidence: float
+    headline_confidence: float,
+    cross_signal_adjustment: int = 0,
 ) -> Dict[str, Any]:
     """
     Compute final verdict deterministically.
     
-    final_score = weighted_numeric_score + headline_adjustment
-    
-    Bias:
-        >= 80 → Strong Bull
-        >= 65 → Bullish
-        >= 40 → Neutral
-        >= 20 → Bearish
-        <  20 → High Risk
-    
-    Confidence:
-        Based on:
-        - Section score agreement (40%)
-        - Distance of final_score from 50 (35%)
-        - Headline classification confidence (25%)
+    final_score = weighted_numeric_score + headline_adjustment + cross_signal_adjustment
     
     Args:
         weighted_numeric_score: 0-100 from numeric engine
         headline_adjustment: -10 to +10 from headline engine
-        section_scores: Dict of section key → score (for agreement calc)
+        section_scores: Dict of section key -> score (for agreement calc)
         headline_confidence: Average confidence from headline classification (0-1)
+        cross_signal_adjustment: -5 to +5 from LLM cross-signal review
     
     Returns:
         Dict with: final_score, bias, action, confidence, confidence_pct, reasoning
@@ -55,18 +44,24 @@ def compute_final_verdict(
     cfg_conf = CONFIG["confidence_formula"]
     
     # 1. Final score
-    final_score = max(0, min(100, weighted_numeric_score + headline_adjustment))
+    final_score = max(0, min(100, weighted_numeric_score + headline_adjustment + cross_signal_adjustment))
     
-    # 2. Bias classification
+    # 2. Bias classification (7 granular thresholds)
     if final_score >= cfg_bias["strong_bull"]["min"]:
         bias = "Strong Bull"
         action = "Aggressive BTC accumulation"
     elif final_score >= cfg_bias["bullish"]["min"]:
         bias = "Bullish"
         action = "Hold + add on dips"
-    elif final_score >= cfg_bias["neutral"]["min"]:
-        bias = "Neutral"
-        action = "Small positions only"
+    elif final_score >= cfg_bias["cautiously_bullish"]["min"]:
+        bias = "Cautiously Bullish"
+        action = "Small longs, tight stops"
+    elif final_score >= cfg_bias["neutral_upside"]["min"]:
+        bias = "Neutral (Upside Bias)"
+        action = "Watch for breakout, hold core"
+    elif final_score >= cfg_bias["neutral_downside"]["min"]:
+        bias = "Neutral (Downside Bias)"
+        action = "Reduce exposure, await clarity"
     elif final_score >= cfg_bias["bearish"]["min"]:
         bias = "Bearish"
         action = "Capital protection"
@@ -110,8 +105,10 @@ def compute_final_verdict(
     else:
         confidence_label = "Low"
     
+    cross_part = f" + CrossSignal: {cross_signal_adjustment:+d}" if cross_signal_adjustment else ""
     reasoning = (
-        f"Numeric: {weighted_numeric_score} + Headlines: {headline_adjustment:+d} = {final_score}. "
+        f"Numeric: {weighted_numeric_score} + Headlines: {headline_adjustment:+d}"
+        f"{cross_part} = {final_score}. "
         f"Bias: {bias}. "
         f"Confidence: {confidence_pct}% ({confidence_label}) "
         f"[agreement={agreement_pct:.0f}%, distance={distance_score:.0f}%, headline_conf={headline_conf_score:.0f}%]"
@@ -127,6 +124,7 @@ def compute_final_verdict(
         "components": {
             "weighted_numeric_score": weighted_numeric_score,
             "headline_adjustment": headline_adjustment,
+            "cross_signal_adjustment": cross_signal_adjustment,
             "agreement_pct": round(agreement_pct, 1),
             "distance_score": round(distance_score, 1),
             "headline_conf_score": round(headline_conf_score, 1),

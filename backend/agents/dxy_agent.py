@@ -70,22 +70,27 @@ Knowledge Base Context:
 {{context}}
 
 Task: Analyze US Dollar (DXY) strength. Score from 0-100 where:
-- 0-20: DXY very strong, risk assets pressured, bearish for BTC
-- 21-40: DXY strengthening, negative for BTC
-- 41-60: DXY stable/range-bound, neutral
-- 61-80: DXY weakening, bullish for BTC
-- 81-100: DXY collapsing, very bullish for BTC and risk assets
+- 0-20: DXY very strong (>107), risk assets pressured, bearish for BTC
+- 21-40: DXY strengthening or elevated (104-107), negative for BTC
+- 41-60: DXY stable/range-bound (~100-104), neutral
+- 61-80: DXY weakening or low (95-100), bullish for BTC
+- 81-100: DXY collapsing or very weak (<95), very bullish for BTC and risk assets
 
-Key Rule: Bitcoin is anti-Dollar. When DXY falls, BTC typically rises.
+Key Rule: Bitcoin is anti-Dollar. When DXY falls OR is at a low absolute level, BTC typically rises.
+IMPORTANT: Consider BOTH the direction (7D trend) AND the absolute level of DXY.
+A DXY at 106 with 0% change is still bearish for BTC. A DXY at 92 with 0% change is still bullish.
 
 Consider:
-- DXY current price and 7D/30D trends
+- DXY current absolute price level (critical — not just direction)
+- DXY 7D/30D trend direction
 - DXY correlation with BTC price movement
 - Emerging market stress (strong USD = EM outflows)
 
 Interpretation:
+- DXY > 105: Strong dollar headwind for BTC
+- DXY 100-105: Neutral zone
+- DXY < 100: Weak dollar tailwind for BTC
 - DXY topping → stocks & commodities next
-- Strong USD → pressure on risk assets
 - Weak USD → money flows into EM, crypto, metals
 
 Provide your analysis in this format:

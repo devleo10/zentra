@@ -34,29 +34,122 @@ class LiquidityAgent(BaseAgent):
         }
     
     def validate_signals(self, data: Dict[str, Any]) -> List[ValidatedSignal]:
-        """Validate liquidity signals"""
+        """Validate liquidity signals: 10Y yield level, yield curve inversion, and balance sheet trend."""
         validated_signals = []
-        validator = SignalValidator()
         yields = data.get("yields", {})
-        
+        balance_sheet = data.get("balance_sheet", {})
+
         data_sources = data.get("_data_sources", [])
         source = data_sources[0] if data_sources else SignalValidator.create_data_source("FRED")
-        
+
+        # 1. 10Y yield level — lower yield = more bullish for risk assets
         yield_10y = yields.get("yield_10y", {})
-        if yield_10y.get("value"):
-            # Would need previous value for trend validation
+        y10_val = yield_10y.get("value")
+        if y10_val is not None:
+            if y10_val < 3.0:
+                yield_label = f"low ({y10_val:.2f}%) — accommodative"
+                yield_contrib = 12.0
+                yield_valid = True
+                yield_status = SignalValidationStatus.VALIDATED
+            elif y10_val < 4.5:
+                yield_label = f"moderate ({y10_val:.2f}%)"
+                yield_contrib = 6.0
+                yield_valid = True
+                yield_status = SignalValidationStatus.VALIDATED
+            else:
+                yield_label = f"high ({y10_val:.2f}%) — restrictive"
+                yield_contrib = 0.0
+                yield_valid = False
+                yield_status = SignalValidationStatus.NEUTRALIZED
+
             validated_signals.append(ValidatedSignal(
-                name=f"10Y yield at {yield_10y.get('value'):.2f}%",
-                value=yield_10y.get("value"),
+                name=f"10Y Treasury yield {yield_label}",
+                value=y10_val,
                 previous_value=None,
-                trend_direction=None,
-                validation_status=SignalValidationStatus.VALIDATED,
-                validation_check="yield > 0",
-                validation_result=True,
-                score_contribution=5.0,
-                data_source=source
+                trend_direction=yield_10y.get("trend"),
+                validation_status=yield_status,
+                validation_check=f"yield_10y < 4.5% for positive (actual: {y10_val:.2f}%)",
+                validation_result=yield_valid,
+                score_contribution=yield_contrib,
+                data_source=source,
             ))
-        
+
+        # 2. Yield curve spread (10Y - 2Y) — inversion = recession risk = bearish for BTC
+        yield_curve_spread = yields.get("yield_curve_spread")
+        yield_2y_val = yields.get("yield_2y", {}).get("value")
+        if yield_curve_spread is not None:
+            if yield_curve_spread < 0:
+                curve_label = f"inverted ({yield_curve_spread:+.2f}pp) — recession risk"
+                curve_contrib = 0.0
+                curve_status = SignalValidationStatus.INVALIDATED
+                curve_valid = False
+                curve_notes = f"Yield curve inverted by {abs(yield_curve_spread):.2f}pp — historical recession signal"
+            elif yield_curve_spread > 0.5:
+                curve_label = f"steepening ({yield_curve_spread:+.2f}pp) — recovery signal"
+                curve_contrib = 10.0
+                curve_status = SignalValidationStatus.VALIDATED
+                curve_valid = True
+                curve_notes = None
+            else:
+                curve_label = f"flat ({yield_curve_spread:+.2f}pp)"
+                curve_contrib = 3.0
+                curve_status = SignalValidationStatus.VALIDATED
+                curve_valid = True
+                curve_notes = None
+
+            validated_signals.append(ValidatedSignal(
+                name=f"Yield curve {curve_label}",
+                value=yield_curve_spread,
+                previous_value=yield_2y_val,
+                trend_direction="up" if yield_curve_spread > 0 else "down",
+                validation_status=curve_status,
+                validation_check=f"yield_curve_spread >= 0 (actual: {yield_curve_spread:+.2f}pp)",
+                validation_result=curve_valid,
+                score_contribution=curve_contrib,
+                data_source=SignalValidator.create_data_source(
+                    "FRED", "DGS2/DGS10", "https://fred.stlouisfed.org/series/T10Y2Y"
+                ),
+                notes=curve_notes,
+            ))
+
+        # 3. Fed balance sheet trend — expanding = more liquidity = bullish
+        bs_trend = balance_sheet.get("trend", "stable")
+        bs_total = balance_sheet.get("total_assets")
+        if bs_trend and not balance_sheet.get("error"):
+            if bs_trend == "expanding":
+                bs_label = "expanding (QE / liquidity injection)"
+                bs_contrib = 12.0
+                bs_status = SignalValidationStatus.VALIDATED
+                bs_valid = True
+                bs_notes = None
+            elif bs_trend == "contracting":
+                bs_label = "contracting (QT — liquidity draining)"
+                bs_contrib = 0.0
+                bs_status = SignalValidationStatus.INVALIDATED
+                bs_valid = False
+                bs_notes = "Fed balance sheet QT invalidates liquidity-expansion thesis"
+            else:
+                bs_label = "stable"
+                bs_contrib = 5.0
+                bs_status = SignalValidationStatus.VALIDATED
+                bs_valid = True
+                bs_notes = None
+
+            validated_signals.append(ValidatedSignal(
+                name=f"Fed balance sheet {bs_label}",
+                value=float(bs_total) if bs_total is not None else 0.0,
+                previous_value=None,
+                trend_direction="up" if bs_trend == "expanding" else "down" if bs_trend == "contracting" else "flat",
+                validation_status=bs_status,
+                validation_check=f"balance_sheet_trend != 'contracting' (actual: {bs_trend})",
+                validation_result=bs_valid,
+                score_contribution=bs_contrib,
+                data_source=SignalValidator.create_data_source(
+                    "FRED", "WALCL", "https://fred.stlouisfed.org/series/WALCL"
+                ),
+                notes=bs_notes,
+            ))
+
         return validated_signals
     
     def create_prompt(self) -> PromptTemplate:
