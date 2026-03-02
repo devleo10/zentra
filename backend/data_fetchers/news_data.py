@@ -1,17 +1,29 @@
 """
-Fetch Fed speeches and macro news from NewsAPI with free-tier fallback
+Fetch Fed speeches and macro news from NewsAPI with free-tier fallback.
+Includes LLM-powered semantic tone analysis with keyword fallback.
 """
 import os
+import json
+import logging
 import requests
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
 
+logger = logging.getLogger("btc_macro.news_data")
+
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 NEWS_API_URL = "https://newsapi.org/v2/everything"
+
+_LLM_CONFIG_PATH = Path(__file__).parent.parent / "config" / "llm_config.json"
+
+def _load_llm_config():
+    with open(_LLM_CONFIG_PATH) as f:
+        return json.load(f)
 
 # NewsAPI free tier only allows ~30 days lookback
 NEWSAPI_MAX_DAYS = 29
@@ -155,6 +167,92 @@ def analyze_fed_keywords(articles: List[Dict]) -> Dict:
         "tone": tone,
         "articles_analyzed": len(articles)
     }
+
+
+def analyze_fed_tone_llm(articles: List[Dict]) -> Dict:
+    """
+    Use LLM to semantically analyze the tone of Fed-related articles.
+
+    Returns the same shape as analyze_fed_keywords() so callers are
+    drop-in compatible.  Falls back to keyword counting on any failure.
+    """
+    if not articles:
+        return analyze_fed_keywords(articles)
+
+    top_articles = articles[:5]
+    snippets = "\n\n".join(
+        f"Title: {a.get('title', '')}\nSnippet: {(a.get('description') or '')[:200]}"
+        for a in top_articles
+    )
+
+    prompt = (
+        "You are a Federal Reserve policy tone analyst.\n"
+        "Analyze these recent Fed-related news articles and determine the overall "
+        "monetary policy tone.\n\n"
+        f"--- ARTICLES ---\n{snippets}\n--- END ---\n\n"
+        "Output ONLY valid JSON in this exact format:\n"
+        "{\n"
+        '  "overall_tone": "hawkish" | "dovish" | "neutral",\n'
+        '  "dovish_signals": <int 0-5>,\n'
+        '  "hawkish_signals": <int 0-5>,\n'
+        '  "pivot_signals": <int 0-5>,\n'
+        '  "key_insight": "<one sentence summary>",\n'
+        '  "confidence": <float 0.0-1.0>\n'
+        "}\n\n"
+        "Rules:\n"
+        "- hawkish = tighter policy, higher-for-longer, persistent inflation concerns\n"
+        "- dovish = easing signals, rate cuts, disinflation progress\n"
+        "- neutral = mixed signals or no clear direction\n"
+        "- Pay attention to NEGATION (e.g. 'will NOT cut' is hawkish)\n"
+        "- confidence = how clearly the articles point in one direction\n"
+    )
+
+    try:
+        from scoring_engine.llm_caller import call_llm_json
+
+        cfg = _load_llm_config().get("fed_tone_analysis", {})
+        result = call_llm_json(
+            prompt=prompt,
+            system_message="You are a Federal Reserve policy tone analyst. Output only valid JSON.",
+            model=cfg.get("model", "gpt-4o"),
+            temperature=cfg.get("temperature", 0),
+            max_tokens=cfg.get("max_tokens", 200),
+        )
+
+        if result is None:
+            raise ValueError("LLM returned None")
+
+        tone = result.get("overall_tone", "neutral")
+        if tone not in ("hawkish", "dovish", "neutral"):
+            tone = "neutral"
+
+        dovish_s = max(0, min(5, int(result.get("dovish_signals", 0))))
+        hawkish_s = max(0, min(5, int(result.get("hawkish_signals", 0))))
+        pivot_s = max(0, min(5, int(result.get("pivot_signals", 0))))
+        conf = max(0.0, min(1.0, float(result.get("confidence", 0.5))))
+
+        logger.info(
+            "LLM Fed tone: %s (dovish=%d hawkish=%d pivot=%d conf=%.2f) — %s",
+            tone, dovish_s, hawkish_s, pivot_s, conf,
+            result.get("key_insight", ""),
+        )
+
+        return {
+            "dovish_keywords_found": dovish_s,
+            "hawkish_keywords_found": hawkish_s,
+            "pivot_keywords_found": pivot_s,
+            "tone": tone,
+            "articles_analyzed": len(top_articles),
+            "llm_fed_tone": True,
+            "key_insight": result.get("key_insight", ""),
+            "fed_tone_confidence": conf,
+        }
+
+    except Exception as e:
+        logger.warning("LLM Fed tone analysis failed (%s), falling back to keywords", e)
+        fallback = analyze_fed_keywords(articles)
+        fallback["llm_fed_tone"] = False
+        return fallback
 
 
 def get_macro_news(days: int = 7) -> List[Dict]:
