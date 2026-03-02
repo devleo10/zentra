@@ -52,6 +52,8 @@ from scoring_engine.numeric_scorer import (
     score_dxy, score_risk_sentiment, compute_weighted_total,
 )
 from scoring_engine.headline_adjuster import compute_headline_adjustment
+from scoring_engine.cross_signal_reviewer import review_cross_signals
+from scoring_engine.narrative_generator import generate_narrative
 from scoring_engine.verdict import compute_final_verdict
 from scoring_engine.freshness import validate_data_freshness
 from headline_engine.fetcher import HeadlineFetcher, HeadlineFetchError
@@ -140,6 +142,13 @@ def run_analysis(timeframe: str = "current"):
     except Exception as e:
         logger.error(f"  Gold fetch FAILED: {e}")
         raw_data["gold"] = {"error": str(e)}
+
+    try:
+        raw_data["oil"] = fred_data.get_oil_data(timeframe)
+        logger.info(f"  Oil (WTI): ${raw_data['oil'].get('current_price', 'ERROR')}")
+    except Exception as e:
+        logger.error(f"  Oil fetch FAILED: {e}")
+        raw_data["oil"] = {"error": str(e)}
     
     try:
         raw_data["btc"] = coingecko_data.get_btc_price(timeframe)
@@ -148,17 +157,26 @@ def run_analysis(timeframe: str = "current"):
         logger.error(f"  BTC fetch FAILED: {e}")
         raw_data["btc"] = {"error": str(e)}
     
-    # Fed keywords from news (for fed_policy scoring)
+    # Fed tone analysis — LLM-powered with keyword fallback
     try:
-        # Map timeframe to days for news lookback
         days_map = {"current": 3, "week": 7, "month": 30, "year": 90}
         days = days_map.get(timeframe, 3)
         articles = news_data.get_fed_speeches(days=days)
-        raw_data["fed_keywords"] = news_data.analyze_fed_keywords(articles)
-        logger.info(f"  Fed keywords ({days}d lookback): {raw_data['fed_keywords']}")
+        raw_data["fed_keywords"] = news_data.analyze_fed_tone_llm(articles)
+        used_llm = raw_data["fed_keywords"].get("llm_fed_tone", False)
+        logger.info(f"  Fed tone ({days}d, {'LLM' if used_llm else 'keywords'}): {raw_data['fed_keywords']}")
     except Exception as e:
-        logger.error(f"  Fed keywords fetch FAILED: {e}")
+        logger.error(f"  Fed tone analysis FAILED: {e}")
         raw_data["fed_keywords"] = {"dovish_keywords_found": 0, "hawkish_keywords_found": 0, "pivot_keywords_found": 0}
+
+    # Actual Fed Funds Rate (FEDFUNDS) — essential for accurate fed_policy scoring
+    try:
+        raw_data["fed_rate"] = fred_data.get_fed_funds_rate(timeframe)
+        logger.info(f"  Fed Funds Rate: {raw_data['fed_rate'].get('current_rate', 'ERROR')}% "
+                    f"(trend: {raw_data['fed_rate'].get('trend', 'N/A')})")
+    except Exception as e:
+        logger.error(f"  Fed Funds Rate fetch FAILED: {e}")
+        raw_data["fed_rate"] = {"error": str(e)}
 
     # ── STEP 2: Validate data freshness ────────────────────────────────
     logger.info("[2/9] Validating data freshness...")
@@ -182,16 +200,35 @@ def run_analysis(timeframe: str = "current"):
     # ── STEP 3: Compute numeric scores (deterministic, zero LLM) ──────
     logger.info("[3/9] Computing deterministic numeric scores...")
     
-    cpi_change = raw_data["cpi"].get("change", raw_data["cpi"].get("mom_change", 0))
+    # CPI: raise explicit warning when data is missing instead of silently defaulting to 0
+    cpi_change = raw_data["cpi"].get("mom_change", raw_data["cpi"].get("change"))
+    if cpi_change is None:
+        if raw_data["cpi"].get("_fallback"):
+            # Use the last-snapshot fallback value with a warning
+            cpi_change = raw_data["cpi"].get("mom_change", 0.0)
+            logger.warning("CPI change is missing — using last-snapshot fallback value: %s", cpi_change)
+        elif "error" in raw_data["cpi"]:
+            logger.error("CPI data fetch failed: %s — scoring as neutral (0.0 MoM)", raw_data["cpi"]["error"])
+            cpi_change = 0.0
+        else:
+            logger.warning("CPI mom_change is None in fetched data — scoring as flat (0.0 MoM)")
+            cpi_change = 0.0
+
     pce_change = raw_data["pce"].get("change", raw_data["pce"].get("mom_change", None))
-    oil_change = raw_data.get("gold", {}).get("change")  # Using gold as proxy if oil not fetched separately
-    
+    oil_change = raw_data.get("oil", {}).get("change")  # WTI crude oil % change (FRED DCOILWTICO)
+
     inflation_score, inflation_reasoning = score_inflation(cpi_change, pce_change, oil_change)
-    
+
     dovish_kw = raw_data["fed_keywords"].get("dovish_keywords_found", 0)
     hawkish_kw = raw_data["fed_keywords"].get("hawkish_keywords_found", 0)
     pivot_kw = raw_data["fed_keywords"].get("pivot_keywords_found", 0)
-    fed_score, fed_reasoning = score_fed_policy(dovish_kw, hawkish_kw, pivot_kw)
+    fed_rate_val = raw_data.get("fed_rate", {}).get("current_rate")
+    fed_rate_trend = raw_data.get("fed_rate", {}).get("trend", "stable")
+    fed_score, fed_reasoning = score_fed_policy(
+        dovish_kw, hawkish_kw, pivot_kw,
+        fed_rate=fed_rate_val,
+        rate_trend=fed_rate_trend,
+    )
     
     yield_10y = raw_data["yields"].get("yield_10y", {}).get("value")
     yield_curve = raw_data["yields"].get("yield_curve_spread")
@@ -199,7 +236,8 @@ def run_analysis(timeframe: str = "current"):
     liquidity_score, liquidity_reasoning = score_liquidity(yield_10y, yield_curve, bs_trend)
     
     dxy_change = raw_data["dxy"].get("change", 0)
-    dxy_score, dxy_reasoning = score_dxy(dxy_change)
+    dxy_level = raw_data["dxy"].get("current_price")  # Absolute DXY value (e.g. 104.2)
+    dxy_score, dxy_reasoning = score_dxy(dxy_change, dxy_level)
     
     vix_val = raw_data["vix"].get("current_value")
     sp500_change = raw_data["sp500"].get("change")
@@ -229,6 +267,17 @@ def run_analysis(timeframe: str = "current"):
     logger.info(f"  DXY:            {dxy_score}/100 — {dxy_reasoning}")
     logger.info(f"  Risk Sentiment: {risk_score}/100 — {risk_reasoning}")
     logger.info(f"  Weighted Total: {weighted_score}/100")
+
+    # ── STEP 3b: Cross-signal LLM review ──────────────────────────────
+    logger.info("[3b/9] Running cross-signal LLM review...")
+    cross_adj, cross_reasoning, signals_to_watch = review_cross_signals(
+        section_scores=section_scores,
+        section_reasoning=section_reasoning,
+        raw_data=raw_data,
+    )
+    logger.info(f"  Cross-signal adjustment: {cross_adj:+d}")
+    if cross_reasoning:
+        logger.info(f"  Reasoning: {cross_reasoning[:150]}")
 
     # ── STEP 4: Fetch macro headlines (last 48h) ──────────────────────
     logger.info("[4/9] Fetching macro headlines...")
@@ -328,6 +377,7 @@ def run_analysis(timeframe: str = "current"):
         headline_adjustment=headline_adj,
         section_scores=section_scores,
         headline_confidence=avg_headline_conf,
+        cross_signal_adjustment=cross_adj,
     )
     
     logger.info(f"  Final Score:  {verdict['final_score']}/100")
@@ -335,13 +385,38 @@ def run_analysis(timeframe: str = "current"):
     logger.info(f"  Action:       {verdict['action']}")
     logger.info(f"  Confidence:   {verdict['confidence_pct']}% ({verdict['confidence_label']})")
 
+    # ── STEP 7b: Generate LLM narrative ───────────────────────────────
+    logger.info("[7b/9] Generating verdict narrative...")
+    narrative_data = generate_narrative(
+        final_score=verdict["final_score"],
+        bias=verdict["bias"],
+        action=verdict["action"],
+        section_scores=section_scores,
+        section_reasoning=section_reasoning,
+        headline_adjustment=headline_adj,
+        cross_signal_adjustment=cross_adj,
+        cross_signal_reasoning=cross_reasoning,
+        raw_data=raw_data,
+        template_reasoning=verdict.get("reasoning", ""),
+    )
+    logger.info(f"  Narrative: {narrative_data['narrative'][:120]}")
+    if narrative_data["key_risk"]:
+        logger.info(f"  Key risk: {narrative_data['key_risk']}")
+    if narrative_data["catalyst_to_watch"]:
+        logger.info(f"  Catalyst: {narrative_data['catalyst_to_watch']}")
+
     # ── STEP 8: Store snapshot to SQLite ──────────────────────────────
     logger.info("[8/9] Saving snapshot to local database...")
     snapshot = {
         "timestamp": timestamp,
+        "timeframe": timeframe,
         "cpi_mom_change": cpi_change,
+        "cpi_yoy_rate": raw_data["cpi"].get("yoy_rate"),
+        "cpi_core_yoy_rate": raw_data["cpi"].get("core_yoy_rate"),
+        "cpi_source": raw_data["cpi"].get("source", "FRED"),
         "pce_mom_change": pce_change,
         "oil_change": oil_change,
+        "oil_price": raw_data.get("oil", {}).get("current_price"),
         "dxy_value": raw_data["dxy"].get("current_price"),
         "dxy_change_7d": dxy_change,
         "vix": vix_val,
@@ -351,6 +426,8 @@ def run_analysis(timeframe: str = "current"):
         "sp500_change": sp500_change,
         "gold_change": gold_change_val,
         "btc_price": raw_data["btc"].get("price_usd"),
+        "fed_funds_rate": fed_rate_val,
+        "fed_rate_trend": fed_rate_trend,
         "section_scores": section_scores,
         "section_reasoning": section_reasoning,
         "weighted_numeric_score": weighted_score,
@@ -376,6 +453,12 @@ def run_analysis(timeframe: str = "current"):
         "dovish_keyword_count": dovish_kw,
         "hawkish_keyword_count": hawkish_kw,
         "pivot_keyword_count": pivot_kw,
+        "cross_signal_adjustment": cross_adj,
+        "cross_signal_reasoning": cross_reasoning,
+        "signals_to_watch": signals_to_watch,
+        "narrative": narrative_data.get("narrative", ""),
+        "key_risk": narrative_data.get("key_risk", ""),
+        "catalyst_to_watch": narrative_data.get("catalyst_to_watch", ""),
     }
     
     try:
@@ -403,15 +486,24 @@ def run_analysis(timeframe: str = "current"):
     print(f"    ─────────────────────────")
     print(f"    Weighted Total: {weighted_score:3d}/100")
     print()
-    print(f"  ── Headline Adjustment ──")
+    print(f"  ── Adjustments ──")
     print(f"    Headlines analyzed: {len(headlines)}")
-    print(f"    Adjustment:         {headline_adj:+d}")
+    print(f"    Headline adj:       {headline_adj:+d}")
+    print(f"    Cross-signal adj:   {cross_adj:+d}")
     print()
     print(f"  ── Final Verdict ──")
     print(f"    SCORE:      {verdict['final_score']}/100")
     print(f"    BIAS:       {verdict['bias']}")
     print(f"    ACTION:     {verdict['action']}")
     print(f"    CONFIDENCE: {verdict['confidence_pct']}% ({verdict['confidence_label']})")
+    if narrative_data.get("narrative"):
+        print()
+        print(f"  ── Analyst Commentary ──")
+        print(f"    {narrative_data['narrative']}")
+        if narrative_data.get("key_risk"):
+            print(f"    Risk: {narrative_data['key_risk']}")
+        if narrative_data.get("catalyst_to_watch"):
+            print(f"    Watch: {narrative_data['catalyst_to_watch']}")
     print("=" * 70)
     
     if freshness_report.warnings:
@@ -450,13 +542,3 @@ if __name__ == "__main__":
         sys.exit(2)
 
 
-if __name__ == "__main__":
-    try:
-        run_analysis()
-        sys.exit(0)
-    except SystemExit:
-        raise
-    except Exception as e:
-        logger.exception(f"Unrecoverable error: {e}")
-        print(f"\n❌ FATAL ERROR: {e}")
-        sys.exit(2)
