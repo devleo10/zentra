@@ -105,157 +105,115 @@ export default function Home() {
 
         {result && (
           <>
-            {/* Verdict */}
+            {/* Verdict — score, bias, action, BTC */}
             <div className="bg-gray-900 rounded-2xl p-5 border border-gray-800">
-              <div className="flex items-start justify-between">
-                <div>
-                  <div className="text-5xl font-bold">{result.final_score}</div>
-                  <div className="text-gray-500 text-xs mt-1">Score / 100</div>
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-baseline gap-3">
+                  <span className="text-4xl font-bold tabular-nums">{result.final_score}</span>
+                  <span className="text-gray-500 text-sm">/ 100</span>
+                  {(result.headline_adjustment !== 0 || result.cross_signal_adjustment !== 0) && (
+                    <span className="text-gray-500 text-xs">
+                      {result.weighted_numeric_score}
+                      {result.headline_adjustment !== 0 && (
+                        <span className={result.headline_adjustment > 0 ? "text-green-400" : "text-red-400"}>
+                          {" + "}{result.headline_adjustment}
+                        </span>
+                      )}
+                      {result.cross_signal_adjustment !== 0 && (
+                        <span className={result.cross_signal_adjustment > 0 ? "text-green-400" : "text-red-400"}>
+                          {" + "}{result.cross_signal_adjustment}
+                        </span>
+                      )}
+                      {" = "}{result.final_score}
+                    </span>
+                  )}
                 </div>
-                <div className="text-right space-y-1.5">
+                <div className="text-right">
                   <div className={`inline-block px-3 py-1 rounded-full text-sm font-semibold ${getBiasStyle(result.bias)}`}>
                     {result.bias}
                   </div>
-                  <div className="text-gray-300 text-sm">{result.action}</div>
-                  <div className="text-gray-500 text-xs">{result.confidence_pct.toFixed(0)}% confidence</div>
+                  <p className="text-gray-300 text-sm mt-1">{result.action}</p>
+                  <p className="text-gray-500 text-xs mt-0.5">{result.confidence_pct.toFixed(0)}% confidence</p>
                 </div>
               </div>
-              {result.btc_price && (
+              {result.btc_price != null && (
                 <div className="mt-3 pt-3 border-t border-gray-800 text-sm text-gray-400">
                   BTC <span className="text-white font-mono font-semibold">${result.btc_price.toLocaleString()}</span>
                 </div>
               )}
             </div>
 
-            {/* Analyst Commentary */}
-            {result.narrative && (
-              <div className="bg-gray-900 rounded-2xl p-5 border border-gray-800 space-y-3">
-                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Analyst Commentary</div>
+            {/* Commentary — narrative only when it looks like prose (not the raw formula) */}
+            {result.narrative && !result.narrative.startsWith("Numeric:") && (
+              <div className="bg-gray-900 rounded-2xl p-4 border border-gray-800">
                 <p className="text-sm text-gray-200 leading-relaxed">{result.narrative}</p>
                 {(result.key_risk || result.catalyst_to_watch) && (
-                  <div className="grid grid-cols-1 gap-2 pt-2 border-t border-gray-800">
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 pt-2 border-t border-gray-800 text-xs">
                     {result.key_risk && (
-                      <div className="flex gap-2 text-sm">
-                        <span className="text-red-400 font-semibold shrink-0">Risk:</span>
-                        <span className="text-gray-300">{result.key_risk}</span>
-                      </div>
+                      <span><span className="text-red-400 font-medium">Risk:</span> <span className="text-gray-400">{result.key_risk}</span></span>
                     )}
                     {result.catalyst_to_watch && (
-                      <div className="flex gap-2 text-sm">
-                        <span className="text-blue-400 font-semibold shrink-0">Watch:</span>
-                        <span className="text-gray-300">{result.catalyst_to_watch}</span>
-                      </div>
+                      <span><span className="text-blue-400 font-medium">Watch:</span> <span className="text-gray-400">{result.catalyst_to_watch}</span></span>
                     )}
                   </div>
                 )}
               </div>
             )}
 
-            {/* Section Scores */}
-            <div className="bg-gray-900 rounded-2xl p-5 border border-gray-800 space-y-3">
-              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Breakdown</div>
-              {Object.entries(result.section_scores).map(([key, score]) => (
-                <div key={key}>
-                  <div className="flex justify-between text-sm mb-1">
-                    <span className="text-gray-300">{SECTION_LABELS[key] ?? key}</span>
-                    <span className={`font-semibold ${scoreColor(score)}`}>{score}</span>
+            {/* Section breakdown */}
+            <div className="bg-gray-900 rounded-2xl p-4 border border-gray-800">
+              <div className="flex justify-between text-xs text-gray-500 mb-2">Breakdown</div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+                {Object.entries(result.section_scores).map(([key, score]) => (
+                  <div key={key} className="flex items-center gap-2">
+                    <span className="text-gray-400 text-sm w-24 shrink-0">{SECTION_LABELS[key] ?? key}</span>
+                    <div className="flex-1 min-w-0 bg-gray-800 rounded-full h-2">
+                      <div className={`h-2 rounded-full ${barColor(score)}`} style={{ width: `${score}%` }} />
+                    </div>
+                    <span className={`text-sm font-semibold w-6 text-right ${scoreColor(score)}`}>{score}</span>
                   </div>
-                  <div className="w-full bg-gray-800 rounded-full h-1.5">
-                    <div className={`h-1.5 rounded-full ${barColor(score)}`} style={{ width: `${score}%` }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Key Data */}
-            <div className="grid grid-cols-2 gap-3">
-              {/* CPI */}
-              <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-                <div className="text-xs text-gray-500 mb-1">CPI Inflation</div>
-                <div className="text-xl font-bold text-white">
-                  {result.cpi_yoy_rate != null
-                    ? `${result.cpi_yoy_rate.toFixed(1)}%`
-                    : result.cpi_mom_change != null
-                    ? `${result.cpi_mom_change > 0 ? "+" : ""}${result.cpi_mom_change.toFixed(2)}% MoM`
-                    : "—"}
-                </div>
-                <div className="text-xs text-gray-500 mt-0.5">
-                  {result.cpi_core_yoy_rate != null
-                    ? `Core ${result.cpi_core_yoy_rate.toFixed(1)}%`
-                    : result.cpi_yoy_rate != null && result.cpi_mom_change != null
-                    ? `MoM ${result.cpi_mom_change > 0 ? "+" : ""}${result.cpi_mom_change.toFixed(2)}%`
-                    : "Year-over-year"}
-                </div>
-              </div>
-
-              {/* DXY */}
-              <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-                <div className="text-xs text-gray-500 mb-1">DXY</div>
-                <div className="text-xl font-bold text-white">
-                  {result.dxy_value != null ? result.dxy_value.toFixed(2) : "—"}
-                </div>
-                <div className={`text-xs mt-0.5 ${
-                  result.dxy_change_7d != null
-                    ? result.dxy_change_7d < 0 ? "text-green-400" : result.dxy_change_7d > 0 ? "text-red-400" : "text-gray-500"
-                    : "text-gray-500"
-                }`}>
-                  {result.dxy_change_7d != null
-                    ? `7D ${result.dxy_change_7d > 0 ? "+" : ""}${result.dxy_change_7d.toFixed(2)}%`
-                    : "US Dollar Index"}
-                </div>
-              </div>
-
-              {/* Oil */}
-              <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-                <div className="text-xs text-gray-500 mb-1">WTI Oil</div>
-                <div className="text-xl font-bold text-white">
-                  {result.oil_price != null ? `$${result.oil_price.toFixed(0)}` : "—"}
-                </div>
-                <div className="text-xs text-gray-500 mt-0.5">USD / barrel</div>
-              </div>
-
-              {/* VIX */}
-              <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-                <div className="text-xs text-gray-500 mb-1">VIX</div>
-                <div className={`text-xl font-bold ${
-                  result.vix != null
-                    ? result.vix > 20 ? "text-red-400" : result.vix < 15 ? "text-green-400" : "text-white"
-                    : "text-white"
-                }`}>
-                  {result.vix != null ? result.vix.toFixed(1) : "—"}
-                </div>
-                <div className="text-xs text-gray-500 mt-0.5">
-                  {result.ten_year_yield != null ? `10Y ${result.ten_year_yield.toFixed(2)}%` : "Volatility index"}
-                </div>
+                ))}
               </div>
             </div>
 
-            {/* Score adjustments */}
-            {(result.headline_adjustment !== 0 || result.cross_signal_adjustment !== 0) && (
-              <div className="bg-gray-900 rounded-xl p-4 border border-gray-800 space-y-2 text-sm">
-                {result.headline_adjustment !== 0 && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-gray-400">News adjustment</span>
-                    <span className={`font-semibold ${result.headline_adjustment > 0 ? "text-green-400" : "text-red-400"}`}>
-                      {result.headline_adjustment > 0 ? "+" : ""}{result.headline_adjustment} pts
+            {/* Key metrics — single row */}
+            <div className="flex flex-wrap gap-2 text-sm">
+              {result.cpi_yoy_rate != null && (
+                <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300">
+                  CPI <span className="text-white font-medium">{result.cpi_yoy_rate.toFixed(1)}%</span>
+                  {result.cpi_core_yoy_rate != null && <span className="text-gray-500"> · Core {result.cpi_core_yoy_rate.toFixed(1)}%</span>}
+                </span>
+              )}
+              {result.dxy_value != null && (
+                <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300">
+                  DXY <span className="text-white font-medium">{result.dxy_value.toFixed(2)}</span>
+                  {result.dxy_change_7d != null && (
+                    <span className={result.dxy_change_7d >= 0 ? "text-red-400" : "text-green-400"}>
+                      {" "}{result.dxy_change_7d >= 0 ? "+" : ""}{result.dxy_change_7d.toFixed(2)}% 7D
                     </span>
-                  </div>
-                )}
-                {result.cross_signal_adjustment !== 0 && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-gray-400">Cross-signal adjustment</span>
-                    <span className={`font-semibold ${result.cross_signal_adjustment > 0 ? "text-green-400" : "text-red-400"}`}>
-                      {result.cross_signal_adjustment > 0 ? "+" : ""}{result.cross_signal_adjustment} pts
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Timestamp */}
-            <div className="text-center text-xs text-gray-600">
-              {new Date(result.timestamp).toLocaleString()}
+                  )}
+                </span>
+              )}
+              {result.oil_price != null && (
+                <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300">
+                  WTI <span className="text-white font-medium">${result.oil_price.toFixed(0)}</span>
+                </span>
+              )}
+              {result.vix != null && (
+                <span className={`bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 ${
+                  result.vix > 20 ? "text-red-400" : result.vix < 15 ? "text-green-400" : "text-gray-300"
+                }`}>
+                  VIX <span className="font-medium">{result.vix.toFixed(1)}</span>
+                </span>
+              )}
+              {result.ten_year_yield != null && (
+                <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300">
+                  10Y <span className="text-white font-medium">{result.ten_year_yield.toFixed(2)}%</span>
+                </span>
+              )}
             </div>
+
+            <p className="text-center text-xs text-gray-600">{new Date(result.timestamp).toLocaleString()}</p>
           </>
         )}
       </div>
