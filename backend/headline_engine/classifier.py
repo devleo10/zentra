@@ -10,7 +10,6 @@ LLM is used ONLY here — for classifying macro headlines.
 """
 import os
 import re
-import time
 import json
 import logging
 from typing import List, Dict, Any, Optional
@@ -100,26 +99,12 @@ class HeadlineClassifier:
         self.prompt_template = LLM_CONFIG["headline_prompt_template"]
         self.prompt_version = self.config["prompt_version"]
         self.model = self.config["model"]
-        self.client = self._init_client()
-    
-    def _init_client(self):
-        """Initialize OpenAI client. Falls back to available LLM."""
-        openai_key = os.getenv("OPENAI_API_KEY")
-        if openai_key:
-            try:
-                from openai import OpenAI
-                return OpenAI(api_key=openai_key)
-            except ImportError:
-                raise ImportError("openai package required. pip install openai")
-        
-        gemini_key = os.getenv("GEMINI_API_KEY")
-        if gemini_key:
-            # Return a marker so classify_single knows to use Gemini
-            return {"type": "gemini", "api_key": gemini_key}
-        
-        raise ValueError(
-            "No LLM API key found. Set OPENAI_API_KEY or GEMINI_API_KEY in .env"
-        )
+        try:
+            from llm import get_provider
+            self._provider = get_provider()
+        except ImportError:
+            from llm.provider_factory import get_provider
+            self._provider = get_provider()
     
     def classify_headlines(self, headlines: List[Dict]) -> List[Dict[str, Any]]:
         """
@@ -163,10 +148,24 @@ class HeadlineClassifier:
             description=(description or "").replace('"', "'")[:300],
         )
         
-        if isinstance(self.client, dict) and self.client.get("type") == "gemini":
-            raw = self._call_gemini(prompt)
-        else:
-            raw = self._call_openai(prompt)
+        try:
+            from llm.provider_interface import ProviderError
+        except ImportError:
+            ProviderError = Exception
+        try:
+            messages = [
+                {"role": "system", "content": "You are a macro-economic event classifier. Output only valid JSON."},
+                {"role": "user", "content": prompt},
+            ]
+            raw = self._provider.chat(
+                messages,
+                self.model,
+                temperature=0,
+                max_tokens=self.config["max_tokens"],
+            )
+        except (ProviderError, ValueError) as e:
+            logger.warning("LLM classify failed: %s", e)
+            raise
         
         # Parse and validate JSON. If parsing fails, apply deterministic keyword fallback
         try:
@@ -183,80 +182,6 @@ class HeadlineClassifier:
             kw["_model"] = "keyword_fallback"
             kw["_prompt_version"] = self.prompt_version
             return kw
-    
-    def _call_openai(self, prompt: str) -> str:
-        """Call OpenAI API with temperature=0."""
-        response = self.client.chat.completions.create(
-            model=self.model,
-            temperature=0,
-            max_tokens=self.config["max_tokens"],
-            messages=[
-                {"role": "system", "content": "You are a macro-economic event classifier. Output only valid JSON."},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        return response.choices[0].message.content.strip()
-    
-    def _call_gemini(self, prompt: str) -> str:
-        """Call Gemini API with temperature=0. Uses google-genai SDK with 429 retry."""
-        api_key = self.client["api_key"]
-        model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-
-        # Try new google.genai SDK first (recommended), fall back to legacy
-        try:
-            from google import genai as genai_new
-            from google.genai import types as genai_types
-            client = genai_new.Client(api_key=api_key)
-            for attempt in range(3):
-                try:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config=genai_types.GenerateContentConfig(
-                            temperature=0,
-                            max_output_tokens=self.config["max_tokens"],
-                            system_instruction="You are a macro-economic event classifier. Output only valid JSON.",
-                        ),
-                    )
-                    return response.text.strip()
-                except Exception as e:
-                    err = str(e)
-                    if "429" in err or "quota" in err.lower():
-                        wait = 15 * (attempt + 1)
-                        logger.warning("Gemini rate-limited (attempt %d/3), waiting %ds", attempt + 1, wait)
-                        time.sleep(wait)
-                        continue
-                    raise
-            raise RuntimeError("Gemini quota exceeded after 3 retries")
-        except ImportError:
-            pass  # fall through to legacy SDK
-
-        # Legacy fallback: google-generativeai
-        try:
-            import google.generativeai as genai_legacy
-            genai_legacy.configure(api_key=api_key)
-            model = genai_legacy.GenerativeModel(model_name)
-            for attempt in range(3):
-                try:
-                    response = model.generate_content(
-                        prompt,
-                        generation_config=genai_legacy.types.GenerationConfig(
-                            temperature=0,
-                            max_output_tokens=self.config["max_tokens"],
-                        ),
-                    )
-                    return response.text.strip()
-                except Exception as e:
-                    err = str(e)
-                    if "429" in err or "quota" in err.lower():
-                        wait = 15 * (attempt + 1)
-                        logger.warning("Gemini (legacy) rate-limited (attempt %d/3), waiting %ds", attempt + 1, wait)
-                        time.sleep(wait)
-                        continue
-                    raise
-            raise RuntimeError("Gemini quota exceeded after 3 retries")
-        except ImportError:
-            raise ImportError("Install google-genai: pip install google-genai")
     
     def _parse_json_response(self, raw: str) -> Dict:
         """Parse JSON from LLM response, handling markdown fences and truncation."""
