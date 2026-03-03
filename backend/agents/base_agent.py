@@ -17,37 +17,12 @@ load_dotenv()
 
 
 def get_llm():
-    """Get LLM - try Gemini first, fallback to OpenAI"""
-    # Prefer OpenAI when an OpenAI key is provided
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if openai_key:
-        try:
-            from langchain_openai import ChatOpenAI
-            return ChatOpenAI(
-                model=os.getenv("OPENAI_MODEL", "gpt-4o"),
-                temperature=0.3,
-                api_key=openai_key
-            )
-        except Exception:
-            # If langchain_openai isn't available, fall back to trying Gemini
-            pass
-
-    # If OpenAI not present or failed, try Gemini (optional)
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if gemini_key:
-        try:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-            return ChatGoogleGenerativeAI(
-                model=gemini_model,
-                temperature=0.3,
-                google_api_key=gemini_key
-            )
-        except Exception:
-            # Could not initialize Gemini client
-            pass
-
-    raise ValueError("Neither OPENAI_API_KEY nor GEMINI_API_KEY (optional) could be used to initialize an LLM.\nPlease set OPENAI_API_KEY or a valid GEMINI_API_KEY in backend/.env")
+    """Get LLM for v1 agents via centralized provider (LLM_PROVIDER / OPENAI / GEMINI)."""
+    try:
+        from llm import get_provider, get_default_chat_model
+    except ImportError:
+        from llm.provider_factory import get_provider, get_default_chat_model
+    return get_provider(), get_default_chat_model()
 
 
 class BaseAgent(ABC):
@@ -55,7 +30,7 @@ class BaseAgent(ABC):
     
     def __init__(self, section_name: str):
         self.section_name = section_name
-        self.llm = get_llm()
+        self._provider, self._chat_model = get_llm()
         self.retriever = get_retriever(k=5)
         self.validator = SignalValidator()
     
@@ -151,9 +126,15 @@ class BaseAgent(ABC):
         do not claim it in your analysis. Be factually accurate. Focus on the {timeframe_label} trends.
         """
         
-        # Run LLM
+        # Run LLM via centralized provider
         formatted_prompt = prompt_template.format(query=query)
-        result_text = self.llm.invoke(formatted_prompt).content
+        messages = [{"role": "user", "content": formatted_prompt}]
+        result_text = self._provider.chat(
+            messages,
+            self._chat_model,
+            temperature=0.3,
+            max_tokens=1024,
+        )
         
         # Parse result and create SectionScore with validation
         return self._parse_result(
