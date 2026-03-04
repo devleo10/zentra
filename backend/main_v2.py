@@ -105,9 +105,10 @@ async def v2_analyze(timeframe: str = "current"):
         result = _run(timeframe=timeframe)
         return JSONResponse(content=result, status_code=200)
     except SystemExit as e:
+        code = getattr(e, "code", None)
         raise HTTPException(
             status_code=503,
-            detail=f"Analysis aborted: critical data missing or stale (exit code {e.code})"
+            detail=f"Analysis aborted: critical data missing or stale (exit code {code})"
         )
     except Exception as e:
         import traceback
@@ -188,9 +189,10 @@ async def v2_analyze_timeframe(timeframe: str):
         result = _run(timeframe=timeframe)
         return JSONResponse(content=result, status_code=200)
     except SystemExit as e:
+        code = getattr(e, "code", None)
         raise HTTPException(
             status_code=503,
-            detail=f"Analysis aborted: critical data missing or stale (exit code {e.code})"
+            detail=f"Analysis aborted: critical data missing or stale (exit code {code})"
         )
     except Exception as e:
         logger.error(f"Analysis error for timeframe {timeframe}: {e}")
