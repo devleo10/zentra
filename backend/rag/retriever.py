@@ -1,7 +1,7 @@
 """
 Retrieve relevant chunks from FAISS vector store.
 
-Uses centralized llm.get_embeddings() (EMBEDDING_PROVIDER=openai|openrouter).
+Uses centralized llm.get_embeddings() (OpenAI).
 """
 from pathlib import Path
 from langchain_community.vectorstores import FAISS
@@ -13,7 +13,7 @@ PERSIST_DIRECTORY = Path(__file__).parent.parent / "faiss_db"
 
 
 def get_embeddings():
-    """LangChain-compatible embeddings via llm factory (openai or openrouter)."""
+    """LangChain-compatible embeddings via llm factory (OpenAI)."""
     try:
         from llm import get_embeddings as _get_embeddings
     except ImportError:

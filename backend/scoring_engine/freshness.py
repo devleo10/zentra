@@ -199,5 +199,41 @@ def validate_data_freshness(data: Dict[str, Any]) -> FreshnessReport:
         timedelta(days=CONFIG["fed_balance_sheet_max_age_days"]),
         is_critical=False
     )
-    
+
+    # Unemployment Rate (monthly, non-critical)
+    ur_date = _parse_date(data.get("jobs", {}).get("unemployment_date",
+                          data.get("jobs", {}).get("data_as_of")))
+    report.add_check(
+        "Unemployment Rate", ur_date,
+        timedelta(days=CONFIG.get("unemployment_max_age_days", 35)),
+        is_critical=False
+    )
+
+    # GDP (quarterly, non-critical)
+    gdp_date = _parse_date(data.get("gdp", {}).get("latest_date",
+                           data.get("gdp", {}).get("data_as_of")))
+    report.add_check(
+        "GDP", gdp_date,
+        timedelta(days=CONFIG.get("gdp_max_age_days", 120)),
+        is_critical=False
+    )
+
+    # PMI (monthly, non-critical)
+    pmi_date = _parse_date(data.get("pmi", {}).get("latest_date",
+                           data.get("pmi", {}).get("data_as_of")))
+    report.add_check(
+        "PMI", pmi_date,
+        timedelta(days=CONFIG.get("pmi_max_age_days", 35)),
+        is_critical=False
+    )
+
+    # M2 Money Supply (monthly, non-critical)
+    m2_date = _parse_date(data.get("m2", {}).get("latest_date",
+                          data.get("m2", {}).get("data_as_of")))
+    report.add_check(
+        "M2 Money Supply", m2_date,
+        timedelta(days=CONFIG.get("m2_max_age_days", 35)),
+        is_critical=False
+    )
+
     return report

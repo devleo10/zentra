@@ -81,7 +81,7 @@ def score_inflation(cpi_mom_change: float, pce_mom_change: Optional[float], oil_
     reasoning = (
         f"CPI MoM: {_cpi_str} -> score {cpi_score} | "
         f"PCE MoM: {_pce_str} -> score {pce_score} | "
-        f"Oil Δ: {_oil_str} -> score {oil_score} | "
+        f"Oil d: {_oil_str} -> score {oil_score} | "
         f"Weighted: {final}"
     )
     
@@ -177,7 +177,8 @@ def score_fed_policy(
 def score_liquidity(
     yield_10y: Optional[float],
     yield_curve_spread: Optional[float],
-    balance_sheet_trend: str
+    balance_sheet_trend: str,
+    m2_trend: str = "stable",
 ) -> Tuple[int, str]:
     """
     Score liquidity section deterministically.
@@ -186,6 +187,7 @@ def score_liquidity(
         yield_10y: Current 10-year Treasury yield (percentage)
         yield_curve_spread: 10Y - 2Y spread (percentage points)
         balance_sheet_trend: "expanding", "contracting", or "stable"
+        m2_trend: "expanding", "contracting", or "stable"
     
     Returns:
         (score 0-100, reasoning string)
@@ -216,12 +218,21 @@ def score_liquidity(
         bs_adj = cfg["balance_sheet_expanding_bonus"]
     elif balance_sheet_trend == "contracting":
         bs_adj = cfg["balance_sheet_contracting_penalty"]
-    
-    # Weighted combination
+
+    # M2 money supply adjustment
+    m2_adj = 0
+    if m2_trend == "expanding":
+        m2_adj = cfg.get("m2_expanding_bonus", 10)
+    elif m2_trend == "contracting":
+        m2_adj = cfg.get("m2_contracting_penalty", -10)
+
+    # Weighted combination (4 sub-signals)
+    m2_weight = cfg.get("m2_weight", 0.15)
     final = (
         yield_score * cfg["yield_10y_weight"] +
         (50 + curve_adj) * cfg["yield_curve_weight"] +
-        (50 + bs_adj) * cfg["balance_sheet_weight"]
+        (50 + bs_adj) * cfg["balance_sheet_weight"] +
+        (50 + m2_adj) * m2_weight
     )
     final = int(round(max(0, min(100, final))))
     
@@ -229,6 +240,7 @@ def score_liquidity(
         f"10Y: {yield_10y}% -> {yield_score} | "
         f"Curve spread: {yield_curve_spread} -> adj {curve_adj} | "
         f"Balance sheet: {balance_sheet_trend} -> adj {bs_adj} | "
+        f"M2: {m2_trend} -> adj {m2_adj} | "
         f"Weighted: {final}"
     )
     
@@ -344,11 +356,100 @@ def score_risk_sentiment(
     
     reasoning = (
         f"VIX: {vix} -> {vix_score} | "
-        f"S&P500 Δ: {sp500_change}% -> adj {sp500_adj} | "
-        f"Gold Δ: {gold_change}% -> adj {gold_adj} | "
+        f"S&P500 d: {sp500_change}% -> adj {sp500_adj} | "
+        f"Gold d: {gold_change}% -> adj {gold_adj} | "
         f"Weighted: {final}"
     )
     
+    return final, reasoning
+
+
+def score_economy(
+    unemployment_rate: Optional[float],
+    unemployment_trend: str = "stable",
+    nfp_change: Optional[float] = None,
+    gdp_growth: Optional[float] = None,
+    pmi_value: Optional[float] = None,
+) -> Tuple[int, str]:
+    """
+    Score the economy section deterministically.
+
+    Higher score = more bullish for BTC. Weak economy = Fed forced to ease = bullish.
+    Strong economy = Fed stays tight = bearish for BTC.
+
+    Args:
+        unemployment_rate: Current unemployment rate (%)
+        unemployment_trend: "rising", "falling", or "stable"
+        nfp_change: Non-Farm Payrolls MoM change (thousands)
+        gdp_growth: Real GDP QoQ annualized growth rate (%)
+        pmi_value: ISM Manufacturing PMI reading
+    """
+    cfg = CONFIG.get("economy_thresholds", {})
+
+    # --- Unemployment scoring ---
+    ur_score = 50
+    if unemployment_rate is not None:
+        ur_brackets = cfg.get("unemployment_brackets", [
+            {"threshold": 3.5, "score": 20},
+            {"threshold": 4.0, "score": 35},
+            {"threshold": 4.5, "score": 50},
+            {"threshold": 5.0, "score": 65},
+            {"threshold": 6.0, "score": 80},
+            {"threshold": 999, "score": 90},
+        ])
+        ur_score = _threshold_score(unemployment_rate, [(b["threshold"], b["score"]) for b in ur_brackets])
+
+        trend_bonus = cfg.get("unemployment_trend_rising_bonus", 10)
+        trend_penalty = cfg.get("unemployment_trend_falling_penalty", -10)
+        if unemployment_trend == "rising":
+            ur_score = min(100, ur_score + trend_bonus)
+        elif unemployment_trend == "falling":
+            ur_score = max(0, ur_score + trend_penalty)
+
+    # --- GDP scoring ---
+    gdp_score = 50
+    if gdp_growth is not None:
+        gdp_brackets = cfg.get("gdp_brackets", [
+            {"threshold": -1.0, "score": 85},
+            {"threshold": 0.0, "score": 75},
+            {"threshold": 1.0, "score": 60},
+            {"threshold": 2.0, "score": 45},
+            {"threshold": 3.0, "score": 30},
+            {"threshold": 999, "score": 15},
+        ])
+        gdp_score = _threshold_score(gdp_growth, [(b["threshold"], b["score"]) for b in gdp_brackets])
+
+    # --- PMI scoring ---
+    pmi_score = 50
+    if pmi_value is not None:
+        pmi_brackets = cfg.get("pmi_brackets", [
+            {"threshold": 45.0, "score": 85},
+            {"threshold": 48.0, "score": 70},
+            {"threshold": 50.0, "score": 58},
+            {"threshold": 52.0, "score": 42},
+            {"threshold": 55.0, "score": 28},
+            {"threshold": 999, "score": 15},
+        ])
+        pmi_score = _threshold_score(pmi_value, [(b["threshold"], b["score"]) for b in pmi_brackets])
+
+    # --- Weighted combination ---
+    ur_w = cfg.get("unemployment_weight", 0.35)
+    gdp_w = cfg.get("gdp_weight", 0.30)
+    pmi_w = cfg.get("pmi_weight", 0.35)
+
+    final = ur_score * ur_w + gdp_score * gdp_w + pmi_score * pmi_w
+    final = int(round(max(0, min(100, final))))
+
+    ur_str = f"{unemployment_rate:.1f}% ({unemployment_trend})" if unemployment_rate is not None else "N/A"
+    gdp_str = f"{gdp_growth:+.1f}%" if gdp_growth is not None else "N/A"
+    pmi_str = f"{pmi_value:.1f}" if pmi_value is not None else "N/A"
+    reasoning = (
+        f"Unemployment: {ur_str} -> {ur_score} | "
+        f"GDP: {gdp_str} -> {gdp_score} | "
+        f"PMI: {pmi_str} -> {pmi_score} | "
+        f"Weighted: {final}"
+    )
+
     return final, reasoning
 
 

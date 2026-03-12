@@ -9,9 +9,11 @@ The LLM output is a bounded adjustment (-5 to +5) hard-capped in code.
 On any failure the adjustment is 0 (no change).
 """
 import json
+import hashlib
 import logging
 from pathlib import Path
 from typing import Dict, Any, Tuple
+from data_fetchers.cache import get as cache_get, put as cache_put
 
 logger = logging.getLogger("btc_macro.cross_signal")
 
@@ -34,6 +36,15 @@ def review_cross_signals(
         reasoning: string explanation (empty on fallback)
         signals_to_watch: list of signal names to monitor
     """
+    scores_key = hashlib.sha256(
+        json.dumps(section_scores, sort_keys=True).encode()
+    ).hexdigest()[:12]
+    cache_key = f"cross_signal_{scores_key}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        logger.info("Using cached cross-signal review")
+        return cached
+
     try:
         from scoring_engine.llm_caller import call_llm_json
 
@@ -86,6 +97,8 @@ def review_cross_signals(
             model=cfg.get("model", "gpt-4o"),
             temperature=cfg.get("temperature", 0),
             max_tokens=cfg.get("max_tokens", 300),
+            required_keys=["contradictions_found", "adjustment", "reasoning", "signals_to_watch"],
+            strict_json=True,
         )
 
         if result is None:
@@ -103,7 +116,9 @@ def review_cross_signals(
             "Cross-signal review: adjustment=%+d, contradictions=%s",
             adj, result.get("contradictions_found", False),
         )
-        return adj, reasoning, signals
+        rv = (adj, reasoning, signals)
+        cache_put(cache_key, rv)
+        return rv
 
     except Exception as e:
         logger.warning("Cross-signal review failed (%s), defaulting to 0 adjustment", e)

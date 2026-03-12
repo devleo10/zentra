@@ -11,10 +11,12 @@ LLM is used ONLY here — for classifying macro headlines.
 import os
 import re
 import json
+import hashlib
 import logging
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from dotenv import load_dotenv
+from data_fetchers.cache import get as cache_get, put as cache_put
 
 # ── Keyword-based deterministic fallback ──────────────────────────────────────
 # Applied when LLM fails to return valid JSON. Prevents cascading neutral defaults.
@@ -117,6 +119,15 @@ class HeadlineClassifier:
             List of classification dicts, each with:
                 event_bias, risk_impact, confidence, reason, _headline_title, _raw_response
         """
+        titles_hash = hashlib.sha256(
+            "|".join(h.get("title", "") for h in headlines).encode()
+        ).hexdigest()[:16]
+        cache_key = f"headline_classify_{titles_hash}"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            logger.info("Using cached headline classifications (%d items)", len(cached))
+            return cached
+
         results = []
         for h in headlines:
             try:
@@ -125,16 +136,18 @@ class HeadlineClassifier:
                     h.get("description", "")
                 )
                 classification["_headline_title"] = h.get("title", "")
+                classification["_headline_source"] = h.get("source", "")
                 results.append(classification)
             except Exception as e:
                 logger.warning(f"Failed to classify headline: {h.get('title', '')[:60]}... Error: {e}")
-                # Apply keyword-based rule fallback before defaulting to neutral
                 kw = _keyword_classify(h.get("title", ""), h.get("description", ""))
                 kw["_headline_title"] = h.get("title", "")
+                kw["_headline_source"] = h.get("source", "")
                 kw["_error"] = str(e)
                 kw["reason"] = f"Keyword fallback (LLM failed): {kw['reason']}"
                 results.append(kw)
-        
+
+        cache_put(cache_key, results)
         return results
     
     def classify_single(self, headline: str, description: str) -> Dict[str, Any]:

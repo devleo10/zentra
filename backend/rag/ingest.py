@@ -1,7 +1,7 @@
 """
 Ingest knowledge base documents into FAISS vector store.
 
-Uses centralized llm.get_embeddings() (EMBEDDING_PROVIDER=openai|openrouter).
+Uses centralized llm.get_embeddings() (OpenAI).
 """
 from pathlib import Path
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -18,7 +18,7 @@ KNOWLEDGE_BASE_DIR = Path(__file__).parent.parent / "knowledge_base"
 
 
 def get_embeddings():
-    """LangChain-compatible embeddings via llm factory (openai or openrouter)."""
+    """LangChain-compatible embeddings via llm factory (OpenAI)."""
     try:
         from llm import get_embeddings as _get_embeddings
     except ImportError:
@@ -29,7 +29,7 @@ def get_embeddings():
 def ingest_knowledge_base():
     """Chunk, embed, and store knowledge base documents in FAISS"""
     
-    # Initialize embeddings (Gemini or OpenAI)
+    # Initialize embeddings (OpenAI)
     embeddings = get_embeddings()
     
     # Load documents - try knowledge_base directory first, then context.md

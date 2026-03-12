@@ -1,14 +1,13 @@
 """
 Shared LLM calling utility for the scoring engine.
 
-Uses centralized llm.get_provider(). Supports OpenAI, Gemini, OpenRouter.
+Uses centralized llm.get_provider() (OpenAI only).
 Temperature=0, strict JSON, consistent error handling. Catches ProviderError and returns None
 to preserve existing pipeline behavior.
 """
-import re
 import json
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger("btc_macro.llm_caller")
 
@@ -19,11 +18,13 @@ def call_llm_json(
     model: str = "gpt-4o",
     temperature: float = 0,
     max_tokens: int = 256,
+    required_keys: Optional[List[str]] = None,
+    strict_json: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """Call LLM and return parsed JSON, or None on failure.
 
-    Uses LLM_PROVIDER / OPENAI_API_KEY / GEMINI_API_KEY. Raises are caught and
-    converted to None so callers keep existing fallback behavior.
+    Uses OPENAI_API_KEY. Raises are caught and converted to None so callers
+    keep existing fallback behavior.
     """
     try:
         from llm import get_provider, ProviderError
@@ -42,6 +43,7 @@ def call_llm_json(
             model,
             temperature=temperature,
             max_tokens=max_tokens,
+            response_format={"type": "json_object"} if strict_json else None,
         )
     except ProviderError as e:
         logger.warning("LLM call failed: %s", e)
@@ -50,10 +52,21 @@ def call_llm_json(
         logger.warning("LLM provider not configured: %s", e)
         return None
 
-    return _parse_json(raw)
+    parsed = _parse_json(raw, strict_json=strict_json)
+    if parsed is None:
+        return None
+
+    if required_keys and not _has_required_keys(parsed, required_keys):
+        logger.warning(
+            "LLM JSON contract failed. Missing keys=%s, payload=%s",
+            [k for k in required_keys if k not in parsed],
+            str(parsed)[:200],
+        )
+        return None
+    return parsed
 
 
-def _parse_json(raw: str) -> Optional[Dict[str, Any]]:
+def _parse_json(raw: str, strict_json: bool = True) -> Optional[Dict[str, Any]]:
     text = raw.strip()
     if text.startswith("```"):
         lines = text.split("\n")
@@ -61,16 +74,55 @@ def _parse_json(raw: str) -> Optional[Dict[str, Any]]:
         text = "\n".join(lines).strip()
 
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else None
     except json.JSONDecodeError:
-        pass
+        # In strict mode, reject malformed or mixed-content payloads.
+        if strict_json:
+            logger.warning("Strict JSON parse failed: %s", raw[:200])
+            return None
 
-    match = re.search(r'\{[^{}]+\}', text, re.DOTALL)
-    if match:
+    extracted = _extract_first_json_object(text)
+    if extracted:
         try:
-            return json.loads(match.group(0))
+            parsed = json.loads(extracted)
+            return parsed if isinstance(parsed, dict) else None
         except json.JSONDecodeError:
             pass
 
     logger.warning("Failed to parse LLM JSON: %s", raw[:200])
     return None
+
+
+def _extract_first_json_object(text: str) -> Optional[str]:
+    """Extract first top-level JSON object from mixed text payload."""
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _has_required_keys(payload: Dict[str, Any], required_keys: List[str]) -> bool:
+    return all(key in payload for key in required_keys)

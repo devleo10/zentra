@@ -44,8 +44,8 @@ def fetch_fomc_releases(days: int = 3) -> List[Dict]:
     # Federal Reserve provides several feeds; try press releases first
     feeds = [
         'https://www.federalreserve.gov/feeds/press_releases.xml',
-        'https://www.federalreserve.gov/feeds/press_releases.xml',
-        'https://www.federalreserve.gov/feeds/press_releases.xml'
+        'https://www.federalreserve.gov/feeds/press_monetary.xml',
+        'https://www.federalreserve.gov/feeds/speeches.xml',
     ]
     # Try each feed in order
     for feed in feeds:

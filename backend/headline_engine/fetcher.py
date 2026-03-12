@@ -1,9 +1,14 @@
 """
 Headline ingestion and filtering pipeline.
 
-Fetches macro headlines from NewsAPI / Google News RSS.
-Filters by relevant keywords.
-Returns only headlines from last 24-48 hours.
+Fetches macro headlines from:
+- Official RSS (Federal Reserve, BLS)
+- NewsAPI (broad macro query + dedicated request for Reuters, Financial Times, Stratfor via domains)
+- Google News RSS (fallback)
+
+Reuters and Financial Times are fetched via NewsAPI domains=reuters.com,ft.com when NEWS_API_KEY is set.
+Stratfor has no public RSS; we request stratfor.com via NewsAPI in case they are indexed.
+Filters by macro keywords. Returns only headlines from last 24-48 hours.
 """
 import os
 import re
@@ -14,6 +19,7 @@ from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta
 from urllib.parse import quote
 from dotenv import load_dotenv
+from data_fetchers.cache import get as cache_get, put as cache_put
 
 load_dotenv()
 
@@ -34,6 +40,9 @@ MACRO_KEYWORDS = [
     "Jerome Powell", "Fed Chair", "FOMC Minutes",
     "Bank Failure", "Credit Crisis", "Liquidity Crisis",
     "Tariff", "Trade War", "Sanctions",
+    "Trump", "White House", "Press Conference", "Executive Order",
+    "Middle East", "Iran", "Israel", "Ukraine", "Russia",
+    "Strait of Hormuz", "Oil Supply Disruption", "Ceasefire",
 ]
 
 # Patterns for explicit decision detection (high-confidence signals)
@@ -48,7 +57,14 @@ DECISION_PATTERNS = [
 ]
 
 # Authoritative news sources to prioritize
-HIGH_AUTH_SOURCES = ["Reuters", "Bloomberg", "Associated Press", "AP", "Wall Street Journal", "WSJ", "CNBC", "Federal Reserve", "Fed", "BLS", "BEA"]
+HIGH_AUTH_SOURCES = [
+    "Reuters", "Bloomberg", "Associated Press", "AP", "Wall Street Journal", "WSJ", "CNBC",
+    "Financial Times", "FT", "Stratfor",
+    "Federal Reserve", "Fed", "BLS", "BEA",
+]
+
+# Premium outlets: fetch explicitly via NewsAPI domains (Reuters, FT; Stratfor if indexed)
+NEWSAPI_PREMIUM_DOMAINS = "reuters.com,ft.com,stratfor.com"
 
 
 class HeadlineFetcher:
@@ -61,6 +77,9 @@ class HeadlineFetcher:
     def fetch_headlines(self) -> List[Dict]:
         """
         Fetch headlines from available sources, filtered by macro keywords.
+
+        Results are cached for 30 min so back-to-back analysis runs use the
+        same headline set, eliminating a major source of score variance.
         
         Returns:
             List of dicts with: title, description, published_at, source, url
@@ -68,6 +87,12 @@ class HeadlineFetcher:
         Raises:
             HeadlineFetchError if ALL sources fail.
         """
+        cache_key = f"headlines_{self.lookback_hours}"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            logger.info("Using cached headlines (%d items, lookback=%dh)", len(cached), self.lookback_hours)
+            return cached
+
         headlines = []
         errors = []
         
@@ -92,7 +117,7 @@ class HeadlineFetcher:
         except Exception:
             logger.debug("Official-source scrapers unavailable")
 
-        # Source 1: NewsAPI
+        # Source 1: NewsAPI (broad macro query)
         if self.api_key:
             try:
                 newsapi_results = self._fetch_newsapi()
@@ -101,6 +126,14 @@ class HeadlineFetcher:
             except Exception as e:
                 errors.append(f"NewsAPI: {e}")
                 logger.warning(f"NewsAPI failed: {e}")
+            # Source 1b: NewsAPI restricted to Reuters, Financial Times, Stratfor
+            try:
+                premium_results = self._fetch_newsapi_premium_sources()
+                if premium_results:
+                    headlines.extend(premium_results)
+                    logger.info(f"NewsAPI (Reuters/FT/Stratfor) returned {len(premium_results)} headlines")
+            except Exception as e:
+                logger.warning(f"NewsAPI premium sources failed: {e}")
         
         # Source 2: Google News RSS (always try as fallback or supplement)
         try:
@@ -150,6 +183,7 @@ class HeadlineFetcher:
 
             annotated.append(h)
 
+        cache_put(cache_key, annotated)
         return annotated
     
     def _fetch_newsapi(self) -> List[Dict]:
@@ -162,7 +196,10 @@ class HeadlineFetcher:
             '"Federal Reserve" OR FOMC OR "interest rate" OR '
             'inflation OR CPI OR "Treasury yield" OR '
             '"jobs report" OR "nonfarm payrolls" OR recession OR '
-            '"Jerome Powell" OR "debt ceiling"'
+            '"Jerome Powell" OR "debt ceiling" OR '
+            'Trump OR "White House press conference" OR '
+            '"Middle East" OR Iran OR Israel OR Ukraine OR Russia OR '
+            '"Strait of Hormuz" OR sanctions OR tariff'
         )
         
         params = {
@@ -190,10 +227,47 @@ class HeadlineFetcher:
             for a in articles
             if a.get("title")
         ]
-    
+
+    def _fetch_newsapi_premium_sources(self) -> List[Dict]:
+        """Fetch from NewsAPI restricted to Reuters, Financial Times, Stratfor (domains parameter)."""
+        lookback_days = min(self.lookback_hours // 24 + 1, 29)
+        from_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        query = (
+            "Federal Reserve OR FOMC OR interest rate OR inflation OR CPI OR Treasury OR "
+            "jobs report OR recession OR Jerome Powell OR debt ceiling OR "
+            "Middle East OR Iran OR Israel OR Ukraine OR Russia OR tariff OR sanctions"
+        )
+        params = {
+            "q": query,
+            "domains": NEWSAPI_PREMIUM_DOMAINS,
+            "from": from_date,
+            "sortBy": "publishedAt",
+            "language": "en",
+            "pageSize": 15,
+            "apiKey": self.api_key,
+        }
+        response = requests.get(NEWS_API_URL, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        articles = data.get("articles", [])
+        return [
+            {
+                "title": a.get("title", ""),
+                "description": a.get("description", "") or "",
+                "published_at": a.get("publishedAt", ""),
+                "source": a.get("source", {}).get("name", ""),
+                "url": a.get("url", ""),
+            }
+            for a in articles
+            if a.get("title")
+        ]
+
     def _fetch_google_news_rss(self) -> List[Dict]:
         """Fetch from Google News RSS (free, no API key needed)."""
-        query = "Federal Reserve OR FOMC OR inflation OR CPI OR Treasury OR interest rate"
+        query = (
+            "Federal Reserve OR FOMC OR inflation OR CPI OR Treasury OR interest rate OR "
+            "Trump OR White House OR press conference OR Middle East OR Iran OR Israel OR Ukraine OR Russia OR tariff OR sanctions"
+        )
         rss_url = f"https://news.google.com/rss/search?q={quote(query)}&hl=en-US&gl=US&ceid=US:en"
         
         response = requests.get(rss_url, timeout=15)
