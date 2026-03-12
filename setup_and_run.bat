@@ -38,7 +38,7 @@ pip uninstall -y pydantic fastapi uvicorn starlette 2>nul
 echo.
 echo Installing fresh packages...
 pip install fastapi uvicorn[standard] pydantic python-dotenv --prefer-binary
-pip install openai google-generativeai --prefer-binary
+pip install openai --prefer-binary
 pip install yfinance requests python-dateutil --prefer-binary
 pip install numpy pandas --prefer-binary
 if errorlevel 1 (
