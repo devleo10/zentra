@@ -3,12 +3,13 @@
  */
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
-export type TimeFrame = "current" | "week" | "month" | "year"
+export type TimeFrame = "current" | "week" | "month"
 
 // ── v2 Types (Deterministic Engine) ──────────────────────────────────────
 
 export interface V2SectionScores {
   inflation: number
+  economy: number
   fed_policy: number
   liquidity: number
   dxy: number
@@ -57,18 +58,60 @@ export interface V2AnalysisResult {
   hawkish_keyword_count: number
   pivot_keyword_count: number
   cpi_mom_change: number | null
-  cpi_yoy_rate: number | null       // YoY inflation rate e.g. 3.1 = "CPI is 3.1%"
-  cpi_core_yoy_rate: number | null  // Core CPI YoY (ex food & energy) — from BLS only
+  cpi_yoy_rate: number | null
+  cpi_core_yoy_rate: number | null
+  cpi_trend: string | null
   dxy_value: number | null
   dxy_change_7d: number | null
+  dxy_trend: string | null
   vix: number | null
   ten_year_yield: number | null
+  ten_year_yield_trend: string | null
   oil_price: number | null
+  oil_change: number | null
+  oil_trend: string | null
   cross_signal_adjustment: number
   cross_signal_reasoning: string
   narrative: string
   key_risk: string
   catalyst_to_watch: string
+  // Economy indicators
+  unemployment_rate: number | null
+  unemployment_trend: string | null
+  nfp_change: number | null
+  gdp_growth_rate: number | null
+  gdp_trend: string | null
+  pmi_value: number | null
+  pmi_status: string | null
+  pmi_trend: string | null
+  m2_trend: string | null
+  m2_change: number | null
+  m2_yoy_change: number | null
+  // Gold & VIX trends
+  sp500_price: number | null
+  sp500_change: number | null
+  sp500_trend: string | null
+  gold_price: number | null
+  gold_change: number | null
+  gold_trend: string | null
+  vix_change: number | null
+  vix_trend: string | null
+  // Bond market
+  two_year_yield: number | null
+  yield_curve_spread: number | null
+  // Fed stance
+  fed_funds_rate: number | null
+  fed_rate_trend: string | null
+  fed_rate_stance: string | null
+  fed_rate_type?: string | null
+  // Top headlines for display
+  top_headlines: Array<{
+    title: string
+    source: string
+    event_bias: string
+    risk_impact: string
+    confidence: number
+  }>
 }
 
 export interface V2HistoryEntry extends V2AnalysisResult {
@@ -77,11 +120,8 @@ export interface V2HistoryEntry extends V2AnalysisResult {
 
 // ── v2 API Calls ─────────────────────────────────────────────────────────
 
-export async function runV2Analysis(): Promise<V2AnalysisResult> {
-  const response = await fetch(`${API_BASE_URL}/api/v2/analyze`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-  })
+export async function runV2Analysis(timeframe: TimeFrame = "current"): Promise<V2AnalysisResult> {
+  const response = await fetch(`${API_BASE_URL}/api/v2/analyze/${timeframe}`)
 
   if (!response.ok) {
     const errorText = await response.text()
