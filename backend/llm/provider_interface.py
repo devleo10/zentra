@@ -17,7 +17,7 @@ class ProviderError(Exception):
 
 
 class LLMProvider(ABC):
-    """Abstract base for OpenAI, Gemini, and OpenRouter."""
+    """Abstract base for LLM providers (OpenAI implementation)."""
 
     @abstractmethod
     def chat(
@@ -27,15 +27,17 @@ class LLMProvider(ABC):
         *,
         temperature: float = 0,
         max_tokens: int = 256,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Send messages and return the assistant reply text.
 
         Args:
             messages: List of {"role": "user"|"system"|"assistant", "content": str}
-            model: Model name (e.g. gpt-4o, gemini-2.0-flash)
+            model: Model name (e.g. gpt-4o)
             temperature: Sampling temperature
             max_tokens: Max response tokens
+            response_format: Optional structured output hint (provider-specific).
 
         Returns:
             Assistant content string.

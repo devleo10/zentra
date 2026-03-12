@@ -48,16 +48,23 @@ class OpenAIProvider(LLMProvider):
         *,
         temperature: float = 0,
         max_tokens: int = 256,
+        response_format: Dict[str, Any] | None = None,
     ) -> str:
         client = self._get_client()
         last_error = None
         for attempt in range(MAX_RETRIES):
             try:
+                kwargs = {
+                    "model": model,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "messages": messages,
+                }
+                if response_format:
+                    kwargs["response_format"] = response_format
+
                 response = client.chat.completions.create(
-                    model=model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    messages=messages,
+                    **kwargs,
                 )
                 return response.choices[0].message.content or ""
             except Exception as e:
