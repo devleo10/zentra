@@ -3,6 +3,7 @@ Fetch Fed speeches and macro news from NewsAPI with free-tier fallback.
 Includes LLM-powered semantic tone analysis with keyword fallback.
 """
 import os
+import re
 import json
 import logging
 import requests
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from data_fetchers.cache import get as cache_get, put as cache_put
 
 load_dotenv()
 
@@ -27,6 +29,68 @@ def _load_llm_config():
 
 # NewsAPI free tier only allows ~30 days lookback
 NEWSAPI_MAX_DAYS = 29
+
+FED_ACTOR_PATTERNS = [
+    r"\bfederal reserve\b",
+    r"\bfomc\b",
+    r"\bjerome powell\b",
+    r"\bpowell\b",
+    r"\bfed chair\b",
+    r"\bfed officials?\b",
+    r"\bfed funds\b",
+    r"\bfed rate\b",
+]
+
+FED_POLICY_PATTERNS = [
+    r"\binterest rates?\b",
+    r"\brate (?:cut|cuts|cutting|hike|hikes|hiking|hold|holds|pause|pauses)\b",
+    r"\bmonetary policy\b",
+    r"\bpolicy stance\b",
+    r"\bdot plot\b",
+    r"\beconomic projections\b",
+    r"\bfomc statement\b",
+    r"\bfomc minutes?\b",
+    r"\bbalance sheet\b",
+    r"\bquantitative easing\b",
+    r"\bquantitative tightening\b",
+    r"\bqe\b",
+    r"\bqt\b",
+    r"\binflation\b",
+    r"\bdisinflation\b",
+    r"\bhigher for longer\b",
+    r"\bpremature easing\b",
+]
+
+FED_PRIORITY_SOURCES = {"Federal Reserve", "Reuters", "Bloomberg", "Wall Street Journal", "WSJ", "CNBC", "Financial Times", "FT", "Stratfor"}
+
+
+def _is_fed_policy_article(article: Dict) -> bool:
+    """Require both a Fed actor and a policy context to avoid false positives."""
+    title = article.get("title", "") or ""
+    description = article.get("description", "") or ""
+    source = article.get("source", "") or ""
+    text = f"{title} {description}".lower()
+
+    if source.lower() == "federal reserve":
+        return True
+
+    actor_match = any(re.search(pattern, text, re.I) for pattern in FED_ACTOR_PATTERNS)
+    policy_match = any(re.search(pattern, text, re.I) for pattern in FED_POLICY_PATTERNS)
+    return actor_match and policy_match
+
+
+def _fed_article_sort_key(article: Dict) -> tuple:
+    """Sort official/authoritative and most recent Fed-policy articles first."""
+    source = article.get("source", "") or ""
+    source_priority = 1 if source in FED_PRIORITY_SOURCES else 0
+    published_at = article.get("published_at", "") or ""
+    return (source_priority, published_at)
+
+
+def _filter_fed_policy_articles(articles: List[Dict]) -> List[Dict]:
+    filtered = [article for article in articles if _is_fed_policy_article(article)]
+    filtered.sort(key=_fed_article_sort_key, reverse=True)
+    return filtered
 
 
 def _fetch_google_news_rss(query: str, num: int = 10) -> List[Dict]:
@@ -65,6 +129,9 @@ def get_fed_speeches(days: int = 7) -> List[Dict]:
     Get recent Federal Reserve speeches and statements.
     Uses NewsAPI for short lookbacks, falls back to Google News RSS
     when NewsAPI's free-tier date limit is exceeded.
+
+    Results are cached for 30 min so back-to-back analysis runs use
+    identical article sets, eliminating the largest source of score jitter.
     
     Args:
         days: Number of days to look back
@@ -72,17 +139,31 @@ def get_fed_speeches(days: int = 7) -> List[Dict]:
     Returns:
         List of news articles about Fed
     """
-    query = "Federal Reserve OR Fed OR Jerome Powell OR FOMC"
+    cache_key = f"fed_speeches_{days}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        logger.info("Using cached Fed speeches (%d articles, days=%d)", len(cached), days)
+        return cached
+
+    query = '"Federal Reserve" OR FOMC OR "Jerome Powell" OR "Fed Chair" OR "Fed funds" OR "interest rates"'
 
     # Try NewsAPI first (only if within free-tier date limit)
     if NEWS_API_KEY and days <= NEWSAPI_MAX_DAYS:
         articles = _fetch_newsapi(query, days)
         if articles:
-            return articles
+            filtered = _filter_fed_policy_articles(articles)
+            logger.info("Fed article filter kept %d of %d fetched articles", len(filtered), len(articles))
+            cache_put(cache_key, filtered)
+            return filtered
 
     # Fallback: Google News RSS (free, no date limits)
     print(f"Using Google News RSS fallback for Fed speeches (days={days})...")
-    return _fetch_google_news_rss(query, num=10)
+    articles = _fetch_google_news_rss(query, num=10)
+    filtered = _filter_fed_policy_articles(articles)
+    logger.info("Fed article filter kept %d of %d fetched articles", len(filtered), len(articles))
+    if filtered:
+        cache_put(cache_key, filtered)
+    return filtered
 
 
 def _fetch_newsapi(query: str, days: int) -> List[Dict]:
@@ -175,9 +256,21 @@ def analyze_fed_tone_llm(articles: List[Dict]) -> Dict:
 
     Returns the same shape as analyze_fed_keywords() so callers are
     drop-in compatible.  Falls back to keyword counting on any failure.
+
+    Cached by a hash of article titles so identical inputs skip the LLM call.
     """
     if not articles:
         return analyze_fed_keywords(articles)
+
+    import hashlib
+    titles_key = hashlib.sha256(
+        "|".join(a.get("title", "") for a in articles[:5]).encode()
+    ).hexdigest()[:16]
+    cache_key = f"fed_tone_llm_{titles_key}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        logger.info("Using cached Fed tone LLM result")
+        return cached
 
     top_articles = articles[:5]
     snippets = "\n\n".join(
@@ -217,6 +310,15 @@ def analyze_fed_tone_llm(articles: List[Dict]) -> Dict:
             model=cfg.get("model", "gpt-4o"),
             temperature=cfg.get("temperature", 0),
             max_tokens=cfg.get("max_tokens", 200),
+            required_keys=[
+                "overall_tone",
+                "dovish_signals",
+                "hawkish_signals",
+                "pivot_signals",
+                "key_insight",
+                "confidence",
+            ],
+            strict_json=True,
         )
 
         if result is None:
@@ -237,7 +339,7 @@ def analyze_fed_tone_llm(articles: List[Dict]) -> Dict:
             result.get("key_insight", ""),
         )
 
-        return {
+        fed_result = {
             "dovish_keywords_found": dovish_s,
             "hawkish_keywords_found": hawkish_s,
             "pivot_keywords_found": pivot_s,
@@ -247,6 +349,8 @@ def analyze_fed_tone_llm(articles: List[Dict]) -> Dict:
             "key_insight": result.get("key_insight", ""),
             "fed_tone_confidence": conf,
         }
+        cache_put(cache_key, fed_result)
+        return fed_result
 
     except Exception as e:
         logger.warning("LLM Fed tone analysis failed (%s), falling back to keywords", e)
@@ -266,16 +370,26 @@ def get_macro_news(days: int = 7) -> List[Dict]:
     Returns:
         List of macro news articles
     """
+    cache_key = f"macro_news_{days}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        logger.info("Using cached macro news (%d articles, days=%d)", len(cached), days)
+        return cached
+
     query = "inflation OR CPI OR GDP OR unemployment OR Fed rate"
 
     # Try NewsAPI first (only if within free-tier limit)
     if NEWS_API_KEY and days <= NEWSAPI_MAX_DAYS:
         articles = _fetch_newsapi(query, days)
         if articles:
+            cache_put(cache_key, articles)
             return articles
 
     # Fallback: Google News RSS
     print(f"Using Google News RSS fallback for macro news (days={days})...")
-    return _fetch_google_news_rss(query, num=10)
+    articles = _fetch_google_news_rss(query, num=10)
+    if articles:
+        cache_put(cache_key, articles)
+    return articles
 
 

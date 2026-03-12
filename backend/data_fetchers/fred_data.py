@@ -61,17 +61,24 @@ def get_timeframe_dates(timeframe: str = "current") -> Tuple[str, int]:
     return start_date, comparison_days
 
 
-def _get_last_snapshot_field(field_name: str):
-    """Return the last known value for a named snapshot field, if available."""
+def _get_latest_snapshot() -> Optional[Dict]:
+    """Return the latest stored snapshot row if available."""
     try:
         # Import locally to avoid import cycles at module import time
         from storage.db import get_latest_snapshots
         snaps = get_latest_snapshots(1)
         if snaps:
-            snap = snaps[0]
-            return snap.get(field_name)
+            return snaps[0]
     except Exception:
         logger.exception("Failed to read last snapshot for fallback")
+    return None
+
+
+def _get_last_snapshot_field(field_name: str):
+    """Return the last known value for a named snapshot field, if available."""
+    snap = _get_latest_snapshot()
+    if snap:
+        return snap.get(field_name)
     return None
 
 
@@ -105,7 +112,14 @@ def get_fred_series(series_id: str, timeframe: str = "current") -> Dict:
             value = float(latest.get("value"))
         except Exception:
             value = None
-        return {"value": value, "date": latest.get("date"), "_source": "FRED", "series_id": series_id}
+        latest_date = latest.get("date")
+        return {
+            "value": value,
+            "date": latest_date,
+            "data_as_of": latest_date,
+            "_source": "FRED",
+            "series_id": series_id,
+        }
     except Exception as e:
         logger.exception("Error fetching FRED series %s: %s", series_id, e)
         return {"error": str(e)}
@@ -266,6 +280,7 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
     bls_result = _get_cpi_from_bls()
     if bls_result:
         bls_result["timeframe"] = timeframe
+        bls_result["data_as_of"] = bls_result.get("latest_date")
         return bls_result
 
     logger.info("BLS CPI unavailable; falling back to FRED CPIAUCSL")
@@ -277,6 +292,7 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
         last_cpi = _get_last_snapshot_field("cpi_mom_change")
         logger.warning("No CPI data from FRED; using last snapshot fallback: %s", last_cpi)
         if last_cpi is not None:
+            snap = _get_latest_snapshot() or {}
             return {
                 "latest_value": None,
                 "latest_date": None,
@@ -284,6 +300,8 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
                 "mom_change": last_cpi,
                 "_fallback": True,
                 "_fallback_source": "last_snapshot",
+                "source": "last_snapshot",
+                "data_as_of": snap.get("timestamp"),
                 "timeframe": timeframe,
             }
         return {"error": "No CPI data available", "timeframe": timeframe}
@@ -327,6 +345,7 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
         "core_yoy_rate": None,          # Not available from FRED without separate series fetch
         "trend": "falling" if mom_change < 0 else "rising" if mom_change > 0 else "flat",
         "source": "FRED",
+        "data_as_of": latest["date"].strftime("%Y-%m-%d"),
         "timeframe": timeframe
     }
 
@@ -363,6 +382,7 @@ def get_pce_data(timeframe: str = "current") -> Dict:
         last_pce = _get_last_snapshot_field("pce_mom_change")
         logger.warning("No PCE data from FRED; using last snapshot fallback: %s", last_pce)
         if last_pce is not None:
+            snap = _get_latest_snapshot() or {}
             return {
                 "latest_value": None,
                 "latest_date": None,
@@ -370,6 +390,8 @@ def get_pce_data(timeframe: str = "current") -> Dict:
                 "mom_change": last_pce,
                 "_fallback": True,
                 "_fallback_source": "last_snapshot",
+                "source": "last_snapshot",
+                "data_as_of": snap.get("timestamp"),
                 "timeframe": timeframe,
             }
         return {"error": "No PCE data available", "timeframe": timeframe}
@@ -403,6 +425,8 @@ def get_pce_data(timeframe: str = "current") -> Dict:
         "change": round(change, 2),
         "mom_change": round(mom_change, 2),
         "trend": "falling" if mom_change < 0 else "rising" if mom_change > 0 else "flat",
+        "source": "FRED",
+        "data_as_of": latest["date"].strftime("%Y-%m-%d"),
         "timeframe": timeframe
     }
 
@@ -437,7 +461,14 @@ def get_treasury_yields(timeframe: str = "current") -> Dict:
         last_2y = None
         if last_10y is not None:
             logger.warning("No treasury yield data; using last snapshot fallback for 10y: %s", last_10y)
-            result["yield_10y"] = {"value": last_10y, "_fallback": True, "_fallback_source": "last_snapshot"}
+            snap = _get_latest_snapshot() or {}
+            result["yield_10y"] = {
+                "value": last_10y,
+                "_fallback": True,
+                "_fallback_source": "last_snapshot",
+                "source": "last_snapshot",
+                "data_as_of": snap.get("timestamp"),
+            }
         else:
             logger.error("No treasury yield data available and no snapshot fallback")
             return {"error": "No treasury yields available", "timeframe": timeframe}
@@ -452,7 +483,9 @@ def get_treasury_yields(timeframe: str = "current") -> Dict:
             "value": float(latest_2y["value"]),
             "date": latest_2y["date"].strftime("%Y-%m-%d"),
             "change": round(change_2y, 2),
-            "trend": "rising" if change_2y > 0 else "falling" if change_2y < 0 else "flat"
+            "trend": "rising" if change_2y > 0 else "falling" if change_2y < 0 else "flat",
+            "source": "FRED",
+            "data_as_of": latest_2y["date"].strftime("%Y-%m-%d"),
         }
     
     if not df_10y.empty:
@@ -465,7 +498,9 @@ def get_treasury_yields(timeframe: str = "current") -> Dict:
             "value": float(latest_10y["value"]),
             "date": latest_10y["date"].strftime("%Y-%m-%d"),
             "change": round(change_10y, 2),
-            "trend": "rising" if change_10y > 0 else "falling" if change_10y < 0 else "flat"
+            "trend": "rising" if change_10y > 0 else "falling" if change_10y < 0 else "flat",
+            "source": "FRED",
+            "data_as_of": latest_10y["date"].strftime("%Y-%m-%d"),
         }
         
         # Calculate yield curve spread
@@ -505,6 +540,7 @@ def get_oil_data(timeframe: str = "current") -> Dict:
                     "change": round(change, 2),
                     "trend": "rising" if change > 0 else "falling" if change < 0 else "stable",
                     "source": "Yahoo Finance (CL=F)",
+                    "data_as_of": hist.index[-1].strftime("%Y-%m-%d"),
                     "timeframe": timeframe,
                 }
         except Exception as e:
@@ -524,6 +560,7 @@ def get_oil_data(timeframe: str = "current") -> Dict:
         "change": round(change, 2),
         "trend": "rising" if change > 0 else "falling" if change < 0 else "stable",
         "source": "FRED (DCOILWTICO)",
+        "data_as_of": latest["date"].strftime("%Y-%m-%d"),
         "timeframe": timeframe,
     }
     logger.info("Oil fetched: $%.2f (change=%+.2f%%, date=%s)", result["current_price"], change, result["latest_date"])
@@ -531,55 +568,313 @@ def get_oil_data(timeframe: str = "current") -> Dict:
 
 
 def get_fed_funds_rate(timeframe: str = "current") -> Dict:
-    """Get the effective Federal Funds Rate from FRED (FEDFUNDS series).
+    """Get the Federal Funds Rate from FRED for display and scoring.
 
-    Returns current rate level and trend (rising/falling/stable).
-    FEDFUNDS is a monthly series, so we always fetch at least 90 days to
-    guarantee at least 2 data points for trend detection.
+    Prefers the official target (upper) rate (DFEDTARU) when available, so the
+    dashboard matches FOMC communications (e.g. 3.75% target). Falls back to
+    effective rate (FEDFUNDS) for trend and when target is missing. Returns
+    current_rate (for display), trend, and rate_type ("target" | "effective").
     """
     effective_start = (datetime.now() - timedelta(days=max(90, TIMEFRAME_DAYS.get(timeframe, 90)))).strftime("%Y-%m-%d")
-    df = get_fred_data("FEDFUNDS", start_date=effective_start)
 
-    if df.empty:
+    # Prefer official target upper (DFEDTARU) so displayed rate matches FOMC
+    df_target = get_fred_data("DFEDTARU", start_date=effective_start)
+    if not df_target.empty:
+        latest_target = df_target.iloc[-1]
+        target_rate = float(latest_target["value"])
+        target_date = latest_target["date"].strftime("%Y-%m-%d")
+    else:
+        target_rate = None
+        target_date = None
+
+    df_eff = get_fred_data("FEDFUNDS", start_date=effective_start)
+    if df_eff.empty and target_rate is None:
         last_rate = _get_last_snapshot_field("fed_funds_rate")
         logger.warning("No Fed Funds Rate data from FRED; using last snapshot fallback: %s", last_rate)
         if last_rate is not None:
+            snap = _get_latest_snapshot() or {}
             return {
                 "current_rate": last_rate,
                 "previous_rate": None,
                 "change": None,
                 "trend": "unknown",
+                "rate_type": "unknown",
                 "_fallback": True,
                 "_fallback_source": "last_snapshot",
+                "source": "last_snapshot",
+                "data_as_of": snap.get("timestamp"),
                 "timeframe": timeframe,
             }
         return {"error": "No Fed Funds Rate data available", "timeframe": timeframe}
 
-    latest = df.iloc[-1]
-    current_rate = float(latest["value"])
-    latest_date = latest["date"].strftime("%Y-%m-%d")
+    # Use target for display when available and recent; else effective
+    if target_rate is not None:
+        current_rate = round(target_rate, 2)
+        rate_type = "target"
+        latest_date = target_date
+        df_trend = df_target if len(df_target) >= 2 else df_eff
+    else:
+        latest = df_eff.iloc[-1]
+        current_rate = round(float(latest["value"]), 2)
+        rate_type = "effective"
+        latest_date = latest["date"].strftime("%Y-%m-%d")
+        df_trend = df_eff
 
     prev_rate = None
     change = None
     trend = "stable"
-    if len(df) >= 2:
-        prev_month = df.iloc[-2]
-        prev_rate = float(prev_month["value"])
-        change = round(current_rate - prev_rate, 2)
+    if len(df_trend) >= 2:
+        prev_val = float(df_trend.iloc[-2]["value"])
+        curr_val = float(df_trend.iloc[-1]["value"])
+        prev_rate = round(prev_val, 2)
+        change = round(curr_val - prev_val, 2)
         if change > 0.1:
             trend = "rising"
         elif change < -0.1:
             trend = "falling"
 
     result = {
-        "current_rate": round(current_rate, 2),
-        "previous_rate": round(prev_rate, 2) if prev_rate is not None else None,
+        "current_rate": current_rate,
+        "previous_rate": prev_rate,
         "change": change,
         "trend": trend,
+        "rate_type": rate_type,
         "latest_date": latest_date,
+        "source": "FRED",
+        "data_as_of": latest_date,
         "timeframe": timeframe,
     }
-    logger.info("Fed Funds Rate: %.2f%% (trend=%s, date=%s)", current_rate, trend, latest_date)
+    logger.info("Fed Funds Rate: %.2f%% (%s, trend=%s, date=%s)", current_rate, rate_type, trend, latest_date)
+    return result
+
+
+def get_jobs_data(timeframe: str = "current") -> Dict:
+    """Get employment data from FRED: Unemployment Rate, Non-Farm Payrolls, Initial Claims.
+
+    Returns unemployment_rate, unemployment_trend, nfp_change (MoM thousands),
+    initial_claims, and claims_trend.
+    """
+    effective_start = (datetime.now() - timedelta(days=max(180, TIMEFRAME_DAYS.get(timeframe, 90)))).strftime("%Y-%m-%d")
+
+    result: Dict = {"timeframe": timeframe, "source": "FRED"}
+
+    # Unemployment Rate (UNRATE) — monthly
+    df_ur = get_fred_data("UNRATE", start_date=effective_start)
+    if not df_ur.empty:
+        latest = df_ur.iloc[-1]
+        result["unemployment_rate"] = round(float(latest["value"]), 1)
+        result["unemployment_date"] = latest["date"].strftime("%Y-%m-%d")
+        result["data_as_of"] = latest["date"].strftime("%Y-%m-%d")
+        if len(df_ur) >= 2:
+            prev = float(df_ur.iloc[-2]["value"])
+            diff = result["unemployment_rate"] - prev
+            result["unemployment_trend"] = "rising" if diff > 0.1 else "falling" if diff < -0.1 else "stable"
+        else:
+            result["unemployment_trend"] = "unknown"
+        logger.info("Unemployment Rate: %.1f%% (trend=%s)", result["unemployment_rate"], result["unemployment_trend"])
+    else:
+        last_val = _get_last_snapshot_field("unemployment_rate")
+        if last_val is not None:
+            result["unemployment_rate"] = last_val
+            result["unemployment_trend"] = "unknown"
+            result["_fallback"] = True
+            logger.warning("UNRATE unavailable; using snapshot fallback: %s", last_val)
+        else:
+            result["unemployment_rate"] = None
+            result["unemployment_trend"] = "unknown"
+            logger.warning("No unemployment rate data available")
+
+    # Non-Farm Payrolls (PAYEMS) — monthly, thousands of persons
+    df_nfp = get_fred_data("PAYEMS", start_date=effective_start)
+    if not df_nfp.empty and len(df_nfp) >= 2:
+        latest_nfp = float(df_nfp.iloc[-1]["value"])
+        prev_nfp = float(df_nfp.iloc[-2]["value"])
+        result["nfp_change"] = round(latest_nfp - prev_nfp, 0)
+        result["nfp_date"] = df_nfp.iloc[-1]["date"].strftime("%Y-%m-%d")
+        logger.info("NFP MoM change: %+.0f thousand", result["nfp_change"])
+    else:
+        last_nfp = _get_last_snapshot_field("nfp_change")
+        result["nfp_change"] = last_nfp
+        if last_nfp is not None:
+            result["_nfp_fallback"] = True
+
+    # Initial Jobless Claims (ICSA) — weekly
+    df_claims = get_fred_data("ICSA", start_date=effective_start)
+    if not df_claims.empty:
+        latest_claims = float(df_claims.iloc[-1]["value"])
+        result["initial_claims"] = round(latest_claims, 0)
+        result["claims_date"] = df_claims.iloc[-1]["date"].strftime("%Y-%m-%d")
+        if len(df_claims) >= 5:
+            avg_4w = df_claims.iloc[-5:-1]["value"].mean()
+            result["claims_trend"] = "rising" if latest_claims > avg_4w * 1.05 else "falling" if latest_claims < avg_4w * 0.95 else "stable"
+        else:
+            result["claims_trend"] = "unknown"
+        logger.info("Initial Claims: %.0f (trend=%s)", latest_claims, result.get("claims_trend"))
+    else:
+        result["initial_claims"] = None
+        result["claims_trend"] = "unknown"
+
+    return result
+
+
+def get_gdp_data(timeframe: str = "current") -> Dict:
+    """Get Real GDP growth rate from FRED.
+
+    Uses A191RL1Q225SBEA (Real GDP % change, quarterly, annualized).
+    Quarterly data — freshness check should allow up to 120 days.
+    """
+    effective_start = (datetime.now() - timedelta(days=500)).strftime("%Y-%m-%d")
+    df = get_fred_data("A191RL1Q225SBEA", start_date=effective_start)
+
+    if df.empty:
+        last_val = _get_last_snapshot_field("gdp_growth_rate")
+        if last_val is not None:
+            logger.warning("No GDP data from FRED; using snapshot fallback: %s", last_val)
+            return {
+                "gdp_growth_rate": last_val,
+                "gdp_trend": "unknown",
+                "_fallback": True,
+                "source": "last_snapshot",
+                "timeframe": timeframe,
+            }
+        logger.warning("No GDP data available")
+        return {"error": "No GDP data available", "timeframe": timeframe}
+
+    latest = df.iloc[-1]
+    growth_rate = round(float(latest["value"]), 1)
+    latest_date = latest["date"].strftime("%Y-%m-%d")
+
+    trend = "contracting" if growth_rate < 0 else "decelerating" if growth_rate < 2.0 else "stable" if growth_rate < 3.0 else "accelerating"
+    if len(df) >= 2:
+        prev_rate = float(df.iloc[-2]["value"])
+        if growth_rate < prev_rate - 0.5:
+            trend = "decelerating"
+        elif growth_rate > prev_rate + 0.5:
+            trend = "accelerating"
+
+    result = {
+        "gdp_growth_rate": growth_rate,
+        "gdp_trend": trend,
+        "latest_date": latest_date,
+        "source": "FRED",
+        "data_as_of": latest_date,
+        "timeframe": timeframe,
+    }
+    logger.info("GDP growth: %.1f%% (trend=%s, date=%s)", growth_rate, trend, latest_date)
+    return result
+
+
+def get_pmi_data(timeframe: str = "current") -> Dict:
+    """Get ISM Manufacturing PMI from FRED (NAPM series).
+
+    PMI > 50 = expansion, < 50 = contraction. A key leading indicator.
+    """
+    effective_start = (datetime.now() - timedelta(days=max(180, TIMEFRAME_DAYS.get(timeframe, 90)))).strftime("%Y-%m-%d")
+    df = get_fred_data("NAPM", start_date=effective_start)
+
+    if df.empty:
+        last_val = _get_last_snapshot_field("pmi_value")
+        if last_val is not None:
+            logger.warning("No PMI data from FRED; using snapshot fallback: %s", last_val)
+            return {
+                "pmi_value": last_val,
+                "pmi_trend": "unknown",
+                "pmi_status": "expansion" if last_val >= 50 else "contraction",
+                "_fallback": True,
+                "source": "last_snapshot",
+                "timeframe": timeframe,
+            }
+        logger.warning("No PMI data available")
+        return {"error": "No PMI data available", "timeframe": timeframe}
+
+    latest = df.iloc[-1]
+    pmi_value = round(float(latest["value"]), 1)
+    latest_date = latest["date"].strftime("%Y-%m-%d")
+
+    pmi_status = "expansion" if pmi_value >= 50 else "contraction"
+    pmi_trend = "stable"
+    if len(df) >= 2:
+        prev_pmi = float(df.iloc[-2]["value"])
+        diff = pmi_value - prev_pmi
+        pmi_trend = "rising" if diff > 0.5 else "falling" if diff < -0.5 else "stable"
+
+    result = {
+        "pmi_value": pmi_value,
+        "pmi_trend": pmi_trend,
+        "pmi_status": pmi_status,
+        "latest_date": latest_date,
+        "source": "FRED",
+        "data_as_of": latest_date,
+        "timeframe": timeframe,
+    }
+    logger.info("PMI: %.1f (%s, trend=%s, date=%s)", pmi_value, pmi_status, pmi_trend, latest_date)
+    return result
+
+
+def get_m2_money_supply(timeframe: str = "current") -> Dict:
+    """Get M2 Money Stock from FRED (M2SL series, seasonally adjusted).
+
+    M2 expanding = more liquidity = bullish for BTC.
+    M2 contracting = tightening = bearish.
+    """
+    effective_start = (datetime.now() - timedelta(days=max(400, TIMEFRAME_DAYS.get(timeframe, 90)))).strftime("%Y-%m-%d")
+    df = get_fred_data("M2SL", start_date=effective_start)
+
+    if df.empty:
+        last_trend = _get_last_snapshot_field("m2_trend")
+        if last_trend is not None:
+            logger.warning("No M2 data from FRED; using snapshot fallback trend: %s", last_trend)
+            return {
+                "m2_value": None,
+                "m2_change": None,
+                "m2_trend": last_trend,
+                "_fallback": True,
+                "source": "last_snapshot",
+                "timeframe": timeframe,
+            }
+        logger.warning("No M2 money supply data available")
+        return {"error": "No M2 data available", "timeframe": timeframe}
+
+    latest = df.iloc[-1]
+    m2_value = round(float(latest["value"]) / 1000, 2)  # Convert billions to trillions
+    latest_date = latest["date"].strftime("%Y-%m-%d")
+
+    m2_change = None
+    m2_trend = "stable"
+    if len(df) >= 2:
+        prev = float(df.iloc[-2]["value"])
+        current = float(latest["value"])
+        m2_change = round(((current - prev) / prev) * 100, 2)
+        # Qualify trend: small positive = "slight expansion" so client sees nuance (weak M2 growth in tight-policy periods)
+        if m2_change > 0.5:
+            m2_trend = "expanding"
+        elif m2_change > 0.1:
+            m2_trend = "slight expansion"
+        elif m2_change < -0.5:
+            m2_trend = "contracting"
+        elif m2_change < -0.1:
+            m2_trend = "slight contraction"
+        else:
+            m2_trend = "stable"
+
+    # Also compute YoY change if enough data
+    m2_yoy = None
+    if len(df) >= 13:
+        year_ago = float(df.iloc[-13]["value"])
+        current = float(latest["value"])
+        m2_yoy = round(((current - year_ago) / year_ago) * 100, 2)
+
+    result = {
+        "m2_value": m2_value,
+        "m2_change": m2_change,
+        "m2_yoy_change": m2_yoy,
+        "m2_trend": m2_trend,
+        "latest_date": latest_date,
+        "source": "FRED",
+        "data_as_of": latest_date,
+        "timeframe": timeframe,
+    }
+    logger.info("M2 Money Supply: $%.2fT (MoM=%s%%, trend=%s, date=%s)", m2_value, m2_change, m2_trend, latest_date)
     return result
 
 
@@ -603,6 +898,8 @@ def get_fed_balance_sheet(timeframe: str = "current") -> Dict:
         "comparison_date": prev_value["date"].strftime("%Y-%m-%d"),
         "change": round(change, 2),
         "trend": "expanding" if change > 0 else "contracting" if change < 0 else "stable",
+        "source": "FRED",
+        "data_as_of": latest["date"].strftime("%Y-%m-%d"),
         "timeframe": timeframe
     }
 

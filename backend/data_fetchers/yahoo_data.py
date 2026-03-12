@@ -1,7 +1,11 @@
-"""Fetch market data from Yahoo Finance using yfinance
+"""Fetch market data from Yahoo Finance using yfinance.
 
-This module now includes lightweight validation and logging for DXY
-to detect suspect values and enable fallbacks.
+This module includes lightweight validation and logging for DXY to
+detect suspect values and enable fallbacks.
+
+Unlike news/LLM steps, live market prices should remain uncached so the
+client sees the most recent DXY, VIX, S&P 500, and Gold values on each
+analysis run.
 """
 import logging
 import yfinance as yf
@@ -35,6 +39,18 @@ def _safe_date_str(ts) -> str:
         return str(ts)[:10]
     except Exception:
         return datetime.now().strftime("%Y-%m-%d")
+
+
+def _get_latest_snapshot():
+    """Best-effort latest snapshot fetch for fallback values."""
+    try:
+        from storage.db import get_latest_snapshots
+        snaps = get_latest_snapshots(1)
+        if snaps:
+            return snaps[0]
+    except Exception:
+        logger.exception("Failed to fetch latest snapshot")
+    return None
 
 
 # Timeframe to period mapping for yfinance
@@ -87,10 +103,12 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
                                 return {
                                     "current_price": float(dxy_val),
                                     "date": timestamp,
+                                    "data_as_of": timestamp,
                                     "comparison_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
                                     "change": 0.0,
                                     "trend": "stable",
                                     "timeframe": timeframe,
+                                    "source": "last_snapshot",
                                     "_fallback": True,
                                     "_fallback_source": "last_snapshot",
                                 }
@@ -150,6 +168,7 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
         result = {
             "current_price": round(current_price, 2),
             "date": _safe_date_str(latest.name),
+            "data_as_of": _safe_date_str(latest.name),
             "comparison_date": _safe_date_str(comparison.name),
             "change": round(change, 2),
             "trend": "weakening" if change < 0 else "strengthening" if change > 0 else "stable",
@@ -187,18 +206,25 @@ def get_vix_data(timeframe: str = "current") -> Dict:
             if not hist.empty:
                 break
         else:
-            # Fallback: return moderate VIX with warning
-            return {
-                "current_value": 18.0,
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "comparison_date": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
-                "change": 0.0,
-                "level": "moderate",
-                "trend": "stable",
-                "timeframe": timeframe,
-                "_fallback": True,
-                "_warning": "Using fallback VIX value - all tickers unavailable"
-            }
+            # Avoid fabricated fallback values for volatility metrics.
+            snap = _get_latest_snapshot()
+            if snap and snap.get("vix") is not None:
+                timestamp = snap.get("timestamp")
+                return {
+                    "current_value": float(snap.get("vix")),
+                    "date": str(timestamp)[:10] if timestamp else datetime.now().strftime("%Y-%m-%d"),
+                    "data_as_of": timestamp,
+                    "comparison_date": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
+                    "change": 0.0,
+                    "level": "unknown",
+                    "trend": "stable",
+                    "timeframe": timeframe,
+                    "source": "last_snapshot",
+                    "_fallback": True,
+                    "_fallback_source": "last_snapshot",
+                    "_warning": "Using last snapshot VIX value; live VIX tickers unavailable",
+                }
+            return {"error": "No VIX tickers available and no valid snapshot fallback", "timeframe": timeframe}
 
         latest = hist.iloc[-1]
         comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 1)
@@ -212,15 +238,18 @@ def get_vix_data(timeframe: str = "current") -> Dict:
         comparison_vix = float(comparison["Close"])
         change = current_vix - comparison_vix
 
-        return {
+        result = {
             "current_value": round(current_vix, 2),
             "date": _safe_date_str(latest.name),
+            "data_as_of": _safe_date_str(latest.name),
             "comparison_date": _safe_date_str(comparison.name),
             "change": round(change, 2),
             "level": "high" if current_vix > 20 else "moderate" if current_vix > 15 else "low",
             "trend": "rising" if change > 0 else "falling" if change < 0 else "stable",
-            "timeframe": timeframe
+            "timeframe": timeframe,
+            "source": symbol,
         }
+        return result
     except Exception as e:
         return {"error": f"VIX fetch error: {str(e)}", "timeframe": timeframe}
 
@@ -236,17 +265,7 @@ def get_sp500_data(timeframe: str = "current") -> Dict:
             if not hist.empty:
                 break
         else:
-            # Fallback: return neutral S&P with warning
-            return {
-                "current_price": 5000.0,
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "comparison_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
-                "change": 0.0,
-                "trend": "neutral",
-                "timeframe": timeframe,
-                "_fallback": True,
-                "_warning": "Using fallback S&P 500 value - all tickers unavailable"
-            }
+            return {"error": "No S&P 500 tickers available", "timeframe": timeframe}
 
         latest = hist.iloc[-1]
         comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
@@ -260,14 +279,17 @@ def get_sp500_data(timeframe: str = "current") -> Dict:
         comparison_price = float(comparison["Close"])
         change = ((current_price - comparison_price) / comparison_price) * 100 if comparison_price else 0.0
 
-        return {
+        result = {
             "current_price": round(current_price, 2),
             "date": _safe_date_str(latest.name),
+            "data_as_of": _safe_date_str(latest.name),
             "comparison_date": _safe_date_str(comparison.name),
             "change": round(change, 2),
             "trend": "risk_on" if change > 0 else "risk_off" if change < 0 else "neutral",
-            "timeframe": timeframe
+            "timeframe": timeframe,
+            "source": symbol,
         }
+        return result
     except Exception as e:
         return {"error": f"S&P 500 fetch error: {str(e)}", "timeframe": timeframe}
 
@@ -283,17 +305,7 @@ def get_gold_data(timeframe: str = "current") -> Dict:
             if not hist.empty:
                 break
         else:
-            # Fallback: return stable gold with warning
-            return {
-                "current_price": 2000.0,
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "comparison_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
-                "change": 0.0,
-                "trend": "stable",
-                "timeframe": timeframe,
-                "_fallback": True,
-                "_warning": "Using fallback Gold value - all tickers unavailable"
-            }
+            return {"error": "No gold tickers available", "timeframe": timeframe}
 
         latest = hist.iloc[-1]
         comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
@@ -307,13 +319,16 @@ def get_gold_data(timeframe: str = "current") -> Dict:
         comparison_price = float(comparison["Close"])
         change = ((current_price - comparison_price) / comparison_price) * 100 if comparison_price else 0.0
 
-        return {
+        result = {
             "current_price": round(current_price, 2),
             "date": _safe_date_str(latest.name),
+            "data_as_of": _safe_date_str(latest.name),
             "comparison_date": _safe_date_str(comparison.name),
             "change": round(change, 2),
             "trend": "strengthening" if change > 0 else "weakening" if change < 0 else "stable",
-            "timeframe": timeframe
+            "timeframe": timeframe,
+            "source": symbol,
         }
+        return result
     except Exception as e:
         return {"error": f"Gold fetch error: {str(e)}", "timeframe": timeframe}
