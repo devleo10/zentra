@@ -25,7 +25,12 @@ class RiskAgent(BaseAgent):
         gold = yahoo_data.get_gold_data(timeframe)
         
         data_sources = [
-            SignalValidator.create_data_source("CBOE", "^VIX", "https://www.cboe.com/tradable_products/vix/")
+            SignalValidator.create_data_source(
+                vix.get("source", "CBOE"),
+                "^VIX",
+                "https://www.cboe.com/tradable_products/vix/",
+                data_as_of=vix.get("data_as_of") or vix.get("date"),
+            )
         ]
         
         return {
@@ -49,7 +54,14 @@ class RiskAgent(BaseAgent):
         # 1. VIX level — extreme fear (>30) INVALIDATES bullish thesis
         vix_value = vix.get("current_value")
         if vix_value is not None:
-            signal = validator.validate_vix_level(vix_value, vix_source)
+            live_vix_source = SignalValidator.create_data_source(
+                vix.get("source", vix_source.name),
+                "^VIX",
+                "https://www.cboe.com/tradable_products/vix/",
+                data_as_of=vix.get("data_as_of") or vix.get("date"),
+            )
+            signal = validator.validate_vix_level(vix_value, live_vix_source)
+            signal = validator.apply_freshness_guard(signal, max_stale_hours=72.0)
             validated_signals.append(signal)
 
         # 2. S&P 500 trend — rising equities = risk-on = bullish for BTC
@@ -80,7 +92,7 @@ class RiskAgent(BaseAgent):
                 sp500_valid = True
                 sp500_notes = None
 
-            validated_signals.append(ValidatedSignal(
+            sp500_signal = ValidatedSignal(
                 name=f"S&P 500 {sp500_label}",
                 value=float(sp500.get("current_price", 0) or 0),
                 previous_value=None,
@@ -90,10 +102,16 @@ class RiskAgent(BaseAgent):
                 validation_result=sp500_valid,
                 score_contribution=sp500_contrib,
                 data_source=SignalValidator.create_data_source(
-                    "Yahoo Finance", "^GSPC", "https://finance.yahoo.com/quote/%5EGSPC"
+                    sp500.get("source", "Yahoo Finance"),
+                    "^GSPC",
+                    "https://finance.yahoo.com/quote/%5EGSPC",
+                    data_as_of=sp500.get("data_as_of") or sp500.get("date"),
                 ),
                 notes=sp500_notes,
-            ))
+            )
+            validated_signals.append(
+                validator.apply_freshness_guard(sp500_signal, max_stale_hours=72.0)
+            )
 
         # 3. Gold safe-haven signal — sharp gold rally = flight to safety = risk-off
         gold_change = gold.get("change", gold.get("change_7d"))
@@ -123,7 +141,7 @@ class RiskAgent(BaseAgent):
                 gold_valid = True
                 gold_notes = None
 
-            validated_signals.append(ValidatedSignal(
+            gold_signal = ValidatedSignal(
                 name=f"Gold {gold_label}",
                 value=float(gold.get("current_price", 0) or 0),
                 previous_value=None,
@@ -133,10 +151,16 @@ class RiskAgent(BaseAgent):
                 validation_result=gold_valid,
                 score_contribution=gold_contrib,
                 data_source=SignalValidator.create_data_source(
-                    "Yahoo Finance", "GC=F", "https://finance.yahoo.com/quote/GC%3DF"
+                    gold.get("source", "Yahoo Finance"),
+                    "GC=F",
+                    "https://finance.yahoo.com/quote/GC%3DF",
+                    data_as_of=gold.get("data_as_of") or gold.get("date"),
                 ),
                 notes=gold_notes,
-            ))
+            )
+            validated_signals.append(
+                validator.apply_freshness_guard(gold_signal, max_stale_hours=72.0)
+            )
 
         return validated_signals
     

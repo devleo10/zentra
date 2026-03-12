@@ -66,10 +66,12 @@ class VerdictAgent:
         bias, action = self._determine_bias_with_discipline(final_score, sections)
         
         # 5. Calculate confidence dynamically (unified formula: agreement + distance + headline_conf)
+        data_freshness_score = self._calculate_data_freshness_score(sections)
         confidence_score, confidence_level = self.confidence_calculator.calculate_confidence(
             sections,
             final_score=float(final_score),
             headline_confidence=0.0,
+            data_freshness_score=data_freshness_score,
         )
 
         signal_agreement_pct = self.confidence_calculator.get_signal_agreement_pct(sections)
@@ -102,6 +104,7 @@ class VerdictAgent:
                 "agreement": round(signal_agreement_pct * 0.40, 1),
                 "distance_from_50": round(distance_score * 0.35, 1),
                 "headline_confidence": 0.0,
+                "data_freshness_score": round(data_freshness_score, 1),
             },
             "calculation_timestamp": datetime.now().isoformat()
         }
@@ -122,9 +125,35 @@ class VerdictAgent:
             invalidation_conditions=invalidation_conditions,
             score_breakdown=score_breakdown,
             signal_agreement_pct=round(signal_agreement_pct, 1),
-            data_freshness_score=0.0,
+            data_freshness_score=round(data_freshness_score, 1),
             audit_log=audit_log
         )
+
+    def _calculate_data_freshness_score(self, sections: List[SectionScore]) -> float:
+        """
+        Compute 0-100 freshness score from all source freshness_hours.
+        """
+        freshness_hours = []
+        for section in sections:
+            for source in section.data_sources:
+                freshness_hours.append(source.freshness_hours)
+
+        if not freshness_hours:
+            return 0.0
+
+        def hours_to_score(hours: float) -> float:
+            if hours <= 24:
+                return 100.0
+            if hours <= 72:
+                return 85.0
+            if hours <= 168:
+                return 65.0
+            if hours <= 336:
+                return 40.0
+            return 20.0
+
+        scores = [hours_to_score(h) for h in freshness_hours]
+        return sum(scores) / len(scores)
     
     def _determine_bias_with_discipline(
         self,

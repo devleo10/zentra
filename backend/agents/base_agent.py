@@ -17,7 +17,7 @@ load_dotenv()
 
 
 def get_llm():
-    """Get LLM for v1 agents via centralized provider (LLM_PROVIDER / OPENAI / GEMINI)."""
+    """Get LLM for v1 agents via centralized provider (OpenAI only)."""
     try:
         from llm import get_provider, get_default_chat_model
     except ImportError:
@@ -77,7 +77,7 @@ class BaseAgent(ABC):
         data = self.fetch_data(timeframe=timeframe)
         
         # Extract data sources
-        data_sources = data.pop("_data_sources", [])
+        data_sources = data.get("_data_sources", [])
         
         # Validate signals
         validated_signals = self.validate_signals(data)
@@ -190,15 +190,22 @@ class BaseAgent(ABC):
         validated_count = sum(1 for s in validated_signals if s.validation_status.value == "validated")
         neutralized_count = sum(1 for s in validated_signals if s.validation_status.value == "neutralized")
         invalidated_count = sum(1 for s in validated_signals if s.validation_status.value == "invalidated")
+        stale_count = sum(1 for s in validated_signals if s.validation_status.value == "stale_data")
         total_score_contribution = sum(s.score_contribution for s in validated_signals)
+        freshness_values = [s.data_source.freshness_hours for s in validated_signals if s.data_source]
+        avg_freshness_hours = round(sum(freshness_values) / len(freshness_values), 2) if freshness_values else None
+        max_freshness_hours = round(max(freshness_values), 2) if freshness_values else None
 
         validation_summary = {
             "total_signals": len(validated_signals),
             "validated": validated_count,
             "neutralized": neutralized_count,
             "invalidated": invalidated_count,
+            "stale_data": stale_count,
             "total_contribution": round(total_score_contribution, 1),
-            "validation_rate": round((validated_count / len(validated_signals) * 100) if validated_signals else 0, 1)
+            "validation_rate": round((validated_count / len(validated_signals) * 100) if validated_signals else 0, 1),
+            "avg_signal_freshness_hours": avg_freshness_hours,
+            "max_signal_freshness_hours": max_freshness_hours,
         }
         
         return SectionScore(

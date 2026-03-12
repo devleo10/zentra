@@ -2,7 +2,7 @@
 Signal validation system - ensures all signals are factually correct
 Non-negotiable truth guards before signals contribute to scores
 """
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, Union
 from datetime import datetime, timedelta
 from models.schemas import ValidatedSignal, SignalValidationStatus, DataSource
 
@@ -236,9 +236,20 @@ class SignalValidator:
         name: str,
         series_id: Optional[str] = None,
         url: Optional[str] = None,
-        data_as_of: Optional[datetime] = None
+        data_as_of: Optional[Union[datetime, str]] = None
     ) -> DataSource:
         """Create a DataSource with freshness calculation"""
+        if isinstance(data_as_of, str):
+            parsed = None
+            try:
+                parsed = datetime.fromisoformat(data_as_of.replace("Z", "+00:00"))
+            except Exception:
+                try:
+                    parsed = datetime.strptime(data_as_of[:10], "%Y-%m-%d")
+                except Exception:
+                    parsed = None
+            data_as_of = parsed
+
         if data_as_of is None:
             data_as_of = datetime.now()
         
@@ -253,3 +264,31 @@ class SignalValidator:
             freshness_hours=freshness_hours
         )
 
+    @staticmethod
+    def apply_freshness_guard(
+        signal: ValidatedSignal,
+        max_stale_hours: float = 72.0
+    ) -> ValidatedSignal:
+        """
+        Neutralize a signal when its source is too stale for reliable scoring.
+        """
+        is_fresh, hours_old = SignalValidator.check_data_freshness(
+            signal.data_source.data_as_of,
+            max_stale_hours=max_stale_hours,
+        )
+        if is_fresh:
+            return signal
+
+        updates = {
+            "validation_status": SignalValidationStatus.STALE_DATA,
+            "validation_result": False,
+            "score_contribution": 0.0,
+            "notes": (
+                f"Data is stale ({hours_old:.1f}h old, max {max_stale_hours:.1f}h); "
+                "signal excluded from scoring."
+            ),
+        }
+        try:
+            return signal.model_copy(update=updates)  # pydantic v2
+        except Exception:
+            return signal.copy(update=updates)  # pydantic v1

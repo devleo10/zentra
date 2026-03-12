@@ -24,7 +24,12 @@ class LiquidityAgent(BaseAgent):
         balance_sheet = fred_data.get_fed_balance_sheet(timeframe)
         
         data_sources = [
-            SignalValidator.create_data_source("FRED", "DGS10", "https://fred.stlouisfed.org/series/DGS10")
+            SignalValidator.create_data_source(
+                yields.get("yield_10y", {}).get("source", "FRED"),
+                "DGS10",
+                "https://fred.stlouisfed.org/series/DGS10",
+                data_as_of=yields.get("yield_10y", {}).get("data_as_of") or yields.get("yield_10y", {}).get("date"),
+            )
         ]
         
         return {
@@ -36,6 +41,7 @@ class LiquidityAgent(BaseAgent):
     def validate_signals(self, data: Dict[str, Any]) -> List[ValidatedSignal]:
         """Validate liquidity signals: 10Y yield level, yield curve inversion, and balance sheet trend."""
         validated_signals = []
+        validator = SignalValidator()
         yields = data.get("yields", {})
         balance_sheet = data.get("balance_sheet", {})
 
@@ -62,7 +68,13 @@ class LiquidityAgent(BaseAgent):
                 yield_valid = False
                 yield_status = SignalValidationStatus.NEUTRALIZED
 
-            validated_signals.append(ValidatedSignal(
+            y10_source = SignalValidator.create_data_source(
+                yield_10y.get("source", source.name if source else "FRED"),
+                "DGS10",
+                "https://fred.stlouisfed.org/series/DGS10",
+                data_as_of=yield_10y.get("data_as_of") or yield_10y.get("date"),
+            )
+            y10_signal = ValidatedSignal(
                 name=f"10Y Treasury yield {yield_label}",
                 value=y10_val,
                 previous_value=None,
@@ -71,8 +83,11 @@ class LiquidityAgent(BaseAgent):
                 validation_check=f"yield_10y < 4.5% for positive (actual: {y10_val:.2f}%)",
                 validation_result=yield_valid,
                 score_contribution=yield_contrib,
-                data_source=source,
-            ))
+                data_source=y10_source,
+            )
+            validated_signals.append(
+                validator.apply_freshness_guard(y10_signal, max_stale_hours=120.0)
+            )
 
         # 2. Yield curve spread (10Y - 2Y) — inversion = recession risk = bearish for BTC
         yield_curve_spread = yields.get("yield_curve_spread")
@@ -97,7 +112,13 @@ class LiquidityAgent(BaseAgent):
                 curve_valid = True
                 curve_notes = None
 
-            validated_signals.append(ValidatedSignal(
+            curve_source = SignalValidator.create_data_source(
+                yields.get("yield_10y", {}).get("source", "FRED"),
+                "T10Y2Y",
+                "https://fred.stlouisfed.org/series/T10Y2Y",
+                data_as_of=yields.get("yield_10y", {}).get("data_as_of") or yields.get("yield_10y", {}).get("date"),
+            )
+            curve_signal = ValidatedSignal(
                 name=f"Yield curve {curve_label}",
                 value=yield_curve_spread,
                 previous_value=yield_2y_val,
@@ -106,11 +127,12 @@ class LiquidityAgent(BaseAgent):
                 validation_check=f"yield_curve_spread >= 0 (actual: {yield_curve_spread:+.2f}pp)",
                 validation_result=curve_valid,
                 score_contribution=curve_contrib,
-                data_source=SignalValidator.create_data_source(
-                    "FRED", "DGS2/DGS10", "https://fred.stlouisfed.org/series/T10Y2Y"
-                ),
+                data_source=curve_source,
                 notes=curve_notes,
-            ))
+            )
+            validated_signals.append(
+                validator.apply_freshness_guard(curve_signal, max_stale_hours=120.0)
+            )
 
         # 3. Fed balance sheet trend — expanding = more liquidity = bullish
         bs_trend = balance_sheet.get("trend", "stable")
@@ -135,7 +157,7 @@ class LiquidityAgent(BaseAgent):
                 bs_valid = True
                 bs_notes = None
 
-            validated_signals.append(ValidatedSignal(
+            bs_signal = ValidatedSignal(
                 name=f"Fed balance sheet {bs_label}",
                 value=float(bs_total) if bs_total is not None else 0.0,
                 previous_value=None,
@@ -145,10 +167,16 @@ class LiquidityAgent(BaseAgent):
                 validation_result=bs_valid,
                 score_contribution=bs_contrib,
                 data_source=SignalValidator.create_data_source(
-                    "FRED", "WALCL", "https://fred.stlouisfed.org/series/WALCL"
+                    balance_sheet.get("source", "FRED"),
+                    "WALCL",
+                    "https://fred.stlouisfed.org/series/WALCL",
+                    data_as_of=balance_sheet.get("data_as_of") or balance_sheet.get("latest_date"),
                 ),
                 notes=bs_notes,
-            ))
+            )
+            validated_signals.append(
+                validator.apply_freshness_guard(bs_signal, max_stale_hours=14 * 24)
+            )
 
         return validated_signals
     

@@ -55,6 +55,7 @@ class InflationAgent(BaseAgent):
     def validate_signals(self, data: Dict[str, Any]) -> List[ValidatedSignal]:
         """Validate inflation signals: CPI, PCE, and oil price change."""
         validated_signals = []
+        validator = SignalValidator()
         data_sources = data.get("_data_sources", [])
         cpi_source = data_sources[0] if data_sources else SignalValidator.create_data_source("FRED")
 
@@ -63,7 +64,7 @@ class InflationAgent(BaseAgent):
         cpi_change = cpi.get("change", cpi.get("mom_change"))
         if cpi.get("latest_value") is not None and cpi_change is not None:
             trend = cpi.get("trend", "falling" if cpi_change < 0 else "rising")
-            validated_signals.append(ValidatedSignal(
+            cpi_signal = ValidatedSignal(
                 name=f"CPI MoM {trend} ({cpi_change:+.3f}%)",
                 value=float(cpi.get("latest_value")),
                 previous_value=None,
@@ -72,8 +73,16 @@ class InflationAgent(BaseAgent):
                 validation_check=f"CPI MoM change = {cpi_change:+.3f}%",
                 validation_result=True,
                 score_contribution=15.0 if cpi_change < 0 else 0.0,
-                data_source=cpi_source,
-            ))
+                data_source=SignalValidator.create_data_source(
+                    cpi.get("source", cpi_source.name),
+                    cpi_source.series_id,
+                    cpi_source.url,
+                    data_as_of=cpi.get("data_as_of") or cpi.get("latest_date"),
+                ),
+            )
+            validated_signals.append(
+                validator.apply_freshness_guard(cpi_signal, max_stale_hours=45 * 24)
+            )
 
         # 2. PCE MoM trend
         pce = data.get("pce", {})
@@ -81,7 +90,7 @@ class InflationAgent(BaseAgent):
         if pce_change is not None and not pce.get("error"):
             pce_trend = "falling" if pce_change < 0 else "rising" if pce_change > 0 else "flat"
             is_bullish_pce = pce_change < 0
-            validated_signals.append(ValidatedSignal(
+            pce_signal = ValidatedSignal(
                 name=f"PCE MoM {pce_trend} ({pce_change:+.3f}%)",
                 value=float(pce.get("latest_value", 0) or 0),
                 previous_value=None,
@@ -91,10 +100,16 @@ class InflationAgent(BaseAgent):
                 validation_result=is_bullish_pce,
                 score_contribution=10.0 if is_bullish_pce else 0.0,
                 data_source=SignalValidator.create_data_source(
-                    "FRED", "PCEPI", "https://fred.stlouisfed.org/series/PCEPI"
+                    pce.get("source", "FRED"),
+                    "PCEPI",
+                    "https://fred.stlouisfed.org/series/PCEPI",
+                    data_as_of=pce.get("data_as_of") or pce.get("latest_date"),
                 ),
                 notes=None if is_bullish_pce else "PCE rising — potential inflation persistence",
-            ))
+            )
+            validated_signals.append(
+                validator.apply_freshness_guard(pce_signal, max_stale_hours=45 * 24)
+            )
 
         # 3. Oil price change
         oil = data.get("oil", {})
@@ -122,7 +137,7 @@ class InflationAgent(BaseAgent):
                 oil_status = SignalValidationStatus.VALIDATED
                 oil_valid = True
 
-            validated_signals.append(ValidatedSignal(
+            oil_signal = ValidatedSignal(
                 name=f"WTI Oil {oil_label}",
                 value=float(oil.get("current_price", 0) or 0),
                 previous_value=None,
@@ -132,9 +147,15 @@ class InflationAgent(BaseAgent):
                 validation_result=oil_valid,
                 score_contribution=oil_contrib,
                 data_source=SignalValidator.create_data_source(
-                    "FRED", "DCOILWTICO", "https://fred.stlouisfed.org/series/DCOILWTICO"
+                    oil.get("source", "FRED"),
+                    "DCOILWTICO",
+                    "https://fred.stlouisfed.org/series/DCOILWTICO",
+                    data_as_of=oil.get("data_as_of") or oil.get("latest_date"),
                 ),
-            ))
+            )
+            validated_signals.append(
+                validator.apply_freshness_guard(oil_signal, max_stale_hours=72.0)
+            )
 
         return validated_signals
     

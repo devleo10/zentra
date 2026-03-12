@@ -22,6 +22,7 @@ class ConfidenceCalculator:
         sections: List[SectionScore],
         final_score: Optional[float] = None,
         headline_confidence: float = 0.0,
+        data_freshness_score: Optional[float] = None,
     ) -> Tuple[float, ConfidenceLevel]:
         """
         Calculate confidence score (0-100) and level.
@@ -56,6 +57,16 @@ class ConfidenceCalculator:
             + distance_score * 0.35
             + headline_conf_score * 0.25
         )
+
+        # Freshness penalty: stale data reduces confidence even if signals align.
+        if data_freshness_score is not None:
+            if data_freshness_score < 40:
+                total_confidence -= 20
+            elif data_freshness_score < 60:
+                total_confidence -= 12
+            elif data_freshness_score < 75:
+                total_confidence -= 6
+
         total_confidence = round(max(0.0, min(100.0, total_confidence)), 1)
 
         if total_confidence >= 75:
