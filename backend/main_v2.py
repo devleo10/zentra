@@ -36,7 +36,6 @@ class TimeFrame(str, Enum):
     CURRENT = "current"
     WEEK = "week"
     MONTH = "month"
-    YEAR = "year"
 
 
 class AnalysisRequest(BaseModel):
@@ -79,12 +78,14 @@ app.add_middleware(
 # ═══════════════════════════════════════════════════════════════════════════
 
 @app.post("/api/v2/analyze")
-async def v2_analyze(timeframe: str = "current"):
+async def v2_analyze(timeframe: str = "current", fresh: bool = False):
     """
     Run the deterministic analysis pipeline with timeframe support.
     
     Args:
         timeframe: Analysis timeframe - 'current', 'week', 'month', or 'year'
+        fresh: If True, clear cached news/LLM intermediates before running.
+               Live market prices are fetched fresh either way.
     
     This is the new engine:
     - Numeric scoring is 100% deterministic (zero LLM)
@@ -94,15 +95,15 @@ async def v2_analyze(timeframe: str = "current"):
     - Returns full audit trail
     """
     # Validate timeframe
-    if timeframe not in ["current", "week", "month", "year"]:
+    if timeframe not in ["current", "week", "month"]:
         raise HTTPException(
             status_code=400, 
-            detail=f"Invalid timeframe: {timeframe}. Must be one of: current, week, month, year"
+            detail=f"Invalid timeframe: {timeframe}. Must be one of: current, week, month"
         )
     
     try:
         from run_analysis import run_analysis as _run
-        result = _run(timeframe=timeframe)
+        result = _run(timeframe=timeframe, fresh=fresh)
         return JSONResponse(content=result, status_code=200)
     except SystemExit as e:
         code = getattr(e, "code", None)
@@ -124,7 +125,7 @@ async def v2_compare_timeframes(
     Compare analysis across multiple timeframes.
     
     Args:
-        timeframes: Comma-separated timeframes to compare (e.g., "current,week,month,year")
+        timeframes: Comma-separated timeframes to compare (e.g., "current,week,month")
     
     Returns:
         Comparative analysis across specified timeframes
@@ -132,7 +133,7 @@ async def v2_compare_timeframes(
     try:
         # Parse and validate timeframes
         tf_list = [tf.strip() for tf in timeframes.split(",")]
-        valid_timeframes = ["current", "week", "month", "year"]
+        valid_timeframes = ["current", "week", "month"]
         
         for tf in tf_list:
             if tf not in valid_timeframes:
@@ -168,7 +169,7 @@ async def v2_compare_timeframes(
 
 
 @app.get("/api/v2/analyze/{timeframe}")
-async def v2_analyze_timeframe(timeframe: str):
+async def v2_analyze_timeframe(timeframe: str, fresh: bool = False):
     """
     Run analysis for a specific timeframe via GET request.
 
@@ -177,16 +178,17 @@ async def v2_analyze_timeframe(timeframe: str):
 
     Args:
         timeframe: Analysis timeframe - 'current', 'week', 'month', or 'year'
+        fresh: If True, clear cached news/LLM intermediates before running.
     """
-    if timeframe not in ["current", "week", "month", "year"]:
+    if timeframe not in ["current", "week", "month"]:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid timeframe: {timeframe}. Must be one of: current, week, month, year"
+            detail=f"Invalid timeframe: {timeframe}. Must be one of: current, week, month"
         )
 
     try:
         from run_analysis import run_analysis as _run
-        result = _run(timeframe=timeframe)
+        result = _run(timeframe=timeframe, fresh=fresh)
         return JSONResponse(content=result, status_code=200)
     except SystemExit as e:
         code = getattr(e, "code", None)
@@ -343,13 +345,13 @@ async def root():
         "status": "running",
         "endpoints": {
             "/api/v2/analyze": "Run deterministic analysis (recommended)",
-            "/api/v2/analyze/{timeframe}": "Run analysis for specific timeframe (current/week/month/year)",
+            "/api/v2/analyze/{timeframe}": "Run analysis for specific timeframe (current/week/month)",
             "/api/v2/analyze/compare": "Compare analysis across multiple timeframes",
             "/api/v2/history": "View past analysis results",
             "/api/v2/config": "View scoring configuration",
             "/api/health": "Health check",
         },
-        "timeframes": ["current", "week", "month", "year"],
+        "timeframes": ["current", "week", "month"],
         "examples": {
             "single_timeframe": "/api/v2/analyze/week",
             "compare_timeframes": "/api/v2/analyze/compare?timeframes=current,week,month"
@@ -362,14 +364,7 @@ async def health_check():
     """Health check endpoint"""
     services = {}
 
-    openai_key = os.getenv("OPENAI_API_KEY")
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if openai_key:
-        services["llm"] = "ok (openai)"
-    elif gemini_key:
-        services["llm"] = "ok (gemini)"
-    else:
-        services["llm"] = "missing_key"
+    services["llm"] = "ok" if os.getenv("OPENAI_API_KEY") else "missing_key"
 
     services["fred"] = "ok" if os.getenv("FRED_API_KEY") else "missing_key"
     services["bls"] = "ok" if os.getenv("BLS_API_KEY") else "optional (FRED fallback available)"

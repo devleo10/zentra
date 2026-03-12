@@ -1,14 +1,15 @@
 {
-  "_version": "2.0.0",
+  "_version": "3.0.0",
   "_description": "Deterministic scoring weights and thresholds. All numeric scoring is driven by this config. No LLM involvement in numeric scores.",
-  "_last_updated": "2026-02-12",
+  "_last_updated": "2026-03-12",
 
   "section_weights": {
-    "inflation": 0.20,
-    "fed_policy": 0.25,
+    "inflation": 0.15,
+    "economy": 0.13,
+    "fed_policy": 0.22,
     "liquidity": 0.20,
-    "dxy": 0.20,
-    "risk_sentiment": 0.15
+    "dxy": 0.17,
+    "risk_sentiment": 0.13
   },
 
   "inflation_thresholds": {
@@ -28,6 +29,42 @@
     "oil_bullish_score": 80,
     "oil_neutral_score": 50,
     "oil_bearish_score": 20
+  },
+
+  "economy_thresholds": {
+    "_doc": "Economy section: weak economy = Fed easing = bullish for BTC. Strong economy = tight Fed = bearish.",
+    "unemployment_brackets": [
+      { "threshold": 3.5, "score": 20 },
+      { "threshold": 4.0, "score": 35 },
+      { "threshold": 4.5, "score": 50 },
+      { "threshold": 5.0, "score": 65 },
+      { "threshold": 6.0, "score": 80 },
+      { "threshold": 999, "score": 90 }
+    ],
+    "unemployment_trend_rising_bonus": 10,
+    "unemployment_trend_falling_penalty": -10,
+
+    "gdp_brackets": [
+      { "threshold": -1.0, "score": 85 },
+      { "threshold": 0.0, "score": 75 },
+      { "threshold": 1.0, "score": 60 },
+      { "threshold": 2.0, "score": 45 },
+      { "threshold": 3.0, "score": 30 },
+      { "threshold": 999, "score": 15 }
+    ],
+
+    "pmi_brackets": [
+      { "threshold": 45.0, "score": 85 },
+      { "threshold": 48.0, "score": 70 },
+      { "threshold": 50.0, "score": 58 },
+      { "threshold": 52.0, "score": 42 },
+      { "threshold": 55.0, "score": 28 },
+      { "threshold": 999, "score": 15 }
+    ],
+
+    "unemployment_weight": 0.35,
+    "gdp_weight": 0.30,
+    "pmi_weight": 0.35
   },
 
   "fed_policy_thresholds": {
@@ -70,9 +107,13 @@
     "balance_sheet_expanding_bonus": 15,
     "balance_sheet_contracting_penalty": -15,
 
-    "yield_10y_weight": 0.4,
-    "yield_curve_weight": 0.3,
-    "balance_sheet_weight": 0.3
+    "m2_expanding_bonus": 10,
+    "m2_contracting_penalty": -10,
+
+    "yield_10y_weight": 0.35,
+    "yield_curve_weight": 0.25,
+    "balance_sheet_weight": 0.25,
+    "m2_weight": 0.15
   },
 
   "dxy_thresholds": {
@@ -161,6 +202,10 @@
     "vix_max_age_hours": 24,
     "sp500_max_age_hours": 24,
     "headlines_max_age_hours": 48,
-    "fed_balance_sheet_max_age_days": 10
+    "fed_balance_sheet_max_age_days": 10,
+    "unemployment_max_age_days": 35,
+    "gdp_max_age_days": 120,
+    "pmi_max_age_days": 35,
+    "m2_max_age_days": 35
   }
 }

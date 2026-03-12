@@ -49,7 +49,7 @@ load_dotenv(Path(__file__).parent / ".env")
 from data_fetchers import fred_data, yahoo_data, coingecko_data, news_data
 from scoring_engine.numeric_scorer import (
     score_inflation, score_fed_policy, score_liquidity,
-    score_dxy, score_risk_sentiment, compute_weighted_total,
+    score_dxy, score_risk_sentiment, score_economy, compute_weighted_total,
 )
 from scoring_engine.headline_adjuster import compute_headline_adjustment
 from scoring_engine.cross_signal_reviewer import review_cross_signals
@@ -69,18 +69,26 @@ def _config_hash() -> str:
     return hashlib.sha256(content).hexdigest()[:16]
 
 
-def run_analysis(timeframe: str = "current"):
+def run_analysis(timeframe: str = "current", fresh: bool = False):
     """
     Execute the full analysis pipeline with timeframe support.
     
     Args:
-        timeframe: Analysis timeframe - 'current', 'week', 'month', or 'year'
+        timeframe: Analysis timeframe - 'current', 'week', or 'month'
+        fresh: If True, clear cached news/LLM intermediates before running.
+               Default False still uses cache for headline/Fed-tone/LLM
+               steps, but live market prices are always fetched fresh.
     
     Returns the result dict on success, or raises SystemExit on failure.
     """
+    if fresh:
+        from data_fetchers.cache import clear as cache_clear
+        cache_clear()
+        logger.info("Cache cleared (--fresh mode)")
+
     timestamp = datetime.now().isoformat()
     logger.info("=" * 70)
-    logger.info(f"BTC MACRO ANALYSIS — {timestamp} (timeframe: {timeframe})")
+    logger.info(f"BTC MACRO ANALYSIS - {timestamp} (timeframe: {timeframe})")
     logger.info("=" * 70)
 
     # ── STEP 1: Fetch all numeric data ─────────────────────────────────
@@ -178,6 +186,39 @@ def run_analysis(timeframe: str = "current"):
         logger.error(f"  Fed Funds Rate fetch FAILED: {e}")
         raw_data["fed_rate"] = {"error": str(e)}
 
+    # Jobs data (Unemployment, NFP, Initial Claims)
+    try:
+        raw_data["jobs"] = fred_data.get_jobs_data(timeframe)
+        logger.info(f"  Unemployment: {raw_data['jobs'].get('unemployment_rate', 'ERROR')}% "
+                    f"(trend: {raw_data['jobs'].get('unemployment_trend', 'N/A')})")
+    except Exception as e:
+        logger.error(f"  Jobs data fetch FAILED: {e}")
+        raw_data["jobs"] = {"error": str(e)}
+
+    # GDP growth rate
+    try:
+        raw_data["gdp"] = fred_data.get_gdp_data(timeframe)
+        logger.info(f"  GDP growth: {raw_data['gdp'].get('gdp_growth_rate', 'ERROR')}%")
+    except Exception as e:
+        logger.error(f"  GDP fetch FAILED: {e}")
+        raw_data["gdp"] = {"error": str(e)}
+
+    # PMI (ISM Manufacturing)
+    try:
+        raw_data["pmi"] = fred_data.get_pmi_data(timeframe)
+        logger.info(f"  PMI: {raw_data['pmi'].get('pmi_value', 'ERROR')} ({raw_data['pmi'].get('pmi_status', 'N/A')})")
+    except Exception as e:
+        logger.error(f"  PMI fetch FAILED: {e}")
+        raw_data["pmi"] = {"error": str(e)}
+
+    # M2 Money Supply
+    try:
+        raw_data["m2"] = fred_data.get_m2_money_supply(timeframe)
+        logger.info(f"  M2: ${raw_data['m2'].get('m2_value', 'ERROR')}T (trend: {raw_data['m2'].get('m2_trend', 'N/A')})")
+    except Exception as e:
+        logger.error(f"  M2 fetch FAILED: {e}")
+        raw_data["m2"] = {"error": str(e)}
+
     # ── STEP 2: Validate data freshness ────────────────────────────────
     logger.info("[2/9] Validating data freshness...")
     freshness_report = validate_data_freshness(raw_data)
@@ -190,10 +231,10 @@ def run_analysis(timeframe: str = "current"):
     if not freshness_report.can_proceed:
         logger.error("ABORTING: Critical data is missing or stale. Cannot compute reliable verdict.")
         logger.error(f"Critical failures: {freshness_report.critical_failures}")
-        print("\n❌ ANALYSIS ABORTED — Critical data missing or stale.")
+        print("\nANALYSIS ABORTED - Critical data missing or stale.")
         print("   Critical failures:")
         for f in freshness_report.critical_failures:
-            print(f"     • {f}")
+            print(f"     - {f}")
         print("\n   Fix: Check API keys, internet connection, and data source availability.")
         sys.exit(1)
 
@@ -233,7 +274,8 @@ def run_analysis(timeframe: str = "current"):
     yield_10y = raw_data["yields"].get("yield_10y", {}).get("value")
     yield_curve = raw_data["yields"].get("yield_curve_spread")
     bs_trend = raw_data["balance_sheet"].get("trend", "stable")
-    liquidity_score, liquidity_reasoning = score_liquidity(yield_10y, yield_curve, bs_trend)
+    m2_trend = raw_data.get("m2", {}).get("m2_trend", "stable")
+    liquidity_score, liquidity_reasoning = score_liquidity(yield_10y, yield_curve, bs_trend, m2_trend)
     
     dxy_change = raw_data["dxy"].get("change", 0)
     dxy_level = raw_data["dxy"].get("current_price")  # Absolute DXY value (e.g. 104.2)
@@ -243,9 +285,24 @@ def run_analysis(timeframe: str = "current"):
     sp500_change = raw_data["sp500"].get("change")
     gold_change_val = raw_data["gold"].get("change")
     risk_score, risk_reasoning = score_risk_sentiment(vix_val, sp500_change, gold_change_val)
-    
+
+    # Economy section (Jobs, GDP, PMI)
+    unemployment_rate = raw_data.get("jobs", {}).get("unemployment_rate")
+    unemployment_trend = raw_data.get("jobs", {}).get("unemployment_trend", "stable")
+    nfp_change = raw_data.get("jobs", {}).get("nfp_change")
+    gdp_growth = raw_data.get("gdp", {}).get("gdp_growth_rate")
+    pmi_value = raw_data.get("pmi", {}).get("pmi_value")
+    economy_score, economy_reasoning = score_economy(
+        unemployment_rate=unemployment_rate,
+        unemployment_trend=unemployment_trend,
+        nfp_change=nfp_change,
+        gdp_growth=gdp_growth,
+        pmi_value=pmi_value,
+    )
+
     section_scores = {
         "inflation": inflation_score,
+        "economy": economy_score,
         "fed_policy": fed_score,
         "liquidity": liquidity_score,
         "dxy": dxy_score,
@@ -253,6 +310,7 @@ def run_analysis(timeframe: str = "current"):
     }
     section_reasoning = {
         "inflation": inflation_reasoning,
+        "economy": economy_reasoning,
         "fed_policy": fed_reasoning,
         "liquidity": liquidity_reasoning,
         "dxy": dxy_reasoning,
@@ -261,11 +319,12 @@ def run_analysis(timeframe: str = "current"):
     
     weighted_score, score_breakdown = compute_weighted_total(section_scores)
     
-    logger.info(f"  Inflation:      {inflation_score}/100 — {inflation_reasoning}")
-    logger.info(f"  Fed Policy:     {fed_score}/100 — {fed_reasoning}")
-    logger.info(f"  Liquidity:      {liquidity_score}/100 — {liquidity_reasoning}")
-    logger.info(f"  DXY:            {dxy_score}/100 — {dxy_reasoning}")
-    logger.info(f"  Risk Sentiment: {risk_score}/100 — {risk_reasoning}")
+    logger.info(f"  Inflation:      {inflation_score}/100 - {inflation_reasoning}")
+    logger.info(f"  Economy:        {economy_score}/100 - {economy_reasoning}")
+    logger.info(f"  Fed Policy:     {fed_score}/100 - {fed_reasoning}")
+    logger.info(f"  Liquidity:      {liquidity_score}/100 - {liquidity_reasoning}")
+    logger.info(f"  DXY:            {dxy_score}/100 - {dxy_reasoning}")
+    logger.info(f"  Risk Sentiment: {risk_score}/100 - {risk_reasoning}")
     logger.info(f"  Weighted Total: {weighted_score}/100")
 
     # ── STEP 3b: Cross-signal LLM review ──────────────────────────────
@@ -378,6 +437,7 @@ def run_analysis(timeframe: str = "current"):
         section_scores=section_scores,
         headline_confidence=avg_headline_conf,
         cross_signal_adjustment=cross_adj,
+        data_freshness_info=freshness_report.to_dict(),
     )
     
     logger.info(f"  Final Score:  {verdict['final_score']}/100")
@@ -397,6 +457,8 @@ def run_analysis(timeframe: str = "current"):
         cross_signal_adjustment=cross_adj,
         cross_signal_reasoning=cross_reasoning,
         raw_data=raw_data,
+        classified_headlines=classified,
+        freshness_info=freshness_report.to_dict(),
         template_reasoning=verdict.get("reasoning", ""),
     )
     logger.info(f"  Narrative: {narrative_data['narrative'][:120]}")
@@ -407,27 +469,71 @@ def run_analysis(timeframe: str = "current"):
 
     # ── STEP 8: Store snapshot to SQLite ──────────────────────────────
     logger.info("[8/9] Saving snapshot to local database...")
+    # Derive fed rate stance from trend
+    fed_rate_stance = "pausing"
+    if fed_rate_trend == "falling":
+        fed_rate_stance = "cutting"
+    elif fed_rate_trend == "rising":
+        fed_rate_stance = "hiking"
+
+    # Build top headlines for frontend display
+    top_headlines = []
+    for c in classified[:5]:
+        hl_title = c.get("_headline_title", c.get("reason", ""))
+        hl_source = c.get("_headline_source", "")
+        top_headlines.append({
+            "title": hl_title[:200] if hl_title else "",
+            "source": hl_source,
+            "event_bias": c.get("event_bias", "neutral"),
+            "risk_impact": c.get("risk_impact", "neutral"),
+            "confidence": c.get("confidence", 0),
+        })
+
     snapshot = {
         "timestamp": timestamp,
         "timeframe": timeframe,
         "cpi_mom_change": cpi_change,
         "cpi_yoy_rate": raw_data["cpi"].get("yoy_rate"),
         "cpi_core_yoy_rate": raw_data["cpi"].get("core_yoy_rate"),
+        "cpi_trend": raw_data["cpi"].get("trend"),
         "cpi_source": raw_data["cpi"].get("source", "FRED"),
         "pce_mom_change": pce_change,
         "oil_change": oil_change,
         "oil_price": raw_data.get("oil", {}).get("current_price"),
+        "oil_trend": raw_data.get("oil", {}).get("trend"),
         "dxy_value": raw_data["dxy"].get("current_price"),
         "dxy_change_7d": dxy_change,
+        "dxy_trend": raw_data["dxy"].get("trend"),
         "vix": vix_val,
+        "vix_change": raw_data["vix"].get("change"),
+        "vix_trend": raw_data["vix"].get("trend"),
         "ten_year_yield": yield_10y,
+        "ten_year_yield_trend": raw_data["yields"].get("yield_10y", {}).get("trend"),
+        "two_year_yield": raw_data["yields"].get("yield_2y", {}).get("value"),
         "yield_curve_spread": yield_curve,
         "fed_balance_sheet_trend": bs_trend,
         "sp500_change": sp500_change,
+        "sp500_price": raw_data["sp500"].get("current_price"),
+        "sp500_trend": raw_data["sp500"].get("trend"),
+        "gold_price": raw_data["gold"].get("current_price"),
         "gold_change": gold_change_val,
+        "gold_trend": raw_data["gold"].get("trend"),
         "btc_price": raw_data["btc"].get("price_usd"),
         "fed_funds_rate": fed_rate_val,
         "fed_rate_trend": fed_rate_trend,
+        "fed_rate_stance": fed_rate_stance,
+        "fed_rate_type": raw_data.get("fed_rate", {}).get("rate_type"),
+        "unemployment_rate": unemployment_rate,
+        "unemployment_trend": unemployment_trend,
+        "nfp_change": nfp_change,
+        "gdp_growth_rate": gdp_growth,
+        "gdp_trend": raw_data.get("gdp", {}).get("gdp_trend"),
+        "pmi_value": pmi_value,
+        "pmi_status": raw_data.get("pmi", {}).get("pmi_status"),
+        "pmi_trend": raw_data.get("pmi", {}).get("pmi_trend"),
+        "m2_trend": m2_trend,
+        "m2_change": raw_data.get("m2", {}).get("m2_change"),
+        "m2_yoy_change": raw_data.get("m2", {}).get("m2_yoy_change"),
         "section_scores": section_scores,
         "section_reasoning": section_reasoning,
         "weighted_numeric_score": weighted_score,
@@ -459,6 +565,7 @@ def run_analysis(timeframe: str = "current"):
         "narrative": narrative_data.get("narrative", ""),
         "key_risk": narrative_data.get("key_risk", ""),
         "catalyst_to_watch": narrative_data.get("catalyst_to_watch", ""),
+        "top_headlines": top_headlines,
     }
     
     try:
@@ -477,28 +584,29 @@ def run_analysis(timeframe: str = "current"):
     print(f"  Timestamp:      {timestamp}")
     print(f"  BTC Price:      ${raw_data['btc'].get('price_usd', 'N/A'):,.0f}" if isinstance(raw_data['btc'].get('price_usd'), (int, float)) else f"  BTC Price:      N/A")
     print()
-    print("  ── Section Scores (Deterministic) ──")
+    print("  -- Section Scores (Deterministic) --")
     print(f"    Inflation:      {inflation_score:3d}/100")
+    print(f"    Economy:        {economy_score:3d}/100")
     print(f"    Fed Policy:     {fed_score:3d}/100")
     print(f"    Liquidity:      {liquidity_score:3d}/100")
     print(f"    DXY:            {dxy_score:3d}/100")
     print(f"    Risk Sentiment: {risk_score:3d}/100")
-    print(f"    ─────────────────────────")
+    print(f"    -------------------------")
     print(f"    Weighted Total: {weighted_score:3d}/100")
     print()
-    print(f"  ── Adjustments ──")
+    print(f"  -- Adjustments --")
     print(f"    Headlines analyzed: {len(headlines)}")
     print(f"    Headline adj:       {headline_adj:+d}")
     print(f"    Cross-signal adj:   {cross_adj:+d}")
     print()
-    print(f"  ── Final Verdict ──")
+    print(f"  -- Final Verdict --")
     print(f"    SCORE:      {verdict['final_score']}/100")
     print(f"    BIAS:       {verdict['bias']}")
     print(f"    ACTION:     {verdict['action']}")
     print(f"    CONFIDENCE: {verdict['confidence_pct']}% ({verdict['confidence_label']})")
     if narrative_data.get("narrative"):
         print()
-        print(f"  ── Analyst Commentary ──")
+        print(f"  -- Analyst Commentary --")
         print(f"    {narrative_data['narrative']}")
         if narrative_data.get("key_risk"):
             print(f"    Risk: {narrative_data['key_risk']}")
@@ -507,9 +615,9 @@ def run_analysis(timeframe: str = "current"):
     print("=" * 70)
     
     if freshness_report.warnings:
-        print("\n  ⚠️  Warnings:")
+        print("\n  Warnings:")
         for w in freshness_report.warnings:
-            print(f"     • {w}")
+            print(f"     - {w}")
     
     print()
     return snapshot
@@ -518,19 +626,24 @@ def run_analysis(timeframe: str = "current"):
 if __name__ == "__main__":
     import sys
     
-    # Support command line timeframe argument
+    # Support command line arguments: [timeframe] [--fresh]
     timeframe = "current"
-    if len(sys.argv) > 1:
-        tf_arg = sys.argv[1].lower()
-        if tf_arg in ["current", "week", "month", "year"]:
+    fresh = "--fresh" in sys.argv
+
+    for arg in sys.argv[1:]:
+        if arg == "--fresh":
+            continue
+        tf_arg = arg.lower()
+        if tf_arg in ["current", "week", "month"]:
             timeframe = tf_arg
         else:
             print(f"Invalid timeframe: {tf_arg}. Using 'current'.")
-            print("Valid timeframes: current, week, month, year")
+            print("Valid timeframes: current, week, month")
+            print("Flags: --fresh  (clear cache and re-fetch all data)")
     
     try:
-        result = run_analysis(timeframe)
-        print(f"\n✅ Analysis completed successfully (timeframe: {timeframe})")
+        result = run_analysis(timeframe, fresh=fresh)
+        print(f"\nAnalysis completed successfully (timeframe: {timeframe})")
         print(f"Final Score: {result.get('final_score', 'N/A')}/100")
         print(f"Bias: {result.get('bias', 'N/A')}")
     except SystemExit:
@@ -538,7 +651,7 @@ if __name__ == "__main__":
         pass
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
-        print(f"\n❌ Analysis failed: {e}")
+        print(f"\nAnalysis failed: {e}")
         sys.exit(2)
 
 

@@ -222,15 +222,8 @@ async def health_check():
     """Health check endpoint"""
     services = {}
     
-    # Check LLM API key (Gemini or OpenAI)
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if gemini_key:
-        services["llm"] = "ok (gemini)"
-    elif openai_key:
-        services["llm"] = "ok (openai)"
-    else:
-        services["llm"] = "missing_key"
+    # Check LLM API key (OpenAI only)
+    services["llm"] = "ok" if os.getenv("OPENAI_API_KEY") else "missing_key"
     
     # Check FRED API key
     services["fred"] = "ok" if os.getenv("FRED_API_KEY") else "missing_key"
@@ -244,7 +237,7 @@ async def health_check():
     services["vector_store"] = "ok" if faiss_db.exists() else "not_initialized"
     
     status = "healthy" if all(
-        v in ["ok", "ok (gemini)", "ok (openai)", "optional"] for v in services.values()
+        v in ["ok", "optional"] for v in services.values()
     ) else "degraded"
     
     return HealthResponse(
