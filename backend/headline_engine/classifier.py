@@ -19,17 +19,9 @@ from dotenv import load_dotenv
 from data_fetchers.cache import get as cache_get, put as cache_put
 
 # ── Keyword-based deterministic fallback ──────────────────────────────────────
-# Applied when LLM fails to return valid JSON. Prevents cascading neutral defaults.
-_HAWKISH_WORDS = [
-    "rate hike", "hawkish", "higher for longer", "inflation sticky",
-    "tighten", "premature easing", "labor market strong", "upside risk",
-    "overheat", "aggressive", "restrictive policy",
-]
-_DOVISH_WORDS = [
-    "rate cut", "dovish", "pivot", "disinflation", "policy is restrictive",
-    "easing", "balanced risks", "financial conditions tightening",
-    "slowdown", "recession fears", "soft landing",
-]
+# Hawkish/dovish from shared config (utils.keyword_matcher); risk words stay here.
+from utils.keyword_matcher import get_matched_keywords
+
 _RISK_OFF_WORDS = [
     "drops", "falls", "crash", "warning", "selloff", "bear",
     "war", "tension", "sanctions", "tariff", "bank failure", "crisis",
@@ -42,13 +34,14 @@ _RISK_ON_WORDS = [
 
 
 def _keyword_classify(title: str, description: str) -> Dict[str, Any]:
-    """Deterministic keyword-based fallback classifier."""
-    text = (title + " " + (description or "")).lower()
-
-    hawkish_hits = sum(1 for w in _HAWKISH_WORDS if w in text)
-    dovish_hits = sum(1 for w in _DOVISH_WORDS if w in text)
-    risk_off_hits = sum(1 for w in _RISK_OFF_WORDS if w in text)
-    risk_on_hits = sum(1 for w in _RISK_ON_WORDS if w in text)
+    """Deterministic keyword-based fallback classifier (word-boundary matching for hawkish/dovish)."""
+    text = (title + " " + (description or "")).strip()
+    matched = get_matched_keywords(text)
+    hawkish_hits = len(matched["hawkish"])
+    dovish_hits = len(matched["dovish"])
+    text_lower = text.lower()
+    risk_off_hits = sum(1 for w in _RISK_OFF_WORDS if w in text_lower)
+    risk_on_hits = sum(1 for w in _RISK_ON_WORDS if w in text_lower)
 
     if hawkish_hits > dovish_hits:
         bias = "hawkish"

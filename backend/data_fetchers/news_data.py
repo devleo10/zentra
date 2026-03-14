@@ -204,34 +204,27 @@ def _fetch_newsapi(query: str, days: int) -> List[Dict]:
 
 def analyze_fed_keywords(articles: List[Dict]) -> Dict:
     """
-    Analyze Fed speeches for dovish/hawkish keywords
+    Analyze Fed speeches for dovish/hawkish keywords (shared config + word-boundary matching).
     
     Returns:
         Dict with keyword counts and tone assessment
     """
-    dovish_keywords = [
-        "data dependent", "disinflation", "policy is restrictive",
-        "balanced risks", "financial conditions tightening", "tools are available"
-    ]
-    
-    hawkish_keywords = [
-        "higher for longer", "inflation sticky", "labor market strong",
-        "premature easing", "upside risks"
-    ]
-    
+    from utils.keyword_matcher import get_matched_keywords
+
+    text_content = " ".join([
+        article.get("title", "") + " " + article.get("description", "")
+        for article in articles
+    ])
+    matched = get_matched_keywords(text_content)
+    dovish_count = len(matched["dovish"])
+    hawkish_count = len(matched["hawkish"])
+
     pivot_keywords = [
         "at or near terminal rate", "lagged effects",
         "monitoring credit conditions", "financial stability"
     ]
-    
-    text_content = " ".join([
-        article.get("title", "") + " " + article.get("description", "")
-        for article in articles
-    ]).lower()
-    
-    dovish_count = sum(1 for keyword in dovish_keywords if keyword in text_content)
-    hawkish_count = sum(1 for keyword in hawkish_keywords if keyword in text_content)
-    pivot_count = sum(1 for keyword in pivot_keywords if keyword in text_content)
+    text_lower = text_content.lower()
+    pivot_count = sum(1 for keyword in pivot_keywords if keyword in text_lower)
     
     # Determine tone
     if pivot_count >= 2 or dovish_count >= 2:

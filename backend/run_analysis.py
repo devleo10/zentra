@@ -62,6 +62,32 @@ from headline_engine.report import generate_market_report
 from storage.db import save_snapshot
 
 
+_GEO_KEYWORDS = {
+    "war", "iran", "israel", "ukraine", "russia", "middle east",
+    "sanctions", "tariff", "tariffs", "trade war", "strait of hormuz",
+    "ceasefire", "nato", "missile", "troops", "invasion",
+}
+
+
+def _compute_geopolitics_risk(classified_headlines: list) -> str:
+    """Derive geopolitics risk level from classified headlines."""
+    geo_count = 0
+    geo_risk_off = 0
+    for c in classified_headlines:
+        title = (c.get("_headline_title", "") or c.get("reason", "")).lower()
+        if any(kw in title for kw in _GEO_KEYWORDS):
+            geo_count += 1
+            if c.get("risk_impact") == "risk_off":
+                geo_risk_off += 1
+    if geo_risk_off >= 2:
+        return "high"
+    if geo_count >= 3:
+        return "elevated"
+    if geo_count >= 1:
+        return "moderate"
+    return "low"
+
+
 def _config_hash() -> str:
     """SHA-256 of the scoring config for reproducibility tracking."""
     config_path = Path(__file__).parent / "config" / "scoring_weights.json"
@@ -219,6 +245,62 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         logger.error(f"  M2 fetch FAILED: {e}")
         raw_data["m2"] = {"error": str(e)}
 
+    # Natural Gas (Henry Hub futures)
+    try:
+        raw_data["natgas"] = yahoo_data.get_natural_gas_data(timeframe)
+        logger.info(f"  NatGas: ${raw_data['natgas'].get('current_price', 'ERROR')} (trend: {raw_data['natgas'].get('trend', 'N/A')})")
+    except Exception as e:
+        logger.error(f"  NatGas fetch FAILED: {e}")
+        raw_data["natgas"] = {"error": str(e)}
+
+    # Financial Stress (STLFSI4 + HY OAS)
+    try:
+        raw_data["financial_stress"] = fred_data.get_financial_stress(timeframe)
+        logger.info(f"  Financial Stress: {raw_data['financial_stress'].get('level', 'ERROR')} "
+                    f"(idx={raw_data['financial_stress'].get('stress_index', 'N/A')}, "
+                    f"HY OAS={raw_data['financial_stress'].get('hy_oas', 'N/A')})")
+    except Exception as e:
+        logger.error(f"  Financial stress fetch FAILED: {e}")
+        raw_data["financial_stress"] = {"error": str(e)}
+
+    # BTC Market Structure (dominance, stablecoins, 200d MA)
+    try:
+        raw_data["btc_dominance"] = coingecko_data.get_btc_dominance(timeframe)
+        logger.info(f"  BTC dominance: {raw_data['btc_dominance'].get('btc_dominance', 'ERROR')}%")
+    except Exception as e:
+        logger.error(f"  BTC dominance fetch FAILED: {e}")
+        raw_data["btc_dominance"] = {"error": str(e)}
+
+    try:
+        raw_data["stablecoins"] = coingecko_data.get_stablecoin_data(timeframe)
+        logger.info(f"  Stablecoin dom: {raw_data['stablecoins'].get('total_stablecoin_dominance', 'ERROR')}%")
+    except Exception as e:
+        logger.error(f"  Stablecoin data fetch FAILED: {e}")
+        raw_data["stablecoins"] = {"error": str(e)}
+
+    try:
+        raw_data["btc_technicals"] = coingecko_data.get_btc_ohlcv_200d()
+        logger.info(f"  BTC 200d MA: ${raw_data['btc_technicals'].get('ma200', 'ERROR')}")
+    except Exception as e:
+        logger.error(f"  BTC technicals fetch FAILED: {e}")
+        raw_data["btc_technicals"] = {"error": str(e)}
+
+    # BTC ETF volume (institutional proxy)
+    try:
+        raw_data["btc_etf"] = yahoo_data.get_btc_etf_volume(timeframe)
+        logger.info(f"  BTC ETF volume: {raw_data['btc_etf'].get('total_volume', 'ERROR')} ({raw_data['btc_etf'].get('level', 'N/A')})")
+    except Exception as e:
+        logger.error(f"  BTC ETF volume fetch FAILED: {e}")
+        raw_data["btc_etf"] = {"error": str(e)}
+
+    # DXY swing structure (HH/HL/LH/LL)
+    try:
+        raw_data["dxy_structure"] = yahoo_data.get_dxy_structure(timeframe)
+        logger.info(f"  DXY structure: {raw_data['dxy_structure'].get('structure', 'ERROR')}")
+    except Exception as e:
+        logger.error(f"  DXY structure fetch FAILED: {e}")
+        raw_data["dxy_structure"] = {"error": str(e)}
+
     # ── STEP 2: Validate data freshness ────────────────────────────────
     logger.info("[2/9] Validating data freshness...")
     freshness_report = validate_data_freshness(raw_data)
@@ -338,11 +420,12 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     if cross_reasoning:
         logger.info(f"  Reasoning: {cross_reasoning[:150]}")
 
-    # ── STEP 4: Fetch macro headlines (last 48h) ──────────────────────
-    logger.info("[4/9] Fetching macro headlines...")
+    # ── STEP 4: Fetch macro headlines ─────────────────────────────────
+    headline_lookback = {"current": 48, "week": 168, "month": 720}.get(timeframe, 48)
+    logger.info(f"[4/9] Fetching macro headlines (last {headline_lookback}h for timeframe={timeframe})...")
     headlines = []
     try:
-        fetcher = HeadlineFetcher(lookback_hours=48)
+        fetcher = HeadlineFetcher(lookback_hours=headline_lookback)
         headlines = fetcher.fetch_headlines()
         logger.info(f"  Fetched {len(headlines)} macro headlines")
     except HeadlineFetchError as e:
@@ -476,17 +559,24 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     elif fed_rate_trend == "rising":
         fed_rate_stance = "hiking"
 
-    # Build top headlines for frontend display
+    # Build top headlines for frontend display (with matched keywords for UI)
+    from utils.keyword_matcher import get_matched_keywords
     top_headlines = []
-    for c in classified[:5]:
+    for i, c in enumerate(classified[:5]):
         hl_title = c.get("_headline_title", c.get("reason", ""))
         hl_source = c.get("_headline_source", "")
+        # Use title + description for keyword match (same as classifier)
+        orig = headlines[i] if i < len(headlines) else {}
+        text = (orig.get("title", "") or "") + " " + (orig.get("description", "") or "")
+        matched = get_matched_keywords(text) if text.strip() else {"hawkish": [], "dovish": []}
         top_headlines.append({
-            "title": hl_title[:200] if hl_title else "",
+            "title": (hl_title or "")[:200],
             "source": hl_source,
             "event_bias": c.get("event_bias", "neutral"),
             "risk_impact": c.get("risk_impact", "neutral"),
             "confidence": c.get("confidence", 0),
+            "matched_hawkish": matched.get("hawkish", []),
+            "matched_dovish": matched.get("dovish", []),
         })
 
     snapshot = {
@@ -556,6 +646,7 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "config_hash": _config_hash(),
         "prompt_version": prompt_version,
         "llm_model": llm_model,
+        "fed_tone": raw_data["fed_keywords"].get("tone", "neutral"),
         "dovish_keyword_count": dovish_kw,
         "hawkish_keyword_count": hawkish_kw,
         "pivot_keyword_count": pivot_kw,
@@ -566,6 +657,27 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "key_risk": narrative_data.get("key_risk", ""),
         "catalyst_to_watch": narrative_data.get("catalyst_to_watch", ""),
         "top_headlines": top_headlines,
+        # Natural gas
+        "natgas_price": raw_data.get("natgas", {}).get("current_price"),
+        "natgas_change": raw_data.get("natgas", {}).get("change"),
+        "natgas_trend": raw_data.get("natgas", {}).get("trend"),
+        # Financial stress
+        "financial_stress_index": raw_data.get("financial_stress", {}).get("stress_index"),
+        "financial_stress_level": raw_data.get("financial_stress", {}).get("level"),
+        "financial_stress_trend": raw_data.get("financial_stress", {}).get("stress_trend"),
+        "hy_oas": raw_data.get("financial_stress", {}).get("hy_oas"),
+        "hy_trend": raw_data.get("financial_stress", {}).get("hy_trend"),
+        # BTC market structure
+        "btc_dominance": raw_data.get("btc_dominance", {}).get("btc_dominance"),
+        "stablecoin_dominance": raw_data.get("stablecoins", {}).get("total_stablecoin_dominance"),
+        "btc_ma200": raw_data.get("btc_technicals", {}).get("ma200"),
+        "btc_realized_vol_30d": raw_data.get("btc_technicals", {}).get("realized_vol_30d"),
+        "btc_etf_volume": raw_data.get("btc_etf", {}).get("total_volume"),
+        "btc_etf_flow_level": raw_data.get("btc_etf", {}).get("level"),
+        # DXY structure
+        "dxy_structure": raw_data.get("dxy_structure", {}).get("structure"),
+        # Geopolitics
+        "geopolitics_risk_level": _compute_geopolitics_risk(classified),
     }
     
     try:

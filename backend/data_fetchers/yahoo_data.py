@@ -325,10 +325,136 @@ def get_gold_data(timeframe: str = "current") -> Dict:
             "data_as_of": _safe_date_str(latest.name),
             "comparison_date": _safe_date_str(comparison.name),
             "change": round(change, 2),
-            "trend": "strengthening" if change > 0 else "weakening" if change < 0 else "stable",
+            "trend": "rising" if change > 0 else "falling" if change < 0 else "stable",
             "timeframe": timeframe,
             "source": symbol,
         }
         return result
     except Exception as e:
         return {"error": f"Gold fetch error: {str(e)}", "timeframe": timeframe}
+
+
+def get_natural_gas_data(timeframe: str = "current") -> Dict:
+    """Get Henry Hub Natural Gas futures price via yfinance (NG=F)."""
+    try:
+        for symbol in ["NG=F"]:
+            ticker = yf.Ticker(symbol)
+            period = TIMEFRAME_PERIODS.get(timeframe, "3mo")
+            hist = ticker.history(period=period)
+            if not hist.empty:
+                break
+        else:
+            return {"error": "No natural gas tickers available", "timeframe": timeframe}
+
+        latest = hist.iloc[-1]
+        comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
+        comparison_idx = min(comparison_days, len(hist) - 1)
+        if len(hist) > 1:
+            comparison = hist.iloc[-comparison_idx - 1] if len(hist) > comparison_idx else hist.iloc[0]
+        else:
+            comparison = latest
+
+        current_price = float(latest["Close"])
+        comparison_price = float(comparison["Close"])
+        change = ((current_price - comparison_price) / comparison_price) * 100 if comparison_price else 0.0
+
+        return {
+            "current_price": round(current_price, 2),
+            "date": _safe_date_str(latest.name),
+            "data_as_of": _safe_date_str(latest.name),
+            "comparison_date": _safe_date_str(comparison.name),
+            "change": round(change, 2),
+            "trend": "rising" if change > 0.5 else "falling" if change < -0.5 else "stable",
+            "timeframe": timeframe,
+            "source": symbol,
+        }
+    except Exception as e:
+        return {"error": f"Natural gas fetch error: {str(e)}", "timeframe": timeframe}
+
+
+def get_btc_etf_volume(timeframe: str = "current") -> Dict:
+    """Get aggregate BTC spot ETF daily volume as a proxy for institutional flows."""
+    etf_tickers = ["IBIT", "FBTC", "GBTC", "ARKB", "BITB"]
+    total_volume = 0
+    sources = []
+    latest_date = None
+    try:
+        period = TIMEFRAME_PERIODS.get(timeframe, "1mo")
+        for sym in etf_tickers:
+            try:
+                hist = yf.Ticker(sym).history(period=period)
+                if not hist.empty:
+                    vol = int(hist.iloc[-1].get("Volume", 0))
+                    total_volume += vol
+                    sources.append(sym)
+                    if latest_date is None:
+                        latest_date = _safe_date_str(hist.index[-1])
+            except Exception:
+                continue
+
+        if not sources:
+            return {"error": "No BTC ETF data available", "timeframe": timeframe}
+
+        level = "high" if total_volume > 80_000_000 else "moderate" if total_volume > 30_000_000 else "low"
+        return {
+            "total_volume": total_volume,
+            "level": level,
+            "etfs_tracked": sources,
+            "date": latest_date or datetime.now().strftime("%Y-%m-%d"),
+            "timeframe": timeframe,
+        }
+    except Exception as e:
+        return {"error": f"BTC ETF volume fetch error: {str(e)}", "timeframe": timeframe}
+
+
+def get_dxy_structure(timeframe: str = "current") -> Dict:
+    """Detect DXY swing structure (higher-highs/lower-lows) from recent daily closes."""
+    try:
+        period = {"current": "3mo", "week": "3mo", "month": "6mo", "year": "2y"}.get(timeframe, "3mo")
+        hist = None
+        for symbol in ["DX-Y.NYB", "DX=F"]:
+            t = yf.Ticker(symbol)
+            hist = t.history(period=period)
+            if not hist.empty:
+                break
+        if hist is None or hist.empty or len(hist) < 20:
+            return {"structure": "unknown", "timeframe": timeframe}
+
+        closes = hist["Close"].dropna().values
+        window = min(5, len(closes) // 4)
+        if window < 2:
+            return {"structure": "unknown", "timeframe": timeframe}
+
+        swing_highs = []
+        swing_lows = []
+        for i in range(window, len(closes) - window):
+            if closes[i] == max(closes[i - window:i + window + 1]):
+                swing_highs.append((i, closes[i]))
+            if closes[i] == min(closes[i - window:i + window + 1]):
+                swing_lows.append((i, closes[i]))
+
+        structure = "unclear"
+        if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+            hh = swing_highs[-1][1] > swing_highs[-2][1]
+            hl = swing_lows[-1][1] > swing_lows[-2][1]
+            lh = swing_highs[-1][1] < swing_highs[-2][1]
+            ll = swing_lows[-1][1] < swing_lows[-2][1]
+            if hh and hl:
+                structure = "uptrend"
+            elif lh and ll:
+                structure = "downtrend"
+            elif hh and ll:
+                structure = "expanding"
+            elif lh and hl:
+                structure = "contracting"
+        elif len(swing_highs) >= 2:
+            structure = "uptrend" if swing_highs[-1][1] > swing_highs[-2][1] else "downtrend"
+
+        return {
+            "structure": structure,
+            "recent_swing_high": round(swing_highs[-1][1], 2) if swing_highs else None,
+            "recent_swing_low": round(swing_lows[-1][1], 2) if swing_lows else None,
+            "timeframe": timeframe,
+        }
+    except Exception as e:
+        return {"structure": "unknown", "error": str(e), "timeframe": timeframe}

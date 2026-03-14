@@ -36,7 +36,6 @@ class BaseAgent(ABC):
     
     def get_relevant_knowledge(self, query: str) -> str:
         """Retrieve relevant knowledge from RAG"""
-        # Use invoke() for newer LangChain versions
         docs = self.retriever.invoke(query)
         return "\n\n".join([doc.page_content for doc in docs])
     

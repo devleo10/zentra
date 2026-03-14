@@ -132,6 +132,23 @@ def _ensure_schema(conn: sqlite3.Connection):
         ("narrative",               "TEXT"),
         ("key_risk",                "TEXT"),
         ("catalyst_to_watch",       "TEXT"),
+        ("natgas_price",            "REAL"),
+        ("natgas_change",           "REAL"),
+        ("natgas_trend",            "TEXT"),
+        ("financial_stress_index",  "REAL"),
+        ("financial_stress_level",  "TEXT"),
+        ("financial_stress_trend",  "TEXT"),
+        ("hy_oas",                  "REAL"),
+        ("hy_trend",                "TEXT"),
+        ("btc_dominance",           "REAL"),
+        ("stablecoin_dominance",    "REAL"),
+        ("btc_ma200",               "REAL"),
+        ("btc_realized_vol_30d",    "REAL"),
+        ("btc_etf_volume",          "INTEGER"),
+        ("btc_etf_flow_level",      "TEXT"),
+        ("dxy_structure",           "TEXT"),
+        ("geopolitics_risk_level",  "TEXT"),
+        ("fed_tone",                "TEXT"),
     ]
     for col_name, col_type in migrations:
         if col_name not in existing_columns:
@@ -170,7 +187,14 @@ def save_snapshot(snapshot: Dict[str, Any]) -> int:
                 config_hash, prompt_version, llm_model,
                 dovish_keyword_count, hawkish_keyword_count, pivot_keyword_count,
                 cross_signal_adjustment, cross_signal_reasoning,
-                narrative, key_risk, catalyst_to_watch
+                narrative, key_risk, catalyst_to_watch,
+                natgas_price, natgas_change, natgas_trend,
+                financial_stress_index, financial_stress_level, financial_stress_trend,
+                hy_oas, hy_trend,
+                btc_dominance, stablecoin_dominance,
+                btc_ma200, btc_realized_vol_30d,
+                btc_etf_volume, btc_etf_flow_level,
+                dxy_structure, geopolitics_risk_level, fed_tone
             ) VALUES (
                 ?, ?,
                 ?, ?, ?, ?,
@@ -187,6 +211,13 @@ def save_snapshot(snapshot: Dict[str, Any]) -> int:
                 ?,
                 ?, ?, ?,
                 ?, ?, ?,
+                ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?,
+                ?, ?,
+                ?, ?,
                 ?, ?,
                 ?, ?, ?
             )
@@ -238,6 +269,23 @@ def save_snapshot(snapshot: Dict[str, Any]) -> int:
             snapshot.get("narrative", ""),
             snapshot.get("key_risk", ""),
             snapshot.get("catalyst_to_watch", ""),
+            snapshot.get("natgas_price"),
+            snapshot.get("natgas_change"),
+            snapshot.get("natgas_trend"),
+            snapshot.get("financial_stress_index"),
+            snapshot.get("financial_stress_level"),
+            snapshot.get("financial_stress_trend"),
+            snapshot.get("hy_oas"),
+            snapshot.get("hy_trend"),
+            snapshot.get("btc_dominance"),
+            snapshot.get("stablecoin_dominance"),
+            snapshot.get("btc_ma200"),
+            snapshot.get("btc_realized_vol_30d"),
+            snapshot.get("btc_etf_volume"),
+            snapshot.get("btc_etf_flow_level"),
+            snapshot.get("dxy_structure"),
+            snapshot.get("geopolitics_risk_level"),
+            snapshot.get("fed_tone"),
         ))
         conn.commit()
         row_id = cursor.lastrowid

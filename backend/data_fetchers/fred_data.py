@@ -878,6 +878,67 @@ def get_m2_money_supply(timeframe: str = "current") -> Dict:
     return result
 
 
+def get_financial_stress(timeframe: str = "current") -> Dict:
+    """Get St. Louis Fed Financial Stress Index (STLFSI4) and ICE BofA HY OAS (BAMLH0A0HYM2).
+
+    STLFSI4: 0 = normal, >1 = elevated stress, >2 = crisis-level.
+    HY OAS:  credit spread in basis points — wider = more stress.
+    """
+    effective_start = (datetime.now() - timedelta(days=max(400, TIMEFRAME_DAYS.get(timeframe, 90)))).strftime("%Y-%m-%d")
+
+    stress_idx = None
+    stress_trend = "stable"
+    try:
+        df = get_fred_data("STLFSI4", start_date=effective_start)
+        if not df.empty:
+            stress_idx = round(float(df.iloc[-1]["value"]), 3)
+            if len(df) >= 2:
+                prev = float(df.iloc[-2]["value"])
+                if stress_idx > prev + 0.1:
+                    stress_trend = "rising"
+                elif stress_idx < prev - 0.1:
+                    stress_trend = "falling"
+    except Exception as e:
+        logger.warning("STLFSI4 fetch failed: %s", e)
+
+    hy_oas = None
+    hy_trend = "stable"
+    try:
+        df2 = get_fred_data("BAMLH0A0HYM2", start_date=effective_start)
+        if not df2.empty:
+            hy_oas = round(float(df2.iloc[-1]["value"]), 2)
+            if len(df2) >= 2:
+                prev2 = float(df2.iloc[-2]["value"])
+                if hy_oas > prev2 + 0.05:
+                    hy_trend = "widening"
+                elif hy_oas < prev2 - 0.05:
+                    hy_trend = "tightening"
+    except Exception as e:
+        logger.warning("BAMLH0A0HYM2 fetch failed: %s", e)
+
+    if stress_idx is None and hy_oas is None:
+        return {"error": "No financial stress data available", "timeframe": timeframe}
+
+    level = "normal"
+    if stress_idx is not None:
+        if stress_idx > 2:
+            level = "crisis"
+        elif stress_idx > 1:
+            level = "elevated"
+        elif stress_idx > 0.5:
+            level = "above_average"
+
+    return {
+        "stress_index": stress_idx,
+        "stress_trend": stress_trend,
+        "hy_oas": hy_oas,
+        "hy_trend": hy_trend,
+        "level": level,
+        "source": "FRED",
+        "timeframe": timeframe,
+    }
+
+
 def get_fed_balance_sheet(timeframe: str = "current") -> Dict:
     """Get Federal Reserve balance sheet size with timeframe comparison"""
     start_date, comparison_days = get_timeframe_dates(timeframe)
