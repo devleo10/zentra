@@ -54,6 +54,7 @@ export interface V2AnalysisResult {
   config_hash: string
   prompt_version: string
   llm_model: string
+  fed_tone?: "hawkish" | "dovish" | "neutral"
   dovish_keyword_count: number
   hawkish_keyword_count: number
   pivot_keyword_count: number
@@ -104,13 +105,36 @@ export interface V2AnalysisResult {
   fed_rate_trend: string | null
   fed_rate_stance: string | null
   fed_rate_type?: string | null
-  // Top headlines for display
+  // Natural gas
+  natgas_price: number | null
+  natgas_change: number | null
+  natgas_trend: string | null
+  // Financial stress
+  financial_stress_index: number | null
+  financial_stress_level: string | null
+  financial_stress_trend: string | null
+  hy_oas: number | null
+  hy_trend: string | null
+  // BTC market structure
+  btc_dominance: number | null
+  stablecoin_dominance: number | null
+  btc_ma200: number | null
+  btc_realized_vol_30d: number | null
+  btc_etf_volume: number | null
+  btc_etf_flow_level: string | null
+  // DXY structure
+  dxy_structure: string | null
+  // Geopolitics
+  geopolitics_risk_level: string | null
+  // Top headlines for display (matched_* from backend when available)
   top_headlines: Array<{
     title: string
     source: string
     event_bias: string
     risk_impact: string
     confidence: number
+    matched_hawkish?: string[]
+    matched_dovish?: string[]
   }>
 }
 
