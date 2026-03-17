@@ -126,6 +126,14 @@ class HeadlineFetcher:
             except Exception as e:
                 errors.append(f"NewsAPI: {e}")
                 logger.warning(f"NewsAPI failed: {e}")
+            # Source 1a: NewsAPI Reuters only (emphasis on Reuters, larger pageSize)
+            try:
+                reuters_results = self._fetch_newsapi_reuters_only()
+                if reuters_results:
+                    headlines.extend(reuters_results)
+                    logger.info(f"NewsAPI (Reuters only) returned {len(reuters_results)} headlines")
+            except Exception as e:
+                logger.warning(f"NewsAPI Reuters-only fetch failed: {e}")
             # Source 1b: NewsAPI restricted to Reuters, Financial Times, Stratfor
             try:
                 premium_results = self._fetch_newsapi_premium_sources()
@@ -176,12 +184,22 @@ class HeadlineFetcher:
             auth_score = 2 if any(src.lower() in source.lower() for src in HIGH_AUTH_SOURCES) else 0
             h["_authority_score"] = auth_score
             h["_priority"] = "high" if explicit or auth_score >= 2 else "normal"
+            h["_is_reuters"] = "reuters" in source.lower()
 
             # Log explicit decisions for auditing
             if explicit:
                 logger.info(f"Explicit decision detected: type={decision_type} title={title[:120]}")
 
             annotated.append(h)
+
+        # Prioritize Reuters first, then high-priority, then newest
+        def _headline_sort_key(h: Dict) -> tuple:
+            is_reuters = 0 if h.get("_is_reuters") else 1
+            is_high = 0 if h.get("_priority") == "high" else 1
+            pub = h.get("published_at") or ""
+            return (is_reuters, is_high, pub)
+
+        annotated.sort(key=_headline_sort_key)
 
         cache_put(cache_key, annotated)
         return annotated
@@ -215,6 +233,40 @@ class HeadlineFetcher:
         response.raise_for_status()
         data = response.json()
         
+        articles = data.get("articles", [])
+        return [
+            {
+                "title": a.get("title", ""),
+                "description": a.get("description", "") or "",
+                "published_at": a.get("publishedAt", ""),
+                "source": a.get("source", {}).get("name", ""),
+                "url": a.get("url", ""),
+            }
+            for a in articles
+            if a.get("title")
+        ]
+
+    def _fetch_newsapi_reuters_only(self) -> List[Dict]:
+        """Fetch from NewsAPI restricted to Reuters only (emphasis on Reuters, larger pageSize)."""
+        lookback_days = min(self.lookback_hours // 24 + 1, 29)
+        from_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        query = (
+            "Federal Reserve OR FOMC OR interest rate OR inflation OR CPI OR Treasury OR "
+            "jobs report OR recession OR Jerome Powell OR debt ceiling OR "
+            "Middle East OR Iran OR Israel OR Ukraine OR Russia OR tariff OR sanctions"
+        )
+        params = {
+            "q": query,
+            "domains": "reuters.com",
+            "from": from_date,
+            "sortBy": "publishedAt",
+            "language": "en",
+            "pageSize": 25,
+            "apiKey": self.api_key,
+        }
+        response = requests.get(NEWS_API_URL, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
         articles = data.get("articles", [])
         return [
             {

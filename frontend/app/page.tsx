@@ -703,6 +703,9 @@ export default function Home() {
                             {hl.event_bias}
                           </span>
                           <span className="text-gray-300 leading-snug min-w-0 flex-1" title={hl.title}>{hl.title}</span>
+                          {hl.source?.toLowerCase().includes("reuters") && (
+                            <span className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase bg-amber-500/20 text-amber-400 border border-amber-500/40" title="Reuters">Reuters</span>
+                          )}
                           {hl.source && (
                             <span className="shrink-0 text-gray-600 text-[10px] sm:text-xs">{hl.source}</span>
                           )}
