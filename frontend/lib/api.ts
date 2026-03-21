@@ -62,6 +62,9 @@ export interface V2AnalysisResult {
   cpi_yoy_rate: number | null
   cpi_core_yoy_rate: number | null
   cpi_trend: string | null
+  cpi_mom_avg_3m: number | null
+  cpi_mom_avg_3m_prior: number | null
+  cpi_mom_avg_3m_trend: string | null
   dxy_value: number | null
   dxy_change_7d: number | null
   dxy_trend: string | null
@@ -79,6 +82,10 @@ export interface V2AnalysisResult {
   // Economy indicators
   unemployment_rate: number | null
   unemployment_trend: string | null
+  unemployment_trend_mom: string | null
+  unemployment_trend_3m: string | null
+  unemployment_3m_avg: number | null
+  unemployment_history_3: Array<{ date: string; rate: number }> | null
   nfp_change: number | null
   gdp_growth_rate: number | null
   gdp_trend: string | null
@@ -99,7 +106,13 @@ export interface V2AnalysisResult {
   vix_trend: string | null
   // Bond market
   two_year_yield: number | null
+  two_year_yield_trend: string | null
   yield_curve_spread: number | null
+  yield_monthly_track: Array<{ date: string; yield_10y: number; yield_2y: number; spread: number }> | null
+  yield_spread_delta_3m: number | null
+  yield_spread_trend_3m: string | null
+  yield_10y_delta_3m: number | null
+  yield_2y_delta_3m: number | null
   // Fed stance
   fed_funds_rate: number | null
   fed_rate_trend: string | null
@@ -109,12 +122,12 @@ export interface V2AnalysisResult {
   natgas_price: number | null
   natgas_change: number | null
   natgas_trend: string | null
-  // Financial stress
-  financial_stress_index: number | null
-  financial_stress_level: string | null
-  financial_stress_trend: string | null
-  hy_oas: number | null
-  hy_trend: string | null
+  move_index_value: number | null
+  move_index_change: number | null
+  move_index_trend: string | null
+  eem_price: number | null
+  eem_change: number | null
+  eem_trend: string | null
   // BTC market structure
   btc_dominance: number | null
   stablecoin_dominance: number | null
@@ -122,6 +135,7 @@ export interface V2AnalysisResult {
   btc_realized_vol_30d: number | null
   btc_etf_volume: number | null
   btc_etf_flow_level: string | null
+  btc_market_arrow: "up" | "down" | null
   // DXY structure
   dxy_structure: string | null
   // Geopolitics

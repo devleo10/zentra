@@ -38,6 +38,128 @@ TIMEFRAME_DAYS = {
 }
 
 
+def _fred_observation_on_or_before_calendar_days_ago(df: pd.DataFrame, calendar_days: int) -> pd.Series:
+    """Last row with date <= (latest_date − calendar_days); matches equity % windows."""
+    if df is None or df.empty:
+        raise ValueError("empty dataframe")
+    d = df.sort_values("date").copy()
+    latest_dt = pd.Timestamp(d.iloc[-1]["date"]).normalize()
+    cutoff = latest_dt - pd.Timedelta(days=max(1, int(calendar_days)))
+    past = d[pd.to_datetime(d["date"]).dt.normalize() <= cutoff]
+    if past.empty:
+        return d.iloc[0]
+    return past.iloc[-1]
+
+
+def _yield_month_end_track(df_10: pd.DataFrame, df_2: pd.DataFrame, n: int = 3) -> list:
+    """Last n calendar months with month-end (last available) 10Y and 2Y from daily FRED series."""
+    if df_10.empty or df_2.empty:
+        return []
+    a = df_10.sort_values("date").copy()
+    b = df_2.sort_values("date").copy()
+    a["ym"] = pd.to_datetime(a["date"]).dt.to_period("M")
+    b["ym"] = pd.to_datetime(b["date"]).dt.to_period("M")
+    a_m = a.groupby("ym", as_index=False).last().rename(columns={"date": "d10", "value": "v10"})
+    b_m = b.groupby("ym", as_index=False).last().rename(columns={"date": "d2", "value": "v2"})
+    merged = pd.merge(a_m, b_m, on="ym")
+    if merged.empty:
+        return []
+    tail = merged.tail(n)
+    out = []
+    for _, r in tail.iterrows():
+        y10 = float(r["v10"])
+        y2 = float(r["v2"])
+        d10 = r["d10"]
+        if hasattr(d10, "strftime"):
+            ds = d10.strftime("%Y-%m-%d")
+        else:
+            ds = str(d10)[:10]
+        out.append({
+            "date": ds,
+            "yield_10y": round(y10, 2),
+            "yield_2y": round(y2, 2),
+            "spread": round(y10 - y2, 2),
+        })
+    return out
+
+
+def _cpi_three_month_mom_stats_from_fred_df(df: pd.DataFrame) -> Dict:
+    """Average of last 3 monthly MoM % changes vs prior 3 (inflation pulse)."""
+    if df is None or len(df) < 4:
+        return {}
+    moms = []
+    for i in range(1, min(8, len(df))):
+        curr = float(df.iloc[-i]["value"])
+        prev = float(df.iloc[-i - 1]["value"])
+        if prev:
+            moms.append((curr - prev) / prev * 100.0)
+    if len(moms) < 3:
+        return {}
+    avg3 = sum(moms[:3]) / 3.0
+    prior3 = sum(moms[3:6]) / 3.0 if len(moms) >= 6 else None
+    if prior3 is not None:
+        if avg3 > prior3 + 0.02:
+            tr = "rising"
+        elif avg3 < prior3 - 0.02:
+            tr = "falling"
+        else:
+            tr = "flat"
+    else:
+        if avg3 > 0.05:
+            tr = "rising"
+        elif avg3 < -0.05:
+            tr = "falling"
+        else:
+            tr = "flat"
+    return {
+        "cpi_mom_avg_3m": round(avg3, 3),
+        "cpi_mom_avg_3m_prior": round(prior3, 3) if prior3 is not None else None,
+        "cpi_mom_avg_3m_trend": tr,
+    }
+
+
+def _cpi_three_month_mom_stats_from_bls_headline(headline: list) -> Dict:
+    """Same 3-month MoM average logic; BLS `headline` rows are newest-first."""
+    if not headline or len(headline) < 4:
+        return {}
+    vals = []
+    for row in headline[:12]:
+        try:
+            vals.append(float(row["value"]))
+        except Exception:
+            break
+    if len(vals) < 4:
+        return {}
+    moms = []
+    for i in range(len(vals) - 1):
+        prev = vals[i + 1]
+        if prev:
+            moms.append((vals[i] - prev) / prev * 100.0)
+    if len(moms) < 3:
+        return {}
+    avg3 = sum(moms[:3]) / 3.0
+    prior3 = sum(moms[3:6]) / 3.0 if len(moms) >= 6 else None
+    if prior3 is not None:
+        if avg3 > prior3 + 0.02:
+            tr = "rising"
+        elif avg3 < prior3 - 0.02:
+            tr = "falling"
+        else:
+            tr = "flat"
+    else:
+        if avg3 > 0.05:
+            tr = "rising"
+        elif avg3 < -0.05:
+            tr = "falling"
+        else:
+            tr = "flat"
+    return {
+        "cpi_mom_avg_3m": round(avg3, 3),
+        "cpi_mom_avg_3m_prior": round(prior3, 3) if prior3 is not None else None,
+        "cpi_mom_avg_3m_trend": tr,
+    }
+
+
 def get_timeframe_dates(timeframe: str = "current") -> Tuple[str, int]:
     """
     Get start date and comparison days based on timeframe
@@ -255,6 +377,7 @@ def _get_cpi_from_bls() -> Optional[Dict]:
             "source": "BLS",
             "_validation": {"validated": True, "reasons": []},
         }
+        result.update(_cpi_three_month_mom_stats_from_bls_headline(headline))
         logger.info(
             "BLS CPI: index=%.3f MoM=%+.3f%% YoY=%.2f%% Core YoY=%s%% (date=%s)",
             latest_value, mom_change, yoy_rate,
@@ -362,6 +485,8 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
     result["_validation"] = validation
     if not validation["validated"]:
         logger.warning("CPI validation failed: %s", validation["reasons"])
+
+    result.update(_cpi_three_month_mom_stats_from_fred_df(df))
 
     logger.info(
         "CPI fetched: index=%s MoM=%+.2f%% YoY=%s%% (date=%s)",
@@ -475,8 +600,10 @@ def get_treasury_yields(timeframe: str = "current") -> Dict:
 
     if not df_2y.empty:
         latest_2y = df_2y.iloc[-1]
-        comparison_idx = min(comparison_days, len(df_2y) - 1)
-        prev_2y = df_2y.iloc[-comparison_idx - 1] if len(df_2y) > comparison_idx else latest_2y
+        try:
+            prev_2y = _fred_observation_on_or_before_calendar_days_ago(df_2y, comparison_days)
+        except Exception:
+            prev_2y = latest_2y
         change_2y = latest_2y["value"] - prev_2y["value"]
         
         result["yield_2y"] = {
@@ -490,8 +617,10 @@ def get_treasury_yields(timeframe: str = "current") -> Dict:
     
     if not df_10y.empty:
         latest_10y = df_10y.iloc[-1]
-        comparison_idx = min(comparison_days, len(df_10y) - 1)
-        prev_10y = df_10y.iloc[-comparison_idx - 1] if len(df_10y) > comparison_idx else latest_10y
+        try:
+            prev_10y = _fred_observation_on_or_before_calendar_days_ago(df_10y, comparison_days)
+        except Exception:
+            prev_10y = latest_10y
         change_10y = latest_10y["value"] - prev_10y["value"]
         
         result["yield_10y"] = {
@@ -508,7 +637,20 @@ def get_treasury_yields(timeframe: str = "current") -> Dict:
             spread = result["yield_10y"]["value"] - result["yield_2y"]["value"]
             result["yield_curve_spread"] = round(spread, 2)
             result["yield_curve_status"] = "steepening" if spread > 0 else "inverted" if spread < 0 else "flat"
-    
+
+    if not df_2y.empty and not df_10y.empty:
+        track = _yield_month_end_track(df_10y, df_2y, 3)
+        if track:
+            result["yield_monthly_track"] = track
+            if len(track) >= 2:
+                d_spread = track[-1]["spread"] - track[0]["spread"]
+                result["yield_spread_delta_3m"] = round(d_spread, 2)
+                result["yield_spread_trend_3m"] = (
+                    "rising" if d_spread > 0.03 else "falling" if d_spread < -0.03 else "flat"
+                )
+                result["yield_10y_delta_3m"] = round(track[-1]["yield_10y"] - track[0]["yield_10y"], 2)
+                result["yield_2y_delta_3m"] = round(track[-1]["yield_2y"] - track[0]["yield_2y"], 2)
+
     return result
 
 
@@ -671,6 +813,27 @@ def get_jobs_data(timeframe: str = "current") -> Dict:
             result["unemployment_trend"] = "rising" if diff > 0.1 else "falling" if diff < -0.1 else "stable"
         else:
             result["unemployment_trend"] = "unknown"
+        # Past three monthly prints + 3-month average (for monthly analysis UI)
+        n = len(df_ur)
+        hist3 = []
+        for i in range(min(3, n)):
+            row = df_ur.iloc[-1 - i]
+            hist3.append({
+                "date": row["date"].strftime("%Y-%m-%d"),
+                "rate": round(float(row["value"]), 1),
+            })
+        result["unemployment_history_3"] = list(reversed(hist3))
+        if n >= 3:
+            result["unemployment_3m_avg"] = round(
+                float(df_ur.iloc[-3:]["value"].astype(float).mean()), 2
+            )
+        if n >= 4:
+            latest_r = float(df_ur.iloc[-1]["value"])
+            r3ago = float(df_ur.iloc[-4]["value"])
+            d3 = latest_r - r3ago
+            result["unemployment_trend_3m"] = (
+                "rising" if d3 > 0.05 else "falling" if d3 < -0.05 else "stable"
+            )
         logger.info("Unemployment Rate: %.1f%% (trend=%s)", result["unemployment_rate"], result["unemployment_trend"])
     else:
         last_val = _get_last_snapshot_field("unemployment_rate")

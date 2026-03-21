@@ -3,6 +3,14 @@
 import { useState, useEffect } from "react"
 import { Info } from "lucide-react"
 import { runV2Analysis, V2AnalysisResult, TimeFrame } from "@/lib/api"
+import {
+  BitcoinMarketPanel,
+  CpiPanel,
+  DeltaArrow,
+  TrendArrow,
+  UnemploymentPanel,
+  YieldSpreadPanel,
+} from "@/components/macro-panels"
 
 const TIMEFRAMES: { value: TimeFrame; label: string }[] = [
   { value: "current", label: "Now" },
@@ -19,7 +27,6 @@ const SECTION_LABELS: Record<string, string> = {
   risk_sentiment: "Risk",
 }
 
-// Keywords used to classify headlines (matches backend headline_engine/classifier.py)
 const HAWKISH_KEYWORDS = [
   "rate hike", "hawkish", "higher for longer", "inflation sticky",
   "tighten", "premature easing", "labor market strong", "upside risk",
@@ -54,16 +61,13 @@ const barColor = (s: number) =>
 
 /* ── Skeleton helpers ──────────────────────────────────────────────── */
 
-function SkeletonBox({ className = "" }: { className?: string }) {
-  return <div className={`rounded-lg bg-gray-800/60 animate-shimmer ${className}`} />
-}
-
 function SkeletonPulse({ className = "", style }: { className?: string; style?: React.CSSProperties }) {
   return <div className={`rounded bg-gray-700/50 animate-fade-pulse ${className}`} style={style} />
 }
 
 const SKELETON_SECTIONS = Object.keys(SECTION_LABELS)
 const SKELETON_BAR_TARGETS = [72, 45, 58, 63, 38, 80]
+const SKELETON_METRICS = ["DXY", "WTI", "VIX", "S&P 500", "Gold", "10Y", "Fed Rate", "Fed tone", "MOVE", "EEM", "PMI", "GDP"]
 
 function LoadingSkeleton() {
   return (
@@ -83,10 +87,10 @@ function LoadingSkeleton() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.2fr] gap-3 sm:gap-4">
-        {/* Left column */}
+      {/* 3-column grid matching result layout */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
+        {/* Col 1: Verdict + Breakdown */}
         <div className="space-y-3 sm:space-y-4">
-          {/* Verdict skeleton */}
           <div className="bg-gray-900 rounded-xl p-4 border border-gray-800 overflow-hidden">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-baseline gap-2">
@@ -107,10 +111,9 @@ function LoadingSkeleton() {
             </div>
           </div>
 
-          {/* Breakdown skeleton */}
           <div className="bg-gray-900 rounded-xl p-3 border border-gray-800">
             <div className="text-[10px] sm:text-xs text-gray-600 mb-1.5">Breakdown</div>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+            <div className="space-y-1.5">
               {SKELETON_SECTIONS.map((key, i) => (
                 <div key={key} className="flex items-center gap-1.5">
                   <span className="text-gray-600 text-[11px] sm:text-sm w-20 shrink-0">{SECTION_LABELS[key]}</span>
@@ -126,13 +129,36 @@ function LoadingSkeleton() {
               ))}
             </div>
           </div>
+
+          {/* CPI skeleton */}
+          <div className="bg-gray-900 rounded-xl p-3 border border-gray-800 animate-shimmer">
+            <div className="text-[10px] sm:text-xs text-gray-600 mb-1.5">CPI (inflation)</div>
+            <div className="flex gap-4">
+              <SkeletonPulse className="h-3.5 w-24" />
+              <SkeletonPulse className="h-3.5 w-32" />
+              <SkeletonPulse className="h-3.5 w-16" />
+            </div>
+          </div>
+
+          {/* Unemployment skeleton */}
+          <div className="bg-gray-900 rounded-xl p-3 border border-gray-800 animate-shimmer">
+            <div className="text-[10px] sm:text-xs text-gray-600 mb-1.5">Unemployment</div>
+            <div className="flex gap-4">
+              <SkeletonPulse className="h-3.5 w-20" />
+              <SkeletonPulse className="h-3.5 w-28" />
+            </div>
+            <div className="mt-2 pt-2 border-t border-gray-800 flex gap-3">
+              <SkeletonPulse className="h-3 w-24" />
+              <SkeletonPulse className="h-3 w-24" />
+              <SkeletonPulse className="h-3 w-24" />
+            </div>
+          </div>
         </div>
 
-        {/* Right column */}
+        {/* Col 2: Metrics grid */}
         <div className="space-y-3 sm:space-y-4">
-          {/* Metrics skeleton */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-1.5 sm:gap-2">
-            {["CPI MoM", "DXY", "WTI", "VIX", "S&P 500", "Gold", "10Y", "Fed Rate", "Fed tone", "Unemp", "PMI", "GDP"].map((label, i) => (
+          <div className="grid grid-cols-2 gap-1.5 sm:gap-2">
+            {SKELETON_METRICS.map((label, i) => (
               <div key={label} className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 flex items-center gap-1.5 animate-shimmer"
                    style={{ animationDelay: `${i * 0.1}s` }}>
                 <span className="text-gray-600 text-xs sm:text-sm">{label}</span>
@@ -141,9 +167,25 @@ function LoadingSkeleton() {
             ))}
           </div>
 
-          {/* BTC Market Structure skeleton */}
+          {/* Yield skeleton */}
           <div className="bg-gray-900 rounded-xl p-3 border border-gray-800 animate-shimmer">
-            <div className="text-[10px] sm:text-xs text-gray-600 mb-1.5">Bitcoin Market Structure</div>
+            <div className="text-[10px] sm:text-xs text-gray-600 mb-1.5">Treasury 10Y − 2Y</div>
+            <SkeletonPulse className="h-3.5 w-44 mb-2" />
+            <div className="space-y-1">
+              {[0, 1, 2].map(i => (
+                <div key={i} className="flex gap-3">
+                  <SkeletonPulse className="h-3 w-20" style={{ animationDelay: `${i * 0.15}s` }} />
+                  <SkeletonPulse className="h-3 w-16" />
+                  <SkeletonPulse className="h-3 w-16" />
+                  <SkeletonPulse className="h-3 w-14" />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* BTC Market skeleton */}
+          <div className="bg-gray-900 rounded-xl p-3 border border-gray-800 animate-shimmer">
+            <div className="text-[10px] sm:text-xs text-gray-600 mb-1.5">Bitcoin market structure</div>
             <div className="flex flex-wrap gap-x-4 gap-y-1">
               {["BTC.D", "Stable.D", "200d MA", "30d Vol", "ETF Vol"].map((label, i) => (
                 <div key={label} className="flex items-center gap-1">
@@ -153,8 +195,10 @@ function LoadingSkeleton() {
               ))}
             </div>
           </div>
+        </div>
 
-          {/* Headlines skeleton */}
+        {/* Col 3: Headlines skeleton */}
+        <div className="space-y-3 sm:space-y-4">
           <div className="bg-gray-900 rounded-xl p-3 border border-gray-800">
             <div className="text-[10px] sm:text-xs text-gray-600 mb-1.5">Key Macro Headlines</div>
             <div className="space-y-2">
@@ -237,7 +281,7 @@ export default function Home() {
     <main className="min-h-screen bg-gray-950 text-white flex flex-col px-3 py-4 sm:px-6 sm:py-5">
       <div className="w-full max-w-[1600px] mx-auto space-y-3 sm:space-y-4">
 
-        {/* Header + controls — single row */}
+        {/* Header + controls */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight">BTC Macro Signal</h1>
@@ -269,7 +313,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Error */}
         {error && (
           <div className="bg-red-900/40 border border-red-700 text-red-300 text-sm px-4 py-2 rounded-lg">
             {error}
@@ -296,12 +339,13 @@ export default function Home() {
           </div>
         )}
 
-        {/* Skeleton loading state */}
-        {loading && !result && <LoadingSkeleton />}
+        {/* Skeleton: always show when loading (first run OR re-run) */}
+        {loading && <LoadingSkeleton />}
 
-        {result && (
+        {/* Result: hide while loading so skeleton is the only visible state */}
+        {result && !loading && (
           <>
-            {/* Summary card — full text on hover or click (i) */}
+            {/* Summary card */}
             {result.narrative && !result.narrative.startsWith("Numeric:") && (
               <div className="relative">
                 <div
@@ -346,9 +390,10 @@ export default function Home() {
               </div>
             )}
 
-            {/* Main: two columns on lg — left: Verdict + Breakdown; right: Metrics + Headlines */}
-            <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.2fr] gap-3 sm:gap-4">
-              {/* Left column */}
+            {/* ═══ Main 3-column layout ═══ */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
+
+              {/* ── Col 1: Verdict + Breakdown + deep-dive panels ── */}
               <div className="space-y-3 sm:space-y-4">
                 {/* Verdict */}
                 <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
@@ -393,10 +438,10 @@ export default function Home() {
                   )}
                 </div>
 
-                {/* Breakdown */}
+                {/* Breakdown — single column stacked for readability */}
                 <div className="bg-gray-900 rounded-xl p-3 border border-gray-800">
                   <div className="text-[10px] sm:text-xs text-gray-500 mb-1.5">Breakdown</div>
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+                  <div className="space-y-1.5">
                     {Object.entries(result.section_scores).map(([key, score]) => (
                       <div key={key} className="flex items-center gap-1.5">
                         <span className="text-gray-400 text-[11px] sm:text-sm w-20 shrink-0">{SECTION_LABELS[key] ?? key}</span>
@@ -408,39 +453,38 @@ export default function Home() {
                     ))}
                   </div>
                 </div>
+
+                <CpiPanel result={result} />
+                <UnemploymentPanel result={result} timeframe={timeframe} />
+                <YieldSpreadPanel result={result} />
+                <BitcoinMarketPanel result={result} />
               </div>
 
-              {/* Right column: Key metrics + Headlines */}
+              {/* ── Col 2: Metrics grid ── */}
               <div className="space-y-3 sm:space-y-4">
-                {/* Key metrics — dense grid, more columns when wide */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-1.5 sm:gap-2 text-xs sm:text-sm">
-              {result.cpi_mom_change != null && (
-                <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300" title={result.cpi_yoy_rate != null ? `YoY ${result.cpi_yoy_rate.toFixed(1)}%${result.cpi_core_yoy_rate != null ? ` · Core ${result.cpi_core_yoy_rate.toFixed(1)}%` : ""}` : undefined}>
-                  CPI MoM <span className="text-white font-medium">{result.cpi_mom_change > 0 ? "+" : ""}{result.cpi_mom_change.toFixed(2)}%</span>
-                  <span className={result.cpi_mom_change > 0.05 ? "text-red-400" : result.cpi_mom_change < -0.05 ? "text-green-400" : "text-gray-500"}>
-                    {" "}{result.cpi_mom_change > 0.05 ? "▲" : result.cpi_mom_change < -0.05 ? "▼" : "→"}
-                  </span>
-                </span>
-              )}
+                <div className="grid grid-cols-2 gap-1.5 sm:gap-2 text-xs sm:text-sm">
               {result.dxy_value != null && (
-                <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300">
+                <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300" title="US Dollar Index">
                   DXY <span className="text-white font-medium">{result.dxy_value.toFixed(2)}</span>
                   {result.dxy_change_7d != null && (
-                    <span className={result.dxy_change_7d > 0.1 ? "text-red-400" : result.dxy_change_7d < -0.1 ? "text-green-400" : "text-gray-500"}>
-                      {" "}{result.dxy_change_7d > 0.1 ? "▲" : result.dxy_change_7d < -0.1 ? "▼" : "→"}
-                    </span>
+                    <>
+                      <span className={result.dxy_change_7d > 0.05 ? "text-green-400" : result.dxy_change_7d < -0.05 ? "text-red-400" : "text-gray-500"}>
+                        {" "}({result.dxy_change_7d > 0 ? "+" : ""}{result.dxy_change_7d.toFixed(2)}%)
+                      </span>
+                      <span className="ml-0.5"><DeltaArrow delta={result.dxy_change_7d} eps={0.05} /></span>
+                    </>
                   )}
                 </span>
               )}
               {result.oil_price != null && (
                 <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300">
                   WTI <span className="text-white font-medium">${result.oil_price.toFixed(0)}</span>
-                  <span className={
-                    result.oil_trend === "rising" ? "text-yellow-400" :
-                    result.oil_trend === "falling" ? "text-green-400" : "text-gray-500"
-                  }>
-                    {" "}{result.oil_trend === "rising" ? "▲" : result.oil_trend === "falling" ? "▼" : "→"}
-                  </span>
+                  {result.oil_change != null && (
+                    <span className={result.oil_change > 0.05 ? "text-green-400" : result.oil_change < -0.05 ? "text-red-400" : "text-gray-500"}>
+                      {" "}({result.oil_change > 0 ? "+" : ""}{result.oil_change.toFixed(1)}%)
+                    </span>
+                  )}
+                  <span className="ml-0.5"><TrendArrow trend={result.oil_trend} /></span>
                 </span>
               )}
               {result.vix != null && (
@@ -448,9 +492,12 @@ export default function Home() {
                   result.vix > 20 ? "text-red-400" : result.vix < 15 ? "text-green-400" : "text-gray-300"
                 }`}>
                   VIX <span className="font-medium">{result.vix.toFixed(1)}</span>
-                  <span className={result.vix_trend === "rising" ? "text-red-400" : result.vix_trend === "falling" ? "text-green-400" : "text-gray-500"}>
-                    {" "}{result.vix_trend === "rising" ? "▲" : result.vix_trend === "falling" ? "▼" : "→"}
-                  </span>
+                  {result.vix_change != null && (
+                    <span className={result.vix_change > 0.05 ? "text-green-400" : result.vix_change < -0.05 ? "text-red-400" : "text-gray-500"}>
+                      {" "}({result.vix_change > 0 ? "+" : ""}{result.vix_change.toFixed(2)})
+                    </span>
+                  )}
+                  <span className="ml-0.5"><TrendArrow trend={result.vix_trend} /></span>
                 </span>
               )}
               {(result.sp500_price != null || result.sp500_change != null) && (
@@ -459,37 +506,33 @@ export default function Home() {
                     {result.sp500_price != null ? result.sp500_price.toLocaleString(undefined, { maximumFractionDigits: 0 }) : "—"}
                   </span>
                   {result.sp500_change != null && (
-                    <span className={result.sp500_change > 0.1 ? "text-green-400" : result.sp500_change < -0.1 ? "text-red-400" : "text-gray-500"}>
+                    <span className={result.sp500_change > 0.05 ? "text-green-400" : result.sp500_change < -0.05 ? "text-red-400" : "text-gray-500"}>
                       {" "}({result.sp500_change > 0 ? "+" : ""}{result.sp500_change.toFixed(2)}%)
                     </span>
                   )}
-                  <span className={
-                    result.sp500_trend === "risk_on" ? "text-green-400" :
-                    result.sp500_trend === "risk_off" ? "text-red-400" : "text-gray-500"
-                  }>
-                    {" "}{result.sp500_trend === "risk_on" ? "▲" : result.sp500_trend === "risk_off" ? "▼" : "→"}
-                  </span>
+                  <span className="ml-0.5"><TrendArrow trend={result.sp500_trend} /></span>
                 </span>
               )}
               {result.gold_price != null && (
                 <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300">
                   Gold <span className="text-white font-medium">${result.gold_price.toFixed(0)}</span>
-                  <span className={(result.gold_trend === "rising" || result.gold_trend === "strengthening") ? "text-yellow-400" : (result.gold_trend === "falling" || result.gold_trend === "weakening") ? "text-red-400" : "text-gray-500"}>
-                    {" "}{(result.gold_trend === "rising" || result.gold_trend === "strengthening") ? "▲" : (result.gold_trend === "falling" || result.gold_trend === "weakening") ? "▼" : "→"}
-                  </span>
+                  {result.gold_change != null && (
+                    <span className={result.gold_change > 0.05 ? "text-green-400" : result.gold_change < -0.05 ? "text-red-400" : "text-gray-500"}>
+                      {" "}({result.gold_change > 0 ? "+" : ""}{result.gold_change.toFixed(2)}%)
+                    </span>
+                  )}
+                  <span className="ml-0.5"><TrendArrow trend={result.gold_trend} /></span>
                 </span>
               )}
               {result.ten_year_yield != null && (
                 <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300">
                   10Y <span className="text-white font-medium">{result.ten_year_yield.toFixed(2)}%</span>
-                  <span className={
-                    result.ten_year_yield_trend === "rising" ? "text-red-400" :
-                    result.ten_year_yield_trend === "falling" ? "text-green-400" : "text-gray-500"
-                  }>
-                    {" "}{result.ten_year_yield_trend === "rising" ? "▲" : result.ten_year_yield_trend === "falling" ? "▼" : "→"}
-                  </span>
+                  <span className="ml-0.5"><TrendArrow trend={result.ten_year_yield_trend} /></span>
                   {result.two_year_yield != null && (
-                    <span className="text-gray-500"> · 2Y {result.two_year_yield.toFixed(2)}%</span>
+                    <span className="text-gray-500">
+                      {" "}· 2Y <span className="text-gray-300">{result.two_year_yield.toFixed(2)}%</span>
+                      <span className="ml-0.5"><TrendArrow trend={result.two_year_yield_trend} /></span>
+                    </span>
                   )}
                 </span>
               )}
@@ -498,28 +541,20 @@ export default function Home() {
                   result.yield_curve_spread < 0 ? "text-red-400" : "text-gray-300"
                 }`} title="10Y minus 2Y Treasury spread">
                   10Y-2Y <span className="font-medium">{result.yield_curve_spread > 0 ? "+" : ""}{result.yield_curve_spread.toFixed(2)}</span>
-                  <span className={result.yield_curve_spread > 0.05 ? "text-green-400" : result.yield_curve_spread < -0.05 ? "text-red-400" : "text-gray-500"}>
-                    {" "}{result.yield_curve_spread > 0.05 ? "▲" : result.yield_curve_spread < -0.05 ? "▼" : "→"}
-                  </span>
+                  {result.yield_spread_delta_3m != null ? (
+                    <span className="ml-0.5"><DeltaArrow delta={result.yield_spread_delta_3m} eps={0.03} /></span>
+                  ) : (
+                    <span className="ml-0.5"><TrendArrow trend={result.yield_spread_trend_3m} /></span>
+                  )}
                   {result.yield_curve_spread < 0 && <span className="text-red-400 text-xs"> inverted</span>}
                 </span>
               )}
               {result.fed_funds_rate != null && (
                 <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300" title={result.fed_rate_type === "target" ? "FOMC target (upper)" : result.fed_rate_type === "effective" ? "Effective rate" : undefined}>
                   Fed Rate <span className="text-white font-medium">{result.fed_funds_rate.toFixed(2)}%</span>
-                  <span className={
-                    result.fed_rate_trend === "falling" ? "text-green-400" :
-                    result.fed_rate_trend === "rising" ? "text-red-400" : "text-gray-500"
-                  }>
-                    {" "}{result.fed_rate_trend === "falling" ? "▼" : result.fed_rate_trend === "rising" ? "▲" : "→"}
-                  </span>
+                  <span className="ml-0.5"><TrendArrow trend={result.fed_rate_trend} /></span>
                   {result.fed_rate_stance && (
-                    <span className={
-                      result.fed_rate_stance === "cutting" ? "text-green-400" :
-                      result.fed_rate_stance === "hiking" ? "text-red-400" : "text-yellow-400"
-                    }>
-                      {" "}{result.fed_rate_stance}
-                    </span>
+                    <span className="text-gray-500 text-xs ml-1">({result.fed_rate_stance})</span>
                   )}
                 </span>
               )}
@@ -539,14 +574,6 @@ export default function Home() {
                   )}
                 </span>
               )}
-              {result.unemployment_rate != null && (
-                <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300">
-                  Unemp <span className="text-white font-medium">{result.unemployment_rate.toFixed(1)}%</span>
-                  <span className={result.unemployment_trend === "rising" ? "text-yellow-400" : result.unemployment_trend === "falling" ? "text-green-400" : "text-gray-500"}>
-                    {" "}{result.unemployment_trend === "rising" ? "▲" : result.unemployment_trend === "falling" ? "▼" : "→"}
-                  </span>
-                </span>
-              )}
               {result.pmi_value != null && (
                 <span
                   className={`bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 ${
@@ -555,12 +582,7 @@ export default function Home() {
                   title={result.pmi_value >= 50 ? "ISM Manufacturing PMI — expansion" : "ISM Manufacturing PMI — contraction"}
                 >
                   PMI <span className="font-medium">{result.pmi_value.toFixed(1)}</span>
-                  <span className={
-                    result.pmi_trend === "rising" ? "text-green-400" :
-                    result.pmi_trend === "falling" ? "text-red-400" : "text-gray-500"
-                  }>
-                    {" "}{result.pmi_trend === "rising" ? "▲" : result.pmi_trend === "falling" ? "▼" : "→"}
-                  </span>
+                  <span className="ml-0.5"><TrendArrow trend={result.pmi_trend} /></span>
                 </span>
               )}
               {result.gdp_growth_rate != null && (
@@ -568,12 +590,7 @@ export default function Home() {
                   GDP <span className={`font-medium ${result.gdp_growth_rate < 0 ? "text-red-400" : "text-white"}`}>
                     {result.gdp_growth_rate > 0 ? "+" : ""}{result.gdp_growth_rate.toFixed(1)}%
                   </span>
-                  <span className={
-                    result.gdp_trend === "accelerating" ? "text-green-400" :
-                    result.gdp_trend === "contracting" || result.gdp_trend === "decelerating" ? "text-red-400" : "text-gray-500"
-                  }>
-                    {" "}{result.gdp_trend === "accelerating" ? "▲" : result.gdp_trend === "contracting" || result.gdp_trend === "decelerating" ? "▼" : "→"}
-                  </span>
+                  <span className="ml-0.5"><TrendArrow trend={result.gdp_trend} /></span>
                 </span>
               )}
               {(result.m2_trend || result.m2_change != null) && (
@@ -584,13 +601,7 @@ export default function Home() {
                   }>
                     {result.m2_trend ?? "—"}
                   </span>
-                  <span className={
-                    result.m2_trend === "expanding" || result.m2_trend === "slight expansion" ? "text-green-400" :
-                    result.m2_trend === "contracting" || result.m2_trend === "slight contraction" ? "text-red-400" : "text-gray-500"
-                  }>
-                    {" "}{result.m2_trend === "expanding" || result.m2_trend === "slight expansion" ? "▲" :
-                      result.m2_trend === "contracting" || result.m2_trend === "slight contraction" ? "▼" : "→"}
-                  </span>
+                  <span className="ml-0.5"><TrendArrow trend={result.m2_trend} /></span>
                   {result.m2_change != null && (
                     <span className="text-gray-500 text-xs ml-0.5">({result.m2_change > 0 ? "+" : ""}{result.m2_change}%)</span>
                   )}
@@ -599,30 +610,34 @@ export default function Home() {
               {result.natgas_price != null && (
                 <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300">
                   NatGas <span className="text-white font-medium">${result.natgas_price.toFixed(2)}</span>
-                  <span className={
-                    result.natgas_trend === "rising" ? "text-yellow-400" :
-                    result.natgas_trend === "falling" ? "text-green-400" : "text-gray-500"
-                  }>
-                    {" "}{result.natgas_trend === "rising" ? "▲" : result.natgas_trend === "falling" ? "▼" : "→"}
-                  </span>
                   {result.natgas_change != null && (
-                    <span className="text-gray-500 text-xs ml-0.5">({result.natgas_change > 0 ? "+" : ""}{result.natgas_change.toFixed(1)}%)</span>
+                    <span className={result.natgas_change > 0.05 ? "text-green-400" : result.natgas_change < -0.05 ? "text-red-400" : "text-gray-500"}>
+                      {" "}({result.natgas_change > 0 ? "+" : ""}{result.natgas_change.toFixed(1)}%)
+                    </span>
                   )}
+                  <span className="ml-0.5"><TrendArrow trend={result.natgas_trend} /></span>
                 </span>
               )}
-              {result.financial_stress_index != null && (
-                <span
-                  className={`bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 ${
-                    result.financial_stress_level === "crisis" ? "text-red-400" :
-                    result.financial_stress_level === "elevated" ? "text-orange-400" :
-                    result.financial_stress_level === "above_average" ? "text-yellow-400" : "text-green-400"
-                  }`}
-                  title={`St. Louis Fed Financial Stress Index${result.hy_oas != null ? ` · HY OAS: ${result.hy_oas}%` : ""}`}
-                >
-                  Stress <span className="font-medium">{result.financial_stress_index.toFixed(2)}</span>
-                  <span className={result.financial_stress_trend === "rising" ? "text-red-400" : result.financial_stress_trend === "falling" ? "text-green-400" : "text-gray-500"}>
-                    {" "}{result.financial_stress_trend === "rising" ? "▲" : result.financial_stress_trend === "falling" ? "▼" : "→"}
-                  </span>
+              {result.move_index_value != null && (
+                <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300" title="ICE BofA MOVE — Treasury implied volatility">
+                  MOVE <span className="text-white font-medium">{result.move_index_value.toFixed(1)}</span>
+                  {result.move_index_change != null && (
+                    <span className={result.move_index_change > 0.05 ? "text-green-400" : result.move_index_change < -0.05 ? "text-red-400" : "text-gray-500"}>
+                      {" "}({result.move_index_change > 0 ? "+" : ""}{result.move_index_change.toFixed(2)}%)
+                    </span>
+                  )}
+                  <span className="ml-0.5"><TrendArrow trend={result.move_index_trend} /></span>
+                </span>
+              )}
+              {result.eem_price != null && (
+                <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300" title="iShares MSCI Emerging Markets (EEM)">
+                  EEM <span className="text-white font-medium">{result.eem_price.toFixed(2)}</span>
+                  {result.eem_change != null && (
+                    <span className={result.eem_change > 0.05 ? "text-green-400" : result.eem_change < -0.05 ? "text-red-400" : "text-gray-500"}>
+                      {" "}({result.eem_change > 0 ? "+" : ""}{result.eem_change.toFixed(2)}%)
+                    </span>
+                  )}
+                  <span className="ml-0.5"><TrendArrow trend={result.eem_trend} /></span>
                 </span>
               )}
               {result.dxy_structure != null && result.dxy_structure !== "unknown" && (
@@ -642,45 +657,10 @@ export default function Home() {
                 </span>
               )}
                 </div>
+              </div>
 
-                {/* BTC Market Structure */}
-                {(result.btc_dominance != null || result.btc_ma200 != null || result.btc_etf_volume != null) && (
-                  <div className="bg-gray-900 rounded-xl p-3 border border-gray-800">
-                    <div className="text-[10px] sm:text-xs text-gray-500 mb-1.5">Bitcoin Market Structure</div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] sm:text-sm text-gray-300">
-                      {result.btc_dominance != null && (
-                        <span>BTC.D <span className="text-white font-medium">{result.btc_dominance.toFixed(1)}%</span></span>
-                      )}
-                      {result.stablecoin_dominance != null && (
-                        <span>Stable.D <span className="text-white font-medium">{result.stablecoin_dominance.toFixed(1)}%</span></span>
-                      )}
-                      {result.btc_ma200 != null && result.btc_price != null && (
-                        <span>
-                          200d MA <span className="text-white font-medium">${result.btc_ma200.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
-                          <span className={result.btc_price > result.btc_ma200 ? "text-green-400" : "text-red-400"}>
-                            {" "}{result.btc_price > result.btc_ma200 ? "above ▲" : "below ▼"}
-                          </span>
-                        </span>
-                      )}
-                      {result.btc_realized_vol_30d != null && (
-                        <span>30d Vol <span className="text-white font-medium">{(result.btc_realized_vol_30d * 100).toFixed(0)}%</span></span>
-                      )}
-                      {result.btc_etf_volume != null && (
-                        <span>
-                          ETF Vol <span className="text-white font-medium">{(result.btc_etf_volume / 1_000_000).toFixed(0)}M</span>
-                          <span className={
-                            result.btc_etf_flow_level === "high" ? "text-green-400" :
-                            result.btc_etf_flow_level === "low" ? "text-red-400" : "text-gray-500"
-                          }>
-                            {" "}({result.btc_etf_flow_level ?? "—"})
-                          </span>
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Key Macro Headlines */}
+              {/* ── Col 3: Headlines ── */}
+              <div className="space-y-3 sm:space-y-4">
                 {result.top_headlines && result.top_headlines.length > 0 && (() => {
                   const fromBackend = result.top_headlines.some((hl) => Array.isArray(hl.matched_hawkish) || Array.isArray(hl.matched_dovish))
                   const hawkishList = fromBackend
@@ -715,7 +695,7 @@ export default function Home() {
                     <div className="mt-2 pt-2 border-t border-gray-800 text-[10px] text-gray-500 space-y-1">
                       <div><span className="text-red-400/90 font-medium">Hawkish</span> (in headlines): {hawkishList.length ? hawkishList.join(", ") : "none found"}</div>
                       <div><span className="text-green-400/90 font-medium">Dovish</span> (in headlines): {dovishList.length ? dovishList.join(", ") : "none found"}</div>
-                      <p className="text-gray-600 text-[9px] mt-1">Labels can come from context (e.g. geopolitics) when these phrases aren’t in the text.</p>
+                      <p className="text-gray-600 text-[9px] mt-1">Labels can come from context (e.g. geopolitics) when these phrases aren&apos;t in the text.</p>
                     </div>
                   </div>
                   )

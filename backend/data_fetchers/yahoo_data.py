@@ -61,13 +61,46 @@ TIMEFRAME_PERIODS = {
     "year": "2y"
 }
 
-# Timeframe to comparison days
+# Timeframe to comparison days (calendar days — not trading sessions)
 TIMEFRAME_COMPARISON = {
     "current": 1,
     "week": 7,
     "month": 30,
     "year": 365
 }
+
+
+def _normalize_hist_index(hist: pd.DataFrame) -> pd.DataFrame:
+    """Timezone-naive DatetimeIndex for reliable calendar arithmetic."""
+    h = hist.copy()
+    idx = pd.to_datetime(hist.index)
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_convert("UTC").tz_localize(None)
+    h.index = idx
+    return h
+
+
+def _latest_and_comparison_rows(hist: pd.DataFrame, calendar_days: int):
+    """Pick comparison bar as last row on or before (latest_date − calendar_days).
+
+    Fixes % change for 'month' (30d): using 30 *trading* rows was ~6 weeks, not 30 days.
+    Normalizes to date-only to avoid DST hour offsets (winter bars are 05:00 UTC,
+    spring/summer bars are 04:00 UTC → naive subtraction misses the target day).
+    Returns (latest_row, comparison_row) as Series.
+    """
+    h = _normalize_hist_index(hist)
+    if h.empty:
+        raise ValueError("empty history")
+    latest = h.iloc[-1]
+    latest_date = h.index[-1].normalize()  # midnight
+    days = max(1, int(calendar_days))
+    cutoff_date = latest_date - pd.Timedelta(days=days)
+    past = h[h.index.normalize() <= cutoff_date]
+    if past.empty:
+        comparison = h.iloc[0]
+    else:
+        comparison = past.iloc[-1]
+    return latest, comparison
 
 
 def get_dxy_data(timeframe: str = "current") -> Dict:
@@ -120,14 +153,11 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
         if hist.empty:
             return {"error": "No DXY data available", "timeframe": timeframe}
 
-        latest = hist.iloc[-1]
         comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
-        comparison_idx = min(comparison_days, len(hist) - 1)
-        
-        # Avoid comparing a row to itself (produces change=0 always)
         if len(hist) > 1:
-            comparison = hist.iloc[-comparison_idx - 1] if len(hist) > comparison_idx else hist.iloc[0]
+            latest, comparison = _latest_and_comparison_rows(hist, comparison_days)
         else:
+            latest = hist.iloc[-1]
             comparison = latest
             logger.warning("DXY history has only 1 row; change will be 0 (insufficient data)")
 
@@ -226,12 +256,11 @@ def get_vix_data(timeframe: str = "current") -> Dict:
                 }
             return {"error": "No VIX tickers available and no valid snapshot fallback", "timeframe": timeframe}
 
-        latest = hist.iloc[-1]
         comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 1)
-        comparison_idx = min(comparison_days, len(hist) - 1)
         if len(hist) > 1:
-            comparison = hist.iloc[-comparison_idx - 1] if len(hist) > comparison_idx else hist.iloc[0]
+            latest, comparison = _latest_and_comparison_rows(hist, comparison_days)
         else:
+            latest = hist.iloc[-1]
             comparison = latest
 
         current_vix = float(latest["Close"])
@@ -267,12 +296,11 @@ def get_sp500_data(timeframe: str = "current") -> Dict:
         else:
             return {"error": "No S&P 500 tickers available", "timeframe": timeframe}
 
-        latest = hist.iloc[-1]
         comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
-        comparison_idx = min(comparison_days, len(hist) - 1)
         if len(hist) > 1:
-            comparison = hist.iloc[-comparison_idx - 1] if len(hist) > comparison_idx else hist.iloc[0]
+            latest, comparison = _latest_and_comparison_rows(hist, comparison_days)
         else:
+            latest = hist.iloc[-1]
             comparison = latest
 
         current_price = float(latest["Close"])
@@ -285,7 +313,7 @@ def get_sp500_data(timeframe: str = "current") -> Dict:
             "data_as_of": _safe_date_str(latest.name),
             "comparison_date": _safe_date_str(comparison.name),
             "change": round(change, 2),
-            "trend": "risk_on" if change > 0 else "risk_off" if change < 0 else "neutral",
+            "trend": "rising" if change > 0.05 else "falling" if change < -0.05 else "stable",
             "timeframe": timeframe,
             "source": symbol,
         }
@@ -307,12 +335,11 @@ def get_gold_data(timeframe: str = "current") -> Dict:
         else:
             return {"error": "No gold tickers available", "timeframe": timeframe}
 
-        latest = hist.iloc[-1]
         comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
-        comparison_idx = min(comparison_days, len(hist) - 1)
         if len(hist) > 1:
-            comparison = hist.iloc[-comparison_idx - 1] if len(hist) > comparison_idx else hist.iloc[0]
+            latest, comparison = _latest_and_comparison_rows(hist, comparison_days)
         else:
+            latest = hist.iloc[-1]
             comparison = latest
 
         current_price = float(latest["Close"])
@@ -346,12 +373,11 @@ def get_natural_gas_data(timeframe: str = "current") -> Dict:
         else:
             return {"error": "No natural gas tickers available", "timeframe": timeframe}
 
-        latest = hist.iloc[-1]
         comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
-        comparison_idx = min(comparison_days, len(hist) - 1)
         if len(hist) > 1:
-            comparison = hist.iloc[-comparison_idx - 1] if len(hist) > comparison_idx else hist.iloc[0]
+            latest, comparison = _latest_and_comparison_rows(hist, comparison_days)
         else:
+            latest = hist.iloc[-1]
             comparison = latest
 
         current_price = float(latest["Close"])
@@ -370,6 +396,64 @@ def get_natural_gas_data(timeframe: str = "current") -> Dict:
         }
     except Exception as e:
         return {"error": f"Natural gas fetch error: {str(e)}", "timeframe": timeframe}
+
+
+def _yahoo_pct_change_series(symbol: str, timeframe: str) -> Dict:
+    """Shared helper for index/ETF % change over the analysis window."""
+    ticker = yf.Ticker(symbol)
+    period = TIMEFRAME_PERIODS.get(timeframe, "3mo")
+    hist = ticker.history(period=period)
+    if hist.empty:
+        return {"error": f"No data for {symbol}", "timeframe": timeframe, "symbol": symbol}
+    comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
+    if len(hist) > 1:
+        latest, comparison = _latest_and_comparison_rows(hist, comparison_days)
+    else:
+        latest = hist.iloc[-1]
+        comparison = latest
+    cur = float(latest["Close"])
+    prev = float(comparison["Close"])
+    change_pct = ((cur - prev) / prev) * 100 if prev else 0.0
+    return {
+        "current_price": round(cur, 2),
+        "date": _safe_date_str(latest.name),
+        "data_as_of": _safe_date_str(latest.name),
+        "comparison_date": _safe_date_str(comparison.name),
+        "change": round(change_pct, 2),
+        "trend": "rising" if change_pct > 0.05 else "falling" if change_pct < -0.05 else "stable",
+        "timeframe": timeframe,
+        "source": symbol,
+    }
+
+
+def get_move_index_data(timeframe: str = "current") -> Dict:
+    """ICE BofA MOVE Treasury volatility index (^MOVE)."""
+    try:
+        for symbol in ["^MOVE", "MOVE"]:
+            try:
+                out = _yahoo_pct_change_series(symbol, timeframe)
+                if "error" not in out:
+                    return out
+            except Exception:
+                continue
+        return {"error": "No MOVE index data available", "timeframe": timeframe}
+    except Exception as e:
+        return {"error": f"MOVE fetch error: {str(e)}", "timeframe": timeframe}
+
+
+def get_emerging_markets_data(timeframe: str = "current") -> Dict:
+    """Emerging markets equity proxy (iShares EEM)."""
+    try:
+        for symbol in ["EEM", "VWO"]:
+            try:
+                out = _yahoo_pct_change_series(symbol, timeframe)
+                if "error" not in out:
+                    return out
+            except Exception:
+                continue
+        return {"error": "No emerging markets ETF data available", "timeframe": timeframe}
+    except Exception as e:
+        return {"error": f"Emerging markets fetch error: {str(e)}", "timeframe": timeframe}
 
 
 def get_btc_etf_volume(timeframe: str = "current") -> Dict:

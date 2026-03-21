@@ -253,15 +253,22 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         logger.error(f"  NatGas fetch FAILED: {e}")
         raw_data["natgas"] = {"error": str(e)}
 
-    # Financial Stress (STLFSI4 + HY OAS)
+    # MOVE index & emerging markets (equity macro)
     try:
-        raw_data["financial_stress"] = fred_data.get_financial_stress(timeframe)
-        logger.info(f"  Financial Stress: {raw_data['financial_stress'].get('level', 'ERROR')} "
-                    f"(idx={raw_data['financial_stress'].get('stress_index', 'N/A')}, "
-                    f"HY OAS={raw_data['financial_stress'].get('hy_oas', 'N/A')})")
+        raw_data["move_index"] = yahoo_data.get_move_index_data(timeframe)
+        logger.info(f"  MOVE: {raw_data['move_index'].get('current_price', 'ERROR')} "
+                    f"(chg={raw_data['move_index'].get('change', 'N/A')}%)")
     except Exception as e:
-        logger.error(f"  Financial stress fetch FAILED: {e}")
-        raw_data["financial_stress"] = {"error": str(e)}
+        logger.error(f"  MOVE fetch FAILED: {e}")
+        raw_data["move_index"] = {"error": str(e)}
+
+    try:
+        raw_data["eem"] = yahoo_data.get_emerging_markets_data(timeframe)
+        logger.info(f"  EEM: {raw_data['eem'].get('current_price', 'ERROR')} "
+                    f"(chg={raw_data['eem'].get('change', 'N/A')}%)")
+    except Exception as e:
+        logger.error(f"  EEM fetch FAILED: {e}")
+        raw_data["eem"] = {"error": str(e)}
 
     # BTC Market Structure (dominance, stablecoins, 200d MA)
     try:
@@ -371,6 +378,10 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     # Economy section (Jobs, GDP, PMI)
     unemployment_rate = raw_data.get("jobs", {}).get("unemployment_rate")
     unemployment_trend = raw_data.get("jobs", {}).get("unemployment_trend", "stable")
+    if timeframe == "month":
+        t3 = raw_data.get("jobs", {}).get("unemployment_trend_3m")
+        if t3:
+            unemployment_trend = t3
     nfp_change = raw_data.get("jobs", {}).get("nfp_change")
     gdp_growth = raw_data.get("gdp", {}).get("gdp_growth_rate")
     pmi_value = raw_data.get("pmi", {}).get("pmi_value")
@@ -559,6 +570,15 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     elif fed_rate_trend == "rising":
         fed_rate_stance = "hiking"
 
+    btc_market_arrow = None
+    try:
+        bp = raw_data.get("btc", {}).get("price_usd")
+        ma200 = raw_data.get("btc_technicals", {}).get("ma200")
+        if bp is not None and ma200 is not None and float(ma200) > 0:
+            btc_market_arrow = "up" if float(bp) >= float(ma200) else "down"
+    except (TypeError, ValueError):
+        pass
+
     # Build top headlines for frontend display (with matched keywords for UI)
     from utils.keyword_matcher import get_matched_keywords
     top_headlines = []
@@ -587,6 +607,9 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "cpi_core_yoy_rate": raw_data["cpi"].get("core_yoy_rate"),
         "cpi_trend": raw_data["cpi"].get("trend"),
         "cpi_source": raw_data["cpi"].get("source", "FRED"),
+        "cpi_mom_avg_3m": raw_data["cpi"].get("cpi_mom_avg_3m"),
+        "cpi_mom_avg_3m_prior": raw_data["cpi"].get("cpi_mom_avg_3m_prior"),
+        "cpi_mom_avg_3m_trend": raw_data["cpi"].get("cpi_mom_avg_3m_trend"),
         "pce_mom_change": pce_change,
         "oil_change": oil_change,
         "oil_price": raw_data.get("oil", {}).get("current_price"),
@@ -600,7 +623,13 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "ten_year_yield": yield_10y,
         "ten_year_yield_trend": raw_data["yields"].get("yield_10y", {}).get("trend"),
         "two_year_yield": raw_data["yields"].get("yield_2y", {}).get("value"),
+        "two_year_yield_trend": raw_data["yields"].get("yield_2y", {}).get("trend"),
         "yield_curve_spread": yield_curve,
+        "yield_monthly_track": raw_data["yields"].get("yield_monthly_track"),
+        "yield_spread_delta_3m": raw_data["yields"].get("yield_spread_delta_3m"),
+        "yield_spread_trend_3m": raw_data["yields"].get("yield_spread_trend_3m"),
+        "yield_10y_delta_3m": raw_data["yields"].get("yield_10y_delta_3m"),
+        "yield_2y_delta_3m": raw_data["yields"].get("yield_2y_delta_3m"),
         "fed_balance_sheet_trend": bs_trend,
         "sp500_change": sp500_change,
         "sp500_price": raw_data["sp500"].get("current_price"),
@@ -615,6 +644,10 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "fed_rate_type": raw_data.get("fed_rate", {}).get("rate_type"),
         "unemployment_rate": unemployment_rate,
         "unemployment_trend": unemployment_trend,
+        "unemployment_trend_mom": raw_data.get("jobs", {}).get("unemployment_trend"),
+        "unemployment_trend_3m": raw_data.get("jobs", {}).get("unemployment_trend_3m"),
+        "unemployment_3m_avg": raw_data.get("jobs", {}).get("unemployment_3m_avg"),
+        "unemployment_history_3": raw_data.get("jobs", {}).get("unemployment_history_3"),
         "nfp_change": nfp_change,
         "gdp_growth_rate": gdp_growth,
         "gdp_trend": raw_data.get("gdp", {}).get("gdp_trend"),
@@ -661,12 +694,12 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "natgas_price": raw_data.get("natgas", {}).get("current_price"),
         "natgas_change": raw_data.get("natgas", {}).get("change"),
         "natgas_trend": raw_data.get("natgas", {}).get("trend"),
-        # Financial stress
-        "financial_stress_index": raw_data.get("financial_stress", {}).get("stress_index"),
-        "financial_stress_level": raw_data.get("financial_stress", {}).get("level"),
-        "financial_stress_trend": raw_data.get("financial_stress", {}).get("stress_trend"),
-        "hy_oas": raw_data.get("financial_stress", {}).get("hy_oas"),
-        "hy_trend": raw_data.get("financial_stress", {}).get("hy_trend"),
+        "move_index_value": raw_data.get("move_index", {}).get("current_price"),
+        "move_index_change": raw_data.get("move_index", {}).get("change"),
+        "move_index_trend": raw_data.get("move_index", {}).get("trend"),
+        "eem_price": raw_data.get("eem", {}).get("current_price"),
+        "eem_change": raw_data.get("eem", {}).get("change"),
+        "eem_trend": raw_data.get("eem", {}).get("trend"),
         # BTC market structure
         "btc_dominance": raw_data.get("btc_dominance", {}).get("btc_dominance"),
         "stablecoin_dominance": raw_data.get("stablecoins", {}).get("total_stablecoin_dominance"),
@@ -674,6 +707,7 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "btc_realized_vol_30d": raw_data.get("btc_technicals", {}).get("realized_vol_30d"),
         "btc_etf_volume": raw_data.get("btc_etf", {}).get("total_volume"),
         "btc_etf_flow_level": raw_data.get("btc_etf", {}).get("level"),
+        "btc_market_arrow": btc_market_arrow,
         # DXY structure
         "dxy_structure": raw_data.get("dxy_structure", {}).get("structure"),
         # Geopolitics
