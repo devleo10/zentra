@@ -202,6 +202,150 @@ def _fetch_newsapi(query: str, days: int) -> List[Dict]:
         return []
 
 
+# ── Fed tone LLM v2: macro analyst rubric (prompt_version 2.0.0) ─────────────
+
+FED_TONE_SYSTEM_MESSAGE = (
+    "You are a macroeconomic analyst specializing in Federal Reserve communication. "
+    "Do not use generic sentiment analysis—evaluate monetary policy signals only. "
+    "Do not hallucinate facts outside the input. Return ONLY valid JSON, no markdown."
+)
+
+FED_TONE_USER_TEMPLATE = """## ROLE
+You are a macroeconomic analyst specializing in Federal Reserve communication.
+
+Your task is to analyze the "tone" of Federal Reserve communication and classify it as:
+* Hawkish
+* Dovish
+* Neutral
+
+---
+
+## DATA SOURCE CONTEXT
+
+The input text may come from:
+* Federal Reserve FOMC statements
+* Federal Reserve meeting minutes
+* Speeches by Federal Reserve officials (e.g., Chair Jerome Powell)
+* Official Federal Reserve press releases
+
+Assume the text is authoritative and policy-relevant.
+
+---
+
+## ANALYSIS INSTRUCTIONS
+
+Do NOT use generic sentiment analysis.
+
+Instead, evaluate tone based on monetary policy signals:
+
+HAWKISH indicators:
+* Focus on inflation being high or persistent
+* Emphasis on tightening policy or higher interest rates
+* Strong labor market with no urgency to stimulate
+* Language suggesting caution against easing
+
+DOVISH indicators:
+* Concern about economic slowdown or recession
+* Emphasis on unemployment or weakening demand
+* Signals of easing policy or rate cuts
+* Language suggesting support/stimulus
+
+NEUTRAL indicators:
+* Balanced risks
+* Data-dependent stance
+* No clear bias toward tightening or easing
+
+Pay attention to NEGATION (e.g. "will NOT cut rates" is hawkish).
+
+---
+
+## SCORING METHOD
+
+1. Identify key phrases that indicate policy direction
+2. Assign:
+   +1 for hawkish signals
+   -1 for dovish signals
+3. Compute total score
+
+Tone classification:
+* Score ≥ +2 → Hawkish
+* Score ≤ -2 → Dovish
+* Otherwise → Neutral
+
+---
+
+## INPUT TEXT (Fed-related news excerpts)
+
+{snippets}
+
+---
+
+## OUTPUT FORMAT (STRICT JSON)
+
+Return ONLY valid JSON in this format:
+
+{{
+"tone": "Hawkish | Dovish | Neutral",
+"score": <number>,
+"confidence": <integer 0-100>,
+"summary": "<2-3 sentence explanation of tone>",
+"key_signals": [
+  {{
+    "text": "exact phrase from input",
+    "type": "hawkish | dovish",
+    "reason": "why it indicates this tone"
+  }}
+]
+}}
+
+---
+
+## IMPORTANT RULES
+
+* Do not hallucinate facts outside the input
+* Only use evidence from the given text
+* Keep explanations concise and analytical
+* Prioritize policy meaning over emotional tone
+"""
+
+
+def _normalize_fed_tone_label(raw: Optional[str]) -> str:
+    t = (raw or "neutral").strip().lower()
+    if t in ("hawkish", "dovish", "neutral"):
+        return t
+    if "hawkish" in t:
+        return "hawkish"
+    if "dovish" in t:
+        return "dovish"
+    return "neutral"
+
+
+def _fed_tone_counts_for_scoring(
+    key_signals: List[Dict],
+    tone_label: str,
+    score: int,
+) -> tuple:
+    """Map LLM key_signals (+ tone/score fallback) to hawkish/dovish/pivot counts for score_fed_policy."""
+    h, d = 0, 0
+    if isinstance(key_signals, list):
+        for item in key_signals:
+            if not isinstance(item, dict):
+                continue
+            typ = (item.get("type") or "").strip().lower()
+            if typ == "hawkish":
+                h += 1
+            elif typ == "dovish":
+                d += 1
+    if h == 0 and d == 0:
+        if tone_label == "hawkish":
+            h = max(2, min(5, abs(int(score)) if score else 3))
+        elif tone_label == "dovish":
+            d = max(2, min(5, abs(int(score)) if score else 3))
+        else:
+            h, d = 1, 1
+    return h, d, 0
+
+
 def analyze_fed_keywords(articles: List[Dict]) -> Dict:
     """
     Analyze Fed speeches for dovish/hawkish keywords (shared config + word-boundary matching).
@@ -245,91 +389,100 @@ def analyze_fed_keywords(articles: List[Dict]) -> Dict:
 
 def analyze_fed_tone_llm(articles: List[Dict]) -> Dict:
     """
-    Use LLM to semantically analyze the tone of Fed-related articles.
+    Use LLM with macro-analyst rubric (+1/-1 scoring, strict JSON with key_signals).
 
-    Returns the same shape as analyze_fed_keywords() so callers are
-    drop-in compatible.  Falls back to keyword counting on any failure.
+    Returns the same base shape as analyze_fed_keywords() for score_fed_policy,
+    plus fed_tone_score, fed_tone_summary, fed_tone_key_signals, fed_tone_confidence_pct.
 
-    Cached by a hash of article titles so identical inputs skip the LLM call.
+    Cached by hash of article snippets (prompt v2).
     """
     if not articles:
         return analyze_fed_keywords(articles)
 
     import hashlib
-    titles_key = hashlib.sha256(
-        "|".join(a.get("title", "") for a in articles[:5]).encode()
-    ).hexdigest()[:16]
-    cache_key = f"fed_tone_llm_{titles_key}"
-    cached = cache_get(cache_key)
-    if cached is not None:
-        logger.info("Using cached Fed tone LLM result")
-        return cached
 
     top_articles = articles[:5]
     snippets = "\n\n".join(
-        f"Title: {a.get('title', '')}\nSnippet: {(a.get('description') or '')[:200]}"
+        f"Title: {a.get('title', '')}\nSnippet: {(a.get('description') or '')[:500]}"
         for a in top_articles
     )
+    cache_key = f"fed_tone_llm_v2_{hashlib.sha256(snippets.encode()).hexdigest()[:20]}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        logger.info("Using cached Fed tone LLM result (v2)")
+        return cached
 
-    prompt = (
-        "You are a Federal Reserve policy tone analyst.\n"
-        "Analyze these recent Fed-related news articles and determine the overall "
-        "monetary policy tone.\n\n"
-        f"--- ARTICLES ---\n{snippets}\n--- END ---\n\n"
-        "Output ONLY valid JSON in this exact format:\n"
-        "{\n"
-        '  "overall_tone": "hawkish" | "dovish" | "neutral",\n'
-        '  "dovish_signals": <int 0-5>,\n'
-        '  "hawkish_signals": <int 0-5>,\n'
-        '  "pivot_signals": <int 0-5>,\n'
-        '  "key_insight": "<one sentence summary>",\n'
-        '  "confidence": <float 0.0-1.0>\n'
-        "}\n\n"
-        "Rules:\n"
-        "- hawkish = tighter policy, higher-for-longer, persistent inflation concerns\n"
-        "- dovish = easing signals, rate cuts, disinflation progress\n"
-        "- neutral = mixed signals or no clear direction\n"
-        "- Pay attention to NEGATION (e.g. 'will NOT cut' is hawkish)\n"
-        "- confidence = how clearly the articles point in one direction\n"
-    )
+    user_prompt = FED_TONE_USER_TEMPLATE.format(snippets=snippets)
 
     try:
         from scoring_engine.llm_caller import call_llm_json
 
         cfg = _load_llm_config().get("fed_tone_analysis", {})
         result = call_llm_json(
-            prompt=prompt,
-            system_message="You are a Federal Reserve policy tone analyst. Output only valid JSON.",
+            prompt=user_prompt,
+            system_message=FED_TONE_SYSTEM_MESSAGE,
             model=cfg.get("model", "gpt-4o"),
             temperature=cfg.get("temperature", 0),
-            max_tokens=cfg.get("max_tokens", 200),
-            required_keys=[
-                "overall_tone",
-                "dovish_signals",
-                "hawkish_signals",
-                "pivot_signals",
-                "key_insight",
-                "confidence",
-            ],
+            max_tokens=cfg.get("max_tokens", 900),
+            required_keys=["tone", "score", "confidence", "summary", "key_signals"],
             strict_json=True,
         )
 
         if result is None:
             raise ValueError("LLM returned None")
 
-        tone = result.get("overall_tone", "neutral")
-        if tone not in ("hawkish", "dovish", "neutral"):
-            tone = "neutral"
+        tone_raw = result.get("tone", "neutral")
+        tone = _normalize_fed_tone_label(str(tone_raw))
 
-        dovish_s = max(0, min(5, int(result.get("dovish_signals", 0))))
-        hawkish_s = max(0, min(5, int(result.get("hawkish_signals", 0))))
-        pivot_s = max(0, min(5, int(result.get("pivot_signals", 0))))
-        conf = max(0.0, min(1.0, float(result.get("confidence", 0.5))))
+        try:
+            score = int(result.get("score", 0))
+        except (TypeError, ValueError):
+            score = 0
+
+        conf_raw = result.get("confidence", 50)
+        try:
+            conf_pct = int(float(conf_raw))
+        except (TypeError, ValueError):
+            conf_pct = 50
+        conf_pct = max(0, min(100, conf_pct))
+        conf = conf_pct / 100.0
+
+        key_signals = result.get("key_signals")
+        if not isinstance(key_signals, list):
+            key_signals = []
+
+        def _signal_type(raw: str) -> Optional[str]:
+            sl = (raw or "").lower()
+            if "hawkish" in sl:
+                return "hawkish"
+            if "dovish" in sl:
+                return "dovish"
+            return None
+
+        cleaned_signals = []
+        for item in key_signals[:12]:
+            if not isinstance(item, dict):
+                continue
+            st = _signal_type(str(item.get("type", "")))
+            if st is None:
+                continue
+            cleaned_signals.append({
+                "text": str(item.get("text", ""))[:300],
+                "type": st,
+                "reason": str(item.get("reason", ""))[:400],
+            })
+
+        hawkish_s, dovish_s, pivot_s = _fed_tone_counts_for_scoring(
+            cleaned_signals,
+            tone,
+            score,
+        )
+
+        summary = str(result.get("summary", "")).strip()
 
         logger.info(
-            "LLM Fed tone: %s (dovish=%d hawkish=%d pivot=%d conf=%.2f) — %s",
-            tone, dovish_s, hawkish_s, pivot_s, conf,
-            result.get("key_insight", ""),
+            "LLM Fed tone v2: %s score=%d (h_sig=%d d_sig=%d) conf=%d%% — %s",
+            tone, score, hawkish_s, dovish_s, conf_pct, summary[:120],
         )
 
         fed_result = {
@@ -339,8 +492,13 @@ def analyze_fed_tone_llm(articles: List[Dict]) -> Dict:
             "tone": tone,
             "articles_analyzed": len(top_articles),
             "llm_fed_tone": True,
-            "key_insight": result.get("key_insight", ""),
+            "key_insight": summary[:500] if summary else "",
             "fed_tone_confidence": conf,
+            "fed_tone_confidence_pct": conf_pct,
+            "fed_tone_score": score,
+            "fed_tone_summary": summary,
+            "fed_tone_key_signals": cleaned_signals,
+            "fed_tone_prompt_version": cfg.get("prompt_version", "2.0.0"),
         }
         cache_put(cache_key, fed_result)
         return fed_result

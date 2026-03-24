@@ -11,7 +11,7 @@ import logging
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 import json
 from pathlib import Path
 
@@ -61,13 +61,25 @@ TIMEFRAME_PERIODS = {
     "year": "2y"
 }
 
-# Timeframe to comparison days (calendar days — not trading sessions)
+# Timeframe to comparison days (calendar days — not trading sessions).
+# "month" is handled separately via MTD (first trading day of current month).
 TIMEFRAME_COMPARISON = {
     "current": 1,
     "week": 7,
-    "month": 30,
-    "year": 365
+    "year": 365,
 }
+
+# Human-readable label for each timeframe's change window shown in the UI.
+_CHANGE_LABELS: Dict[str, str] = {
+    "current": "1D",
+    "week": "7D",
+    "month": "MTD",
+    "year": "1Y",
+}
+
+
+def _change_label(timeframe: str) -> str:
+    return _CHANGE_LABELS.get(timeframe, "")
 
 
 def _normalize_hist_index(hist: pd.DataFrame) -> pd.DataFrame:
@@ -80,27 +92,79 @@ def _normalize_hist_index(hist: pd.DataFrame) -> pd.DataFrame:
     return h
 
 
-def _latest_and_comparison_rows(hist: pd.DataFrame, calendar_days: int):
-    """Pick comparison bar as last row on or before (latest_date − calendar_days).
+def _latest_and_comparison_rows(
+    hist: pd.DataFrame,
+    calendar_days: int,
+    *,
+    months_offset: Optional[int] = None,
+) -> Tuple[pd.Series, pd.Series]:
+    """Pick comparison bar as last row on or before the cutoff date.
 
-    Fixes % change for 'month' (30d): using 30 *trading* rows was ~6 weeks, not 30 days.
-    Normalizes to date-only to avoid DST hour offsets (winter bars are 05:00 UTC,
-    spring/summer bars are 04:00 UTC → naive subtraction misses the target day).
-    Returns (latest_row, comparison_row) as Series.
+    - Default: cutoff = latest_date − calendar_days (day-based window).
+    - If months_offset is set: cutoff = latest_date − that many *calendar* months
+      (pandas DateOffset), aligning with common "1M" views (e.g. Google Finance)
+      instead of a flat 30-day window (which skews % change by ~2 days).
+
+    Normalizes to date-only to avoid DST hour offsets on the index.
     """
     h = _normalize_hist_index(hist)
     if h.empty:
         raise ValueError("empty history")
     latest = h.iloc[-1]
     latest_date = h.index[-1].normalize()  # midnight
-    days = max(1, int(calendar_days))
-    cutoff_date = latest_date - pd.Timedelta(days=days)
+    if months_offset is not None and months_offset > 0:
+        cutoff_date = (latest_date - pd.DateOffset(months=int(months_offset))).normalize()
+    else:
+        days = max(1, int(calendar_days))
+        cutoff_date = latest_date - pd.Timedelta(days=days)
     past = h[h.index.normalize() <= cutoff_date]
     if past.empty:
         comparison = h.iloc[0]
     else:
         comparison = past.iloc[-1]
     return latest, comparison
+
+
+def _mtd_comparison_row(hist: pd.DataFrame) -> pd.Series:
+    """Return the close of the first trading session of the current month (MTD anchor).
+
+    MTD = (latest_close - first_trading_day_close) / first_trading_day_close * 100.
+    Falls back to the oldest available bar if the current month has no prior session
+    (e.g. the analysis runs on the first trading day of a month).
+    """
+    h = _normalize_hist_index(hist)
+    if h.empty:
+        raise ValueError("empty history")
+    latest_date = h.index[-1].normalize()
+    # First calendar day of the current month at midnight
+    month_start = latest_date.to_period("M").to_timestamp().normalize()
+    this_month = h[h.index.normalize() >= month_start]
+    if this_month.empty:
+        return h.iloc[0]
+    first_bar = this_month.iloc[0]
+    # If the first bar IS the latest bar (i.e. today is the very first trading
+    # day of the month), there is no MTD history yet — fall back to prior month's
+    # last bar so we return a meaningful 0% change rather than dividing by itself.
+    if first_bar.name == h.index[-1]:
+        prev = h[h.index.normalize() < month_start]
+        return prev.iloc[-1] if not prev.empty else first_bar
+    return first_bar
+
+
+def _latest_and_comparison_for_timeframe(
+    hist: pd.DataFrame, timeframe: str, *, default_days: int = 7
+) -> Tuple[pd.Series, pd.Series]:
+    """Latest row + comparison row for Yahoo %/point change helpers."""
+    if len(hist) <= 1:
+        row = hist.iloc[-1]
+        return row, row
+    if timeframe == "month":
+        h = _normalize_hist_index(hist)
+        latest = h.iloc[-1]
+        comparison = _mtd_comparison_row(hist)
+        return latest, comparison
+    days = TIMEFRAME_COMPARISON.get(timeframe, default_days)
+    return _latest_and_comparison_rows(hist, days)
 
 
 def get_dxy_data(timeframe: str = "current") -> Dict:
@@ -139,6 +203,8 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
                                     "data_as_of": timestamp,
                                     "comparison_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
                                     "change": 0.0,
+                                    "change_label": _change_label(timeframe),
+                                    "change_unit": "percent",
                                     "trend": "stable",
                                     "timeframe": timeframe,
                                     "source": "last_snapshot",
@@ -153,9 +219,8 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
         if hist.empty:
             return {"error": "No DXY data available", "timeframe": timeframe}
 
-        comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
         if len(hist) > 1:
-            latest, comparison = _latest_and_comparison_rows(hist, comparison_days)
+            latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe)
         else:
             latest = hist.iloc[-1]
             comparison = latest
@@ -201,6 +266,8 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
             "data_as_of": _safe_date_str(latest.name),
             "comparison_date": _safe_date_str(comparison.name),
             "change": round(change, 2),
+            "change_label": _change_label(timeframe),
+            "change_unit": "percent",
             "trend": "weakening" if change < 0 else "strengthening" if change > 0 else "stable",
             "timeframe": timeframe,
             "source": symbol,
@@ -246,6 +313,8 @@ def get_vix_data(timeframe: str = "current") -> Dict:
                     "data_as_of": timestamp,
                     "comparison_date": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
                     "change": 0.0,
+                    "change_label": _change_label(timeframe),
+                    "change_unit": "points",
                     "level": "unknown",
                     "trend": "stable",
                     "timeframe": timeframe,
@@ -256,9 +325,8 @@ def get_vix_data(timeframe: str = "current") -> Dict:
                 }
             return {"error": "No VIX tickers available and no valid snapshot fallback", "timeframe": timeframe}
 
-        comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 1)
         if len(hist) > 1:
-            latest, comparison = _latest_and_comparison_rows(hist, comparison_days)
+            latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe, default_days=1)
         else:
             latest = hist.iloc[-1]
             comparison = latest
@@ -273,6 +341,8 @@ def get_vix_data(timeframe: str = "current") -> Dict:
             "data_as_of": _safe_date_str(latest.name),
             "comparison_date": _safe_date_str(comparison.name),
             "change": round(change, 2),
+            "change_label": _change_label(timeframe),
+            "change_unit": "points",
             "level": "high" if current_vix > 20 else "moderate" if current_vix > 15 else "low",
             "trend": "rising" if change > 0 else "falling" if change < 0 else "stable",
             "timeframe": timeframe,
@@ -296,9 +366,8 @@ def get_sp500_data(timeframe: str = "current") -> Dict:
         else:
             return {"error": "No S&P 500 tickers available", "timeframe": timeframe}
 
-        comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
         if len(hist) > 1:
-            latest, comparison = _latest_and_comparison_rows(hist, comparison_days)
+            latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe)
         else:
             latest = hist.iloc[-1]
             comparison = latest
@@ -313,6 +382,8 @@ def get_sp500_data(timeframe: str = "current") -> Dict:
             "data_as_of": _safe_date_str(latest.name),
             "comparison_date": _safe_date_str(comparison.name),
             "change": round(change, 2),
+            "change_label": _change_label(timeframe),
+            "change_unit": "percent",
             "trend": "rising" if change > 0.05 else "falling" if change < -0.05 else "stable",
             "timeframe": timeframe,
             "source": symbol,
@@ -335,9 +406,8 @@ def get_gold_data(timeframe: str = "current") -> Dict:
         else:
             return {"error": "No gold tickers available", "timeframe": timeframe}
 
-        comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
         if len(hist) > 1:
-            latest, comparison = _latest_and_comparison_rows(hist, comparison_days)
+            latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe)
         else:
             latest = hist.iloc[-1]
             comparison = latest
@@ -352,6 +422,8 @@ def get_gold_data(timeframe: str = "current") -> Dict:
             "data_as_of": _safe_date_str(latest.name),
             "comparison_date": _safe_date_str(comparison.name),
             "change": round(change, 2),
+            "change_label": _change_label(timeframe),
+            "change_unit": "percent",
             "trend": "rising" if change > 0 else "falling" if change < 0 else "stable",
             "timeframe": timeframe,
             "source": symbol,
@@ -373,9 +445,8 @@ def get_natural_gas_data(timeframe: str = "current") -> Dict:
         else:
             return {"error": "No natural gas tickers available", "timeframe": timeframe}
 
-        comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
         if len(hist) > 1:
-            latest, comparison = _latest_and_comparison_rows(hist, comparison_days)
+            latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe)
         else:
             latest = hist.iloc[-1]
             comparison = latest
@@ -390,6 +461,8 @@ def get_natural_gas_data(timeframe: str = "current") -> Dict:
             "data_as_of": _safe_date_str(latest.name),
             "comparison_date": _safe_date_str(comparison.name),
             "change": round(change, 2),
+            "change_label": _change_label(timeframe),
+            "change_unit": "percent",
             "trend": "rising" if change > 0.5 else "falling" if change < -0.5 else "stable",
             "timeframe": timeframe,
             "source": symbol,
@@ -405,9 +478,8 @@ def _yahoo_pct_change_series(symbol: str, timeframe: str) -> Dict:
     hist = ticker.history(period=period)
     if hist.empty:
         return {"error": f"No data for {symbol}", "timeframe": timeframe, "symbol": symbol}
-    comparison_days = TIMEFRAME_COMPARISON.get(timeframe, 7)
     if len(hist) > 1:
-        latest, comparison = _latest_and_comparison_rows(hist, comparison_days)
+        latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe)
     else:
         latest = hist.iloc[-1]
         comparison = latest
@@ -420,6 +492,8 @@ def _yahoo_pct_change_series(symbol: str, timeframe: str) -> Dict:
         "data_as_of": _safe_date_str(latest.name),
         "comparison_date": _safe_date_str(comparison.name),
         "change": round(change_pct, 2),
+        "change_label": _change_label(timeframe),
+        "change_unit": "percent",
         "trend": "rising" if change_pct > 0.05 else "falling" if change_pct < -0.05 else "stable",
         "timeframe": timeframe,
         "source": symbol,

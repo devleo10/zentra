@@ -37,6 +37,13 @@ TIMEFRAME_DAYS = {
     "year": 400      # Over a year for year-over-year
 }
 
+_CHANGE_LABELS = {
+    "current": "1D",
+    "week": "7D",
+    "month": "MTD",
+    "year": "1Y",
+}
+
 
 def _fred_observation_on_or_before_calendar_days_ago(df: pd.DataFrame, calendar_days: int) -> pd.Series:
     """Last row with date <= (latest_date − calendar_days); matches equity % windows."""
@@ -49,6 +56,25 @@ def _fred_observation_on_or_before_calendar_days_ago(df: pd.DataFrame, calendar_
     if past.empty:
         return d.iloc[0]
     return past.iloc[-1]
+
+
+def _fred_first_observation_of_current_month(df: pd.DataFrame) -> pd.Series:
+    """First available observation in the latest calendar month."""
+    if df is None or df.empty:
+        raise ValueError("empty dataframe")
+    d = df.sort_values("date").copy()
+    latest_dt = pd.Timestamp(d.iloc[-1]["date"]).normalize()
+    month_start = latest_dt.to_period("M").to_timestamp().normalize()
+    this_month = d[pd.to_datetime(d["date"]).dt.normalize() >= month_start]
+    if this_month.empty:
+        return d.iloc[0]
+    first_row = this_month.iloc[0]
+    # On the very first observation of the month, fall back to the prior row so
+    # the display has a meaningful baseline instead of a forced 0% self-compare.
+    if pd.Timestamp(first_row["date"]).normalize() == latest_dt:
+        prev = d[pd.to_datetime(d["date"]).dt.normalize() < month_start]
+        return prev.iloc[-1] if not prev.empty else first_row
+    return first_row
 
 
 def _yield_month_end_track(df_10: pd.DataFrame, df_2: pd.DataFrame, n: int = 3) -> list:
@@ -655,44 +681,68 @@ def get_treasury_yields(timeframe: str = "current") -> Dict:
 
 
 def get_oil_data(timeframe: str = "current") -> Dict:
-    """Get WTI crude oil price data from FRED (DCOILWTICO series).
+    """Get WTI crude oil price data.
 
-    Uses FRED's weekly WTI spot price series as the primary source.
-    Falls back to Yahoo Finance (CL=F) if FRED returns no data.
+    Use Yahoo Finance CL=F as the primary source so the dashboard shows a
+    near-live futures price, then fall back to FRED spot data if Yahoo is
+    unavailable.
     """
     start_date, comparison_days = get_timeframe_dates(timeframe)
-    df = get_fred_data("DCOILWTICO", start_date=start_date)  # WTI Crude Oil Spot Price
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker("CL=F")
+        period_map = {"current": "1mo", "week": "1mo", "month": "3mo", "year": "2y"}
+        hist = ticker.history(period=period_map.get(timeframe, "1mo"))
+        if not hist.empty:
+            h = hist.copy()
+            idx = pd.to_datetime(h.index)
+            if getattr(idx, "tz", None) is not None:
+                idx = idx.tz_convert("UTC").tz_localize(None)
+            h.index = idx
+            latest_price = float(h.iloc[-1]["Close"])
+            if timeframe == "month":
+                month_start = h.index[-1].normalize().to_period("M").to_timestamp().normalize()
+                current_month = h[h.index.normalize() >= month_start]
+                first_bar = current_month.iloc[0] if not current_month.empty else h.iloc[0]
+                if first_bar.name == h.index[-1]:
+                    prev_month = h[h.index.normalize() < month_start]
+                    first_bar = prev_month.iloc[-1] if not prev_month.empty else first_bar
+                prev_price = float(first_bar["Close"])
+                comparison_date = first_bar.name.strftime("%Y-%m-%d")
+            else:
+                latest_date = h.index[-1].normalize()
+                cutoff = latest_date - pd.Timedelta(days=max(1, int(comparison_days)))
+                past = h[h.index.normalize() <= cutoff]
+                comparison = past.iloc[-1] if not past.empty else h.iloc[0]
+                prev_price = float(comparison["Close"])
+                comparison_date = comparison.name.strftime("%Y-%m-%d")
+            change = ((latest_price - prev_price) / prev_price) * 100 if prev_price else 0
+            logger.info("Oil fetched from Yahoo Finance (CL=F): %.2f", latest_price)
+            return {
+                "current_price": round(latest_price, 2),
+                "latest_date": h.index[-1].strftime("%Y-%m-%d"),
+                "comparison_date": comparison_date,
+                "change": round(change, 2),
+                "change_label": _CHANGE_LABELS.get(timeframe, ""),
+                "change_unit": "percent",
+                "trend": "rising" if change > 0 else "falling" if change < 0 else "stable",
+                "source": "Yahoo Finance (CL=F)",
+                "data_as_of": h.index[-1].strftime("%Y-%m-%d"),
+                "timeframe": timeframe,
+            }
+    except Exception as e:
+        logger.warning("Oil Yahoo Finance primary source failed: %s", e)
 
+    df = get_fred_data("DCOILWTICO", start_date=start_date)  # WTI Crude Oil Spot Price
     if df.empty:
-        # Fallback: try Yahoo Finance for oil futures
-        try:
-            import yfinance as yf
-            ticker = yf.Ticker("CL=F")
-            period_map = {"current": "1mo", "week": "1mo", "month": "3mo", "year": "2y"}
-            hist = ticker.history(period=period_map.get(timeframe, "1mo"))
-            if not hist.empty:
-                latest_price = float(hist.iloc[-1]["Close"])
-                comp_idx = min(comparison_days, len(hist) - 1)
-                prev_price = float(hist.iloc[-comp_idx - 1]["Close"]) if len(hist) > comp_idx else latest_price
-                change = ((latest_price - prev_price) / prev_price) * 100 if prev_price else 0
-                logger.info("Oil fetched from Yahoo Finance (CL=F): %.2f", latest_price)
-                return {
-                    "current_price": round(latest_price, 2),
-                    "latest_date": hist.index[-1].strftime("%Y-%m-%d"),
-                    "change": round(change, 2),
-                    "trend": "rising" if change > 0 else "falling" if change < 0 else "stable",
-                    "source": "Yahoo Finance (CL=F)",
-                    "data_as_of": hist.index[-1].strftime("%Y-%m-%d"),
-                    "timeframe": timeframe,
-                }
-        except Exception as e:
-            logger.warning("Oil Yahoo Finance fallback failed: %s", e)
-        logger.warning("No oil data available from FRED or Yahoo Finance")
+        logger.warning("No oil data available from Yahoo Finance or FRED")
         return {"error": "No oil data available", "timeframe": timeframe}
 
     latest = df.iloc[-1]
-    comparison_idx = min(comparison_days, len(df) - 1)
-    prev_value = df.iloc[-comparison_idx - 1] if len(df) > comparison_idx else latest
+    if timeframe == "month":
+        prev_value = _fred_first_observation_of_current_month(df)
+    else:
+        prev_value = _fred_observation_on_or_before_calendar_days_ago(df, comparison_days)
     change = ((latest["value"] - prev_value["value"]) / prev_value["value"]) * 100 if len(df) > 1 else 0
 
     result = {
@@ -700,6 +750,8 @@ def get_oil_data(timeframe: str = "current") -> Dict:
         "latest_date": latest["date"].strftime("%Y-%m-%d"),
         "comparison_date": prev_value["date"].strftime("%Y-%m-%d"),
         "change": round(change, 2),
+        "change_label": _CHANGE_LABELS.get(timeframe, ""),
+        "change_unit": "percent",
         "trend": "rising" if change > 0 else "falling" if change < 0 else "stable",
         "source": "FRED (DCOILWTICO)",
         "data_as_of": latest["date"].strftime("%Y-%m-%d"),

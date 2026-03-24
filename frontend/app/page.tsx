@@ -15,7 +15,7 @@ import {
 const TIMEFRAMES: { value: TimeFrame; label: string }[] = [
   { value: "current", label: "Now" },
   { value: "week",    label: "7D" },
-  { value: "month",   label: "30D" },
+  { value: "month",   label: "MTD" },
 ]
 
 const SECTION_LABELS: Record<string, string> = {
@@ -58,6 +58,17 @@ const scoreColor = (s: number) =>
 
 const barColor = (s: number) =>
   s >= 65 ? "bg-green-500" : s >= 40 ? "bg-yellow-500" : "bg-red-500"
+
+function formatMarketChange(
+  value: number | null | undefined,
+  unit: "percent" | "points" | null | undefined = "percent",
+  label?: string | null,
+  digits = 2,
+) {
+  if (value == null) return null
+  const suffix = unit === "points" ? " pts" : "%"
+  return `${value > 0 ? "+" : ""}${value.toFixed(digits)}${suffix}${label ? ` ${label}` : ""}`
+}
 
 /* ── Skeleton helpers ──────────────────────────────────────────────── */
 
@@ -469,7 +480,7 @@ export default function Home() {
                   {result.dxy_change_7d != null && (
                     <>
                       <span className={result.dxy_change_7d > 0.05 ? "text-green-400" : result.dxy_change_7d < -0.05 ? "text-red-400" : "text-gray-500"}>
-                        {" "}({result.dxy_change_7d > 0 ? "+" : ""}{result.dxy_change_7d.toFixed(2)}%)
+                        {" "}({formatMarketChange(result.dxy_change ?? result.dxy_change_7d, result.dxy_change_unit, result.dxy_change_label)})
                       </span>
                       <span className="ml-0.5"><DeltaArrow delta={result.dxy_change_7d} eps={0.05} /></span>
                     </>
@@ -481,7 +492,7 @@ export default function Home() {
                   WTI <span className="text-white font-medium">${result.oil_price.toFixed(0)}</span>
                   {result.oil_change != null && (
                     <span className={result.oil_change > 0.05 ? "text-green-400" : result.oil_change < -0.05 ? "text-red-400" : "text-gray-500"}>
-                      {" "}({result.oil_change > 0 ? "+" : ""}{result.oil_change.toFixed(1)}%)
+                      {" "}({formatMarketChange(result.oil_change, result.oil_change_unit, result.oil_change_label, 1)})
                     </span>
                   )}
                   <span className="ml-0.5"><TrendArrow trend={result.oil_trend} /></span>
@@ -494,7 +505,7 @@ export default function Home() {
                   VIX <span className="font-medium">{result.vix.toFixed(1)}</span>
                   {result.vix_change != null && (
                     <span className={result.vix_change > 0.05 ? "text-green-400" : result.vix_change < -0.05 ? "text-red-400" : "text-gray-500"}>
-                      {" "}({result.vix_change > 0 ? "+" : ""}{result.vix_change.toFixed(2)})
+                      {" "}({formatMarketChange(result.vix_change, result.vix_change_unit, result.vix_change_label)})
                     </span>
                   )}
                   <span className="ml-0.5"><TrendArrow trend={result.vix_trend} /></span>
@@ -507,7 +518,7 @@ export default function Home() {
                   </span>
                   {result.sp500_change != null && (
                     <span className={result.sp500_change > 0.05 ? "text-green-400" : result.sp500_change < -0.05 ? "text-red-400" : "text-gray-500"}>
-                      {" "}({result.sp500_change > 0 ? "+" : ""}{result.sp500_change.toFixed(2)}%)
+                      {" "}({formatMarketChange(result.sp500_change, result.sp500_change_unit, result.sp500_change_label)})
                     </span>
                   )}
                   <span className="ml-0.5"><TrendArrow trend={result.sp500_trend} /></span>
@@ -518,7 +529,7 @@ export default function Home() {
                   Gold <span className="text-white font-medium">${result.gold_price.toFixed(0)}</span>
                   {result.gold_change != null && (
                     <span className={result.gold_change > 0.05 ? "text-green-400" : result.gold_change < -0.05 ? "text-red-400" : "text-gray-500"}>
-                      {" "}({result.gold_change > 0 ? "+" : ""}{result.gold_change.toFixed(2)}%)
+                      {" "}({formatMarketChange(result.gold_change, result.gold_change_unit, result.gold_change_label)})
                     </span>
                   )}
                   <span className="ml-0.5"><TrendArrow trend={result.gold_trend} /></span>
@@ -564,7 +575,16 @@ export default function Home() {
                     result.fed_tone === "dovish" ? "text-green-400" :
                     result.fed_tone === "hawkish" ? "text-red-400" : "text-gray-400"
                   }`}
-                  title={`Fed tone from news/speeches · dovish ${result.dovish_keyword_count ?? 0} / hawkish ${result.hawkish_keyword_count ?? 0}`}
+                  title={
+                    [
+                      result.fed_tone_summary,
+                      result.fed_tone_score != null ? `Score: ${result.fed_tone_score}` : null,
+                      result.fed_tone_confidence_pct != null ? `Confidence: ${result.fed_tone_confidence_pct}%` : null,
+                      `Signals counted · dovish ${result.dovish_keyword_count ?? 0} / hawkish ${result.hawkish_keyword_count ?? 0}`,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")
+                  }
                 >
                   Fed tone <span className="font-medium uppercase">{result.fed_tone}</span>
                   {result.dovish_keyword_count != null && result.hawkish_keyword_count != null && (
@@ -612,7 +632,7 @@ export default function Home() {
                   NatGas <span className="text-white font-medium">${result.natgas_price.toFixed(2)}</span>
                   {result.natgas_change != null && (
                     <span className={result.natgas_change > 0.05 ? "text-green-400" : result.natgas_change < -0.05 ? "text-red-400" : "text-gray-500"}>
-                      {" "}({result.natgas_change > 0 ? "+" : ""}{result.natgas_change.toFixed(1)}%)
+                      {" "}({formatMarketChange(result.natgas_change, result.natgas_change_unit, result.natgas_change_label, 1)})
                     </span>
                   )}
                   <span className="ml-0.5"><TrendArrow trend={result.natgas_trend} /></span>
@@ -623,7 +643,7 @@ export default function Home() {
                   MOVE <span className="text-white font-medium">{result.move_index_value.toFixed(1)}</span>
                   {result.move_index_change != null && (
                     <span className={result.move_index_change > 0.05 ? "text-green-400" : result.move_index_change < -0.05 ? "text-red-400" : "text-gray-500"}>
-                      {" "}({result.move_index_change > 0 ? "+" : ""}{result.move_index_change.toFixed(2)}%)
+                      {" "}({formatMarketChange(result.move_index_change, result.move_index_change_unit, result.move_index_change_label)})
                     </span>
                   )}
                   <span className="ml-0.5"><TrendArrow trend={result.move_index_trend} /></span>
@@ -634,7 +654,7 @@ export default function Home() {
                   EEM <span className="text-white font-medium">{result.eem_price.toFixed(2)}</span>
                   {result.eem_change != null && (
                     <span className={result.eem_change > 0.05 ? "text-green-400" : result.eem_change < -0.05 ? "text-red-400" : "text-gray-500"}>
-                      {" "}({result.eem_change > 0 ? "+" : ""}{result.eem_change.toFixed(2)}%)
+                      {" "}({formatMarketChange(result.eem_change, result.eem_change_unit, result.eem_change_label)})
                     </span>
                   )}
                   <span className="ml-0.5"><TrendArrow trend={result.eem_trend} /></span>

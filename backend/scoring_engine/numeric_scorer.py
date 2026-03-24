@@ -81,7 +81,7 @@ def score_inflation(cpi_mom_change: float, pce_mom_change: Optional[float], oil_
     reasoning = (
         f"CPI MoM: {_cpi_str} -> score {cpi_score} | "
         f"PCE MoM: {_pce_str} -> score {pce_score} | "
-        f"Oil d: {_oil_str} -> score {oil_score} | "
+        f"Oil window change: {_oil_str} -> score {oil_score} | "
         f"Weighted: {final}"
     )
     
@@ -260,7 +260,7 @@ def score_dxy(dxy_change_7d: float, dxy_level: Optional[float] = None) -> Tuple[
     """
     cfg = CONFIG["dxy_thresholds"]
 
-    # Momentum score from 7-day change
+    # Momentum score from the selected comparison window.
     change_score = _threshold_score(dxy_change_7d, [
         (cfg["dxy_falling_fast"]["threshold"],  cfg["dxy_falling_fast"]["score"]),
         (cfg["dxy_falling"]["threshold"],        cfg["dxy_falling"]["score"]),
@@ -270,7 +270,7 @@ def score_dxy(dxy_change_7d: float, dxy_level: Optional[float] = None) -> Tuple[
     ])
 
     if dxy_level is None:
-        reasoning = f"DXY 7D change: {dxy_change_7d:+.2f}% -> score {change_score} (no level data)"
+        reasoning = f"DXY window change: {dxy_change_7d:+.2f}% -> score {change_score} (no level data)"
         return change_score, reasoning
 
     # Level adjustment: higher DXY = stronger dollar = worse for BTC
@@ -297,7 +297,7 @@ def score_dxy(dxy_change_7d: float, dxy_level: Optional[float] = None) -> Tuple[
 
     reasoning = (
         f"DXY level: {dxy_level:.1f} -> level_adj {level_adj:+d} (level_score={level_score}) | "
-        f"7D change: {dxy_change_7d:+.2f}% -> change_score={change_score} | "
+        f"Window change: {dxy_change_7d:+.2f}% -> change_score={change_score} | "
         f"Weighted ({change_weight:.0%}/{level_weight:.0%}): {final}"
     )
     return final, reasoning
@@ -356,8 +356,8 @@ def score_risk_sentiment(
     
     reasoning = (
         f"VIX: {vix} -> {vix_score} | "
-        f"S&P500 d: {sp500_change}% -> adj {sp500_adj} | "
-        f"Gold d: {gold_change}% -> adj {gold_adj} | "
+        f"S&P500 window change: {sp500_change}% -> adj {sp500_adj} | "
+        f"Gold window change: {gold_change}% -> adj {gold_adj} | "
         f"Weighted: {final}"
     )
     

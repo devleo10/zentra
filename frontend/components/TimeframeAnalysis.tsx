@@ -52,7 +52,7 @@ interface ComparisonResult {
 const TIMEFRAMES = [
   { key: 'current', label: 'Current', description: 'Real-time snapshot' },
   { key: 'week', label: '7 Days', description: '7-day trends' },
-  { key: 'month', label: '30 Days', description: '30-day analysis' },
+  { key: 'month', label: 'Month-to-Date', description: 'MTD analysis' },
   { key: 'year', label: '1 Year', description: 'Annual perspective' }
 ];
 

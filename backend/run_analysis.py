@@ -201,7 +201,12 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         logger.info(f"  Fed tone ({days}d, {'LLM' if used_llm else 'keywords'}): {raw_data['fed_keywords']}")
     except Exception as e:
         logger.error(f"  Fed tone analysis FAILED: {e}")
-        raw_data["fed_keywords"] = {"dovish_keywords_found": 0, "hawkish_keywords_found": 0, "pivot_keywords_found": 0}
+        raw_data["fed_keywords"] = {
+            "dovish_keywords_found": 0,
+            "hawkish_keywords_found": 0,
+            "pivot_keywords_found": 0,
+            "tone": "neutral",
+        }
 
     # Actual Fed Funds Rate (FEDFUNDS) — essential for accurate fed_policy scoring
     try:
@@ -612,13 +617,20 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "cpi_mom_avg_3m_trend": raw_data["cpi"].get("cpi_mom_avg_3m_trend"),
         "pce_mom_change": pce_change,
         "oil_change": oil_change,
+        "oil_change_label": raw_data.get("oil", {}).get("change_label"),
+        "oil_change_unit": raw_data.get("oil", {}).get("change_unit"),
         "oil_price": raw_data.get("oil", {}).get("current_price"),
         "oil_trend": raw_data.get("oil", {}).get("trend"),
         "dxy_value": raw_data["dxy"].get("current_price"),
+        "dxy_change": dxy_change,
         "dxy_change_7d": dxy_change,
+        "dxy_change_label": raw_data["dxy"].get("change_label"),
+        "dxy_change_unit": raw_data["dxy"].get("change_unit"),
         "dxy_trend": raw_data["dxy"].get("trend"),
         "vix": vix_val,
         "vix_change": raw_data["vix"].get("change"),
+        "vix_change_label": raw_data["vix"].get("change_label"),
+        "vix_change_unit": raw_data["vix"].get("change_unit"),
         "vix_trend": raw_data["vix"].get("trend"),
         "ten_year_yield": yield_10y,
         "ten_year_yield_trend": raw_data["yields"].get("yield_10y", {}).get("trend"),
@@ -632,10 +644,14 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "yield_2y_delta_3m": raw_data["yields"].get("yield_2y_delta_3m"),
         "fed_balance_sheet_trend": bs_trend,
         "sp500_change": sp500_change,
+        "sp500_change_label": raw_data["sp500"].get("change_label"),
+        "sp500_change_unit": raw_data["sp500"].get("change_unit"),
         "sp500_price": raw_data["sp500"].get("current_price"),
         "sp500_trend": raw_data["sp500"].get("trend"),
         "gold_price": raw_data["gold"].get("current_price"),
         "gold_change": gold_change_val,
+        "gold_change_label": raw_data["gold"].get("change_label"),
+        "gold_change_unit": raw_data["gold"].get("change_unit"),
         "gold_trend": raw_data["gold"].get("trend"),
         "btc_price": raw_data["btc"].get("price_usd"),
         "fed_funds_rate": fed_rate_val,
@@ -680,6 +696,10 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "prompt_version": prompt_version,
         "llm_model": llm_model,
         "fed_tone": raw_data["fed_keywords"].get("tone", "neutral"),
+        "fed_tone_score": raw_data["fed_keywords"].get("fed_tone_score"),
+        "fed_tone_summary": raw_data["fed_keywords"].get("fed_tone_summary"),
+        "fed_tone_key_signals": raw_data["fed_keywords"].get("fed_tone_key_signals"),
+        "fed_tone_confidence_pct": raw_data["fed_keywords"].get("fed_tone_confidence_pct"),
         "dovish_keyword_count": dovish_kw,
         "hawkish_keyword_count": hawkish_kw,
         "pivot_keyword_count": pivot_kw,
@@ -693,12 +713,18 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         # Natural gas
         "natgas_price": raw_data.get("natgas", {}).get("current_price"),
         "natgas_change": raw_data.get("natgas", {}).get("change"),
+        "natgas_change_label": raw_data.get("natgas", {}).get("change_label"),
+        "natgas_change_unit": raw_data.get("natgas", {}).get("change_unit"),
         "natgas_trend": raw_data.get("natgas", {}).get("trend"),
         "move_index_value": raw_data.get("move_index", {}).get("current_price"),
         "move_index_change": raw_data.get("move_index", {}).get("change"),
+        "move_index_change_label": raw_data.get("move_index", {}).get("change_label"),
+        "move_index_change_unit": raw_data.get("move_index", {}).get("change_unit"),
         "move_index_trend": raw_data.get("move_index", {}).get("trend"),
         "eem_price": raw_data.get("eem", {}).get("current_price"),
         "eem_change": raw_data.get("eem", {}).get("change"),
+        "eem_change_label": raw_data.get("eem", {}).get("change_label"),
+        "eem_change_unit": raw_data.get("eem", {}).get("change_unit"),
         "eem_trend": raw_data.get("eem", {}).get("trend"),
         # BTC market structure
         "btc_dominance": raw_data.get("btc_dominance", {}).get("btc_dominance"),

@@ -10,9 +10,9 @@
   "fed_tone_analysis": {
     "model": "gpt-4o",
     "temperature": 0,
-    "max_tokens": 200,
-    "prompt_version": "1.0.0",
-    "_doc": "LLM semantically analyzes Fed article tone. Replaces naive keyword counting. Fallback: keyword-based analyze_fed_keywords()."
+    "max_tokens": 900,
+    "prompt_version": "2.0.0",
+    "_doc": "Macro analyst Fed communication tone: hawkish/dovish/neutral via +1/-1 scoring, strict JSON with key_signals. Fallback: analyze_fed_keywords()."
   },
 
   "cross_signal_review": {
