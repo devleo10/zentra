@@ -1,112 +1,90 @@
-# Bitcoin Macro Analysis Toolkit
+# Zentra — Bitcoin macro analysis
 
-This repository contains practical tools and frameworks for analyzing Bitcoin through macroeconomic, geopolitical, and Federal Reserve policy lenses.
+Full-stack app that scores Bitcoin macro conditions using live data (FRED, Yahoo Finance, news), a deterministic scoring engine, and optional LLM layers (classification, Fed tone, narrative). **Not financial advice.** Data and labels depend on third-party feeds and chosen time windows (for example MTD vs rolling month).
 
-## 📋 Files
+## Stack
 
-### Daily Bitcoin Macro Checklist
-A comprehensive daily checklist for tracking macro indicators that affect Bitcoin:
-- Inflation & Economic Data
-- Federal Reserve Signals
-- Liquidity & Bond Markets
-- US Dollar (DXY) Analysis
-- Risk Sentiment
-- Bitcoin-Specific Metrics
-- Final Bias Calculation (0-100 Score)
+- **Backend:** Python 3.10+, FastAPI (`main_v2`), SQLite snapshots, RAG (Chroma + OpenAI embeddings)
+- **Frontend:** Next.js 14, TypeScript, Tailwind
 
-## 🧠 Core Concepts
+## Prerequisites
 
-### Money Rotation Framework
-Money flows between asset classes based on economic cycles:
-- **Recovery Phase:** Cash → Bonds → Equities
-- **Expansion Phase:** Defensive → Growth → Cyclicals
-- **Peak Phase:** Growth → Commodities → Energy → Gold
-- **Recession Phase:** Risk Assets → Bonds → Gold → Cash
+- Python 3.10+ and Node.js 18+
+- **OpenAI** API key (LLM + embeddings)
+- **FRED** API key (free)
+- **NewsAPI** key (optional; improves headline coverage)
 
-### Bitcoin as Liquidity Thermometer
-Bitcoin reacts to:
-- **Fed Policy** (Rate cuts/hikes, QE/QT)
-- **Liquidity Conditions** (Money supply expansion/contraction)
-- **Dollar Strength** (DXY direction)
-- **Risk Sentiment** (Risk-on vs Risk-off)
+## Environment
 
-## 📊 Key Frameworks
+**`backend/.env`** (create from scratch; do not commit):
 
-### BTC Macro Signal Score (0-100)
-Combines 5 components:
-1. Inflation Trend (20 points)
-2. Fed Policy Direction (25 points)
-3. Liquidity Conditions (20 points)
-4. Dollar Strength (20 points)
-5. Risk Environment (15 points)
+```env
+OPENAI_API_KEY=
+FRED_API_KEY=
+NEWS_API_KEY=
+BACKEND_PORT=8000
+CORS_ORIGINS=http://localhost:3000
+```
 
-### BTC Decision Matrix
-Action plan based on macro conditions:
-- Inflation trends
-- Fed stance (Hawkish/Dovish)
-- Liquidity direction
-- DXY movement
+Optional: `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_EMBEDDING_MODEL`.
 
-## 🔍 How to Use
+**`frontend/.env.local`** (optional):
 
-1. **Daily:** Complete the Daily Bitcoin Macro Checklist (15-20 minutes)
-2. **Weekly:** Review macro trends and adjust BTC exposure
-3. **Monthly:** Reassess long-term macro thesis
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
 
-## 📚 Knowledge Sources
+## Quick start
 
-### Primary Sources
-- **Fed:** Federal Reserve website, FOMC statements, FRED data
-- **Macro Data:** BLS (CPI, Jobs), BEA (GDP, PCE), Trading Economics
-- **Geopolitics:** Reuters, Financial Times, Stratfor
-- **Markets:** TradingView, Investing.com, MacroMicro
+### Backend
 
-### Key Indicators to Track
-- 2Y & 10Y Treasury Yields
-- DXY (Dollar Index)
-- Fed Balance Sheet
-- CPI/PCE (Month-over-Month)
-- VIX (Volatility Index)
+```bash
+cd backend
+python -m venv venv
+# Windows: venv\Scripts\activate
+pip install -r requirements.txt
+python -m rag.ingest   # builds the local Chroma index from knowledge_base/; re-run after editing those files
+python -m main_v2
+```
 
-## 🎯 Pro Tips
+API base: `http://localhost:8000`  
+**`main_v2`** is the supported entrypoint (dashboard uses `/api/v2/*`). **`main`** remains for legacy `/api/analyze` routes.
 
-1. **Focus on trends, not single data points**
-2. **Decode Fed language, not just actions**
-3. **Watch bonds first - they lead equities**
-4. **Bitcoin moves BEFORE economic recovery**
-5. **Never fight the liquidity trend**
+### Frontend
 
-## ⚠️ What to Avoid
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-- ❌ Trading on headlines alone
-- ❌ Ignoring bond market signals
-- ❌ Overreacting to single data releases
-- ❌ Emotional decisions during volatility
-- ❌ Following Twitter "breaking news" traders
+App: `http://localhost:3000`
 
-## 📖 Key Insights
+### Windows
 
-### Money Rotation
-- Capital doesn't disappear, it rotates
-- Smart money moves before news confirms
-- Sector rotation follows economic cycles
+You can use `start.bat` / `setup_and_run.bat` in the repo root if you already use them; ensure `backend/.env` exists first.
 
-### Bitcoin Analysis
-- BTC is anti-Dollar (DXY down = BTC up)
-- BTC bull markets start during Fed easing
-- BTC bottoms before recession headlines peak
-- BTC reacts to liquidity expectations, not just news
+## Main API (v2)
 
-## 🔄 Weekly Workflow
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/v2/analyze` | Run analysis |
+| GET | `/api/v2/analyze/{timeframe}` | Analysis for a timeframe |
+| GET | `/api/v2/analyze/compare` | Compare runs |
+| GET | `/api/v2/history` | List snapshots |
+| GET | `/api/v2/history/{snapshot_id}` | One snapshot |
+| GET | `/api/v2/config` | Effective config |
+| GET | `/api/health` | Health |
 
-1. Check inflation trend (↑ or ↓)
-2. Decode Fed language (Hawkish/Dovish)
-3. Check DXY & bond yields
-4. Calculate BTC Macro Score (0-100)
-5. Adjust exposure based on score
+## Project layout
 
----
+```
+backend/   FastAPI, agents, data_fetchers, scoring_engine, rag/, storage/
+frontend/  Next.js app, components, lib/api.ts
+```
 
-**Remember:** Bitcoin does not react to news. It reacts to liquidity expectations.
+SQLite snapshots live under `backend/storage/` (see `storage/db.py`).
 
+## License
 
+Educational / personal use unless you add your own terms.

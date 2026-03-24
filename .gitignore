@@ -14,3 +14,7 @@ openspec/
 # Historical/alternate names
 openspecs/
 
+# Markdown: only root README is tracked; plans/checklists stay local
+*.md
+!README.md
+
