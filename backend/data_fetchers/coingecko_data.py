@@ -90,6 +90,70 @@ def get_btc_historical(days: int = 30) -> Dict:
         return {"error": str(e)}
 
 
+def get_btc_spot_binance(timeframe: str = "current") -> Dict:
+    """BTC spot via Binance public REST API (no API key).
+
+    Datacenter-friendly fallback when CoinGecko rate-limits and Yahoo is flaky.
+    Output shape matches ``get_btc_price`` (price_usd, change, date, …).
+    """
+    from datetime import timezone
+
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 120}
+    try:
+        response = requests.get(url, params=params, timeout=20)
+        response.raise_for_status()
+        kl = response.json()
+        if not kl:
+            return {"error": "Binance klines empty", "timeframe": timeframe}
+
+        def _close(row) -> float:
+            return float(row[4])
+
+        last_close = _close(kl[-1])
+        last_open_ms = int(kl[-1][0])
+
+        def _pct(frm: float, to: float) -> float:
+            if not frm:
+                return 0.0
+            return round((to - frm) / frm * 100, 2)
+
+        change_24h = _pct(_close(kl[-2]), last_close) if len(kl) >= 2 else 0.0
+        change_7d = _pct(_close(kl[-8]), last_close) if len(kl) >= 8 else _pct(_close(kl[0]), last_close)
+
+        latest_dt = datetime.fromtimestamp(last_open_ms / 1000.0, tz=timezone.utc)
+        month_start = latest_dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        month_start_ms = int(month_start.timestamp() * 1000)
+        month_first_close = None
+        for row in kl:
+            if int(row[0]) >= month_start_ms:
+                month_first_close = _close(row)
+                break
+        if month_first_close is None:
+            month_first_close = _close(kl[0])
+
+        change_mtd = _pct(month_first_close, last_close)
+
+        if timeframe == "current":
+            ch = change_24h
+        elif timeframe == "week":
+            ch = change_7d
+        else:
+            ch = change_mtd
+
+        return {
+            "price_usd": round(last_close, 2),
+            "change_24h": change_24h,
+            "change_7d": change_7d,
+            "change": ch,
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "timeframe": timeframe,
+            "_source": "binance_public",
+        }
+    except Exception as e:
+        return {"error": str(e), "timeframe": timeframe}
+
+
 def get_btc_dominance(timeframe: str = "current") -> Dict:
     """Get Bitcoin market dominance"""
     url = f"{COINGECKO_BASE_URL}/global"

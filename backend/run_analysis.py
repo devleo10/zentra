@@ -23,6 +23,7 @@ Exit codes:
 """
 import sys
 import json
+import math
 import hashlib
 import logging
 from datetime import datetime
@@ -194,9 +195,13 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     def _btc_payload_ok(btc: dict) -> bool:
         if not btc or btc.get("error"):
             return False
-        if btc.get("price_usd") in (None, 0, 0.0):
-            return False
         if not btc.get("date"):
+            return False
+        try:
+            pf = float(btc.get("price_usd"))
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(pf) or pf <= 0:
             return False
         return True
 
@@ -206,9 +211,15 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         if _btc_payload_ok(yb):
             raw_data["btc"] = yb
             logger.info(f"  BTC (Yahoo): ${raw_data['btc'].get('price_usd', 'ERROR')}")
-        else:
-            logger.error(f"  BTC Yahoo fallback also failed: {yb}")
-            raw_data["btc"] = raw_data.get("btc") or yb or {"error": "btc_unavailable"}
+        elif not _btc_payload_ok(raw_data.get("btc") or {}):
+            logger.warning("  BTC: Yahoo failed; trying Binance public API")
+            bn = coingecko_data.get_btc_spot_binance(timeframe)
+            if _btc_payload_ok(bn):
+                raw_data["btc"] = bn
+                logger.info(f"  BTC (Binance): ${raw_data['btc'].get('price_usd', 'ERROR')}")
+            else:
+                logger.error(f"  BTC: Binance fallback also failed: {bn}")
+                raw_data["btc"] = raw_data.get("btc") or yb or bn or {"error": "btc_unavailable"}
     
     # Fed tone analysis — LLM-powered with keyword fallback
     try:
