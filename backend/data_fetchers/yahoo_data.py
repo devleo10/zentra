@@ -9,6 +9,7 @@ analysis run.
 """
 import logging
 import math
+import time
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
@@ -206,6 +207,32 @@ def _dxy_from_eurusd_proxy(timeframe: str) -> Optional[Dict]:
         return None
 
 
+def _yf_history_with_backoff(ticker: yf.Ticker, period: str, *, attempts: int = 3) -> pd.DataFrame:
+    """Fetch history with retries for Yahoo Finance rate limits / transient errors."""
+    last_err: Optional[Exception] = None
+    for attempt in range(attempts):
+        try:
+            hist = ticker.history(period=period)
+            if hist is not None and not hist.empty:
+                return hist
+        except Exception as e:
+            last_err = e
+        msg = str(last_err or "empty history").lower()
+        is_rl = "too many requests" in msg or "rate limit" in msg or "429" in msg
+        delay = (2.0 * (attempt + 1)) if is_rl else (1.0 * (attempt + 1))
+        logger.warning(
+            "yfinance history retry for period=%s in %.1fs (attempt %s/%s): %s",
+            period,
+            delay,
+            attempt + 1,
+            attempts,
+            last_err,
+        )
+        if attempt < attempts - 1:
+            time.sleep(delay)
+    return pd.DataFrame()
+
+
 def try_dxy_external_fallbacks(timeframe: str = "current") -> Optional[Dict]:
     """Try EUR/USD proxy then FRED DTWEXBGS when primary DXY Yahoo path failed or is unusable."""
     eu = _dxy_from_eurusd_proxy(timeframe)
@@ -229,7 +256,7 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
         for symbol in ["DX-Y.NYB", "DX=F", "DXY", "UUP"]:
             ticker = yf.Ticker(symbol)
             period = TIMEFRAME_PERIODS.get(timeframe, "3mo")
-            hist = ticker.history(period=period)
+            hist = _yf_history_with_backoff(ticker, period, attempts=3)
             if not hist.empty:
                 break
         else:

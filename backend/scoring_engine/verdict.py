@@ -4,18 +4,9 @@ Final verdict computation.
 Combines numeric score + headline adjustment into a deterministic verdict.
 All thresholds from config. Zero randomness.
 """
-import json
-from pathlib import Path
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any
 
-
-def _load_config() -> Dict:
-    config_path = Path(__file__).parent.parent / "config" / "scoring_weights.json"
-    with open(config_path, "r") as f:
-        return json.load(f)
-
-
-CONFIG = _load_config()
+from scoring_engine.config_loader import get_scoring_config
 
 
 def compute_final_verdict(
@@ -41,8 +32,9 @@ def compute_final_verdict(
     Returns:
         Dict with: final_score, bias, action, confidence, confidence_pct, reasoning
     """
-    cfg_bias = CONFIG["bias_thresholds"]
-    cfg_conf = CONFIG["confidence_formula"]
+    cfg = get_scoring_config()
+    cfg_bias = cfg["bias_thresholds"]
+    cfg_conf = cfg["confidence_formula"]
     
     # 1. Final score
     final_score = max(0, min(100, weighted_numeric_score + headline_adjustment + cross_signal_adjustment))

@@ -145,6 +145,10 @@ def generate_narrative(
 
         narrative = _augment_with_event_context(narrative, classified_headlines or [])
 
+        if not _narrative_matches_bias(narrative, bias, final_score):
+            logger.warning("Narrative tone inconsistent with verdict; using data-cited fallback text")
+            narrative = fallback["narrative"]
+
         logger.info("Narrative generated: %s...", narrative[:120])
 
         return {
@@ -212,15 +216,32 @@ def _build_data_cited_fallback(
     return base
 
 
+def _narrative_matches_bias(narrative: str, _bias: str, final_score: int) -> bool:
+    """Lightweight keyword check: narrative should not contradict the score in obvious ways."""
+    import re
+
+    t = narrative.lower()
+    has_bear = bool(re.search(r"\bbearish\b", t))
+    has_bull = bool(re.search(r"\bbullish\b", t))
+    if final_score >= 68 and has_bear and not has_bull:
+        return False
+    if final_score <= 32 and has_bull and not has_bear:
+        return False
+    return True
+
+
 def _augment_with_event_context(narrative: str, classified_headlines: List[Dict[str, Any]]) -> str:
     """
     Ensure narrative references concrete ongoing policy/geopolitical events when present.
+    Only appends risk-off language if at least one top headline is classified risk_off.
     """
     if not classified_headlines:
         return narrative
 
     titles = [str(h.get("_headline_title", "") or "") for h in classified_headlines[:8]]
     text = " ".join(titles).lower()
+    top = classified_headlines[:8]
+    any_risk_off = any(h.get("risk_impact") == "risk_off" for h in top)
 
     event_fragments = []
     if any(k in text for k in ["fomc", "federal reserve", "powell", "fed"]):
@@ -237,5 +258,10 @@ def _augment_with_event_context(narrative: str, classified_headlines: List[Dict[
     if any(fragment.split()[0] in existing for fragment in event_fragments):
         return narrative
 
-    extra = " Event context: " + ", ".join(event_fragments) + " are contributing to risk-off volatility."
+    if any_risk_off:
+        suffix = " are contributing to risk-off volatility."
+    else:
+        suffix = " are adding headline-driven uncertainty; monitor cross-asset moves."
+
+    extra = " Event context: " + ", ".join(event_fragments) + suffix
     return (narrative + extra).strip()

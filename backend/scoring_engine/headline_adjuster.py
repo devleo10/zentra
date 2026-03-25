@@ -4,18 +4,9 @@ Deterministic headline adjustment engine.
 Takes classified headline events and computes a bounded score adjustment.
 The adjustment is CAPPED (max ±10) and CANNOT override the numeric engine.
 """
-import json
-from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
-
-def _load_config() -> Dict:
-    config_path = Path(__file__).parent.parent / "config" / "scoring_weights.json"
-    with open(config_path, "r") as f:
-        return json.load(f)
-
-
-CONFIG = _load_config()
+from scoring_engine.config_loader import get_scoring_config
 
 
 def compute_headline_adjustment(classified_headlines: List[Dict[str, Any]]) -> Tuple[int, str]:
@@ -46,7 +37,7 @@ def compute_headline_adjustment(classified_headlines: List[Dict[str, Any]]) -> T
     Returns:
         (adjustment integer, reasoning string)
     """
-    cfg = CONFIG["headline_adjustment"]
+    cfg = get_scoring_config()["headline_adjustment"]
     min_conf = cfg["min_confidence_to_apply"]
     max_pos = cfg["max_positive_adjustment"]
     max_neg = cfg["max_negative_adjustment"]

@@ -38,8 +38,8 @@ def test_dxy_no_tickers_uses_snapshot(tmp_path, monkeypatch):
     repo_path.mkdir()
     # We'll load the real file from the repo
     import os
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".." , ".."))
-    yahoo_path = os.path.join(repo_root, "data_fetchers", "yahoo_data.py")
+    backend_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    yahoo_path = os.path.join(backend_root, "data_fetchers", "yahoo_data.py")
 
     yahoo = load_module(yahoo_path, name="test_yahoo_data_no_tickers")
 
@@ -67,10 +67,12 @@ def test_dxy_no_tickers_uses_snapshot(tmp_path, monkeypatch):
     assert float(res.get("current_price")) == 99.5
 
 
-def test_dxy_validation_and_fred_fallback(monkeypatch):
+def test_dxy_validation_marks_suspect_keeps_primary():
+    """Mismatched alt ticker marks _suspect; primary ICE-style value kept (no DTWEXBGS swap)."""
     import os
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".." , ".."))
-    yahoo_path = os.path.join(repo_root, "data_fetchers", "yahoo_data.py")
+
+    backend_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    yahoo_path = os.path.join(backend_root, "data_fetchers", "yahoo_data.py")
     yahoo = load_module(yahoo_path, name="test_yahoo_data_validation")
 
     # Build histograms: primary symbol DX-Y.NYB has price 100, alt DX=F has price 120
@@ -91,15 +93,11 @@ def test_dxy_validation_and_fred_fallback(monkeypatch):
 
     yahoo.yf = types.SimpleNamespace(Ticker=fake_ticker_ctor)
 
-    # Monkeypatch FRED fallback to return a usable value
-    fred_module = types.SimpleNamespace(get_fred_series=lambda series_id, timeframe=None: {"value": "101.5", "date": datetime.now().strftime("%Y-%m-%d")})
-    sys.modules["backend.data_fetchers.fred_data"] = fred_module
-
     # Ensure tolerance is small so validation fails
     yahoo.DXY_VALIDATION_TOLERANCE_PCT = 0.05
 
     res = yahoo.get_dxy_data(timeframe="current")
-    # Validation should mark suspect and fallback should switch source to FRED
     assert res.get("_suspect") is True
-    assert res.get("source") == "FRED"
-    assert float(res.get("current_price")) == round(101.5, 2)
+    assert res.get("source") == "DX-Y.NYB"
+    assert float(res.get("current_price")) == 100.0
+    assert res.get("_validation", {}).get("validated") is False

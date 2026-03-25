@@ -50,8 +50,10 @@ load_dotenv(Path(__file__).parent / ".env")
 from data_fetchers import fred_data, yahoo_data, coingecko_data, news_data
 from scoring_engine.numeric_scorer import (
     score_inflation, score_fed_policy, score_liquidity,
-    score_dxy, score_risk_sentiment, score_economy, compute_weighted_total,
+    score_dxy, score_risk_sentiment, score_economy,
+    compute_weighted_total_with_freshness,
 )
+from scoring_engine.coherence import compute_coherence_adjustment
 from scoring_engine.headline_adjuster import compute_headline_adjustment
 from scoring_engine.cross_signal_reviewer import review_cross_signals
 from scoring_engine.narrative_generator import generate_narrative
@@ -68,6 +70,11 @@ _GEO_KEYWORDS = {
     "sanctions", "tariff", "tariffs", "trade war", "strait of hormuz",
     "ceasefire", "nato", "missile", "troops", "invasion",
 }
+
+# Only these explicit Fed/monetary decision tags get the 0.98 classifier confidence boost.
+MONETARY_EXPLICIT_CONFIDENCE_BOOST_TYPES = frozenset(
+    ("rate_hike", "rate_cut", "rate_hold", "fomc_doc")
+)
 
 
 def _compute_geopolitics_risk(classified_headlines: list) -> str:
@@ -417,6 +424,24 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         logger.error(f"  DXY structure fetch FAILED: {e}")
         raw_data["dxy_structure"] = {"error": str(e)}
 
+    try:
+        raw_data["financial_stress"] = fred_data.get_financial_stress(timeframe)
+        logger.info(
+            "  Financial stress: HY OAS=%s STLFSI=%s",
+            raw_data["financial_stress"].get("hy_oas", "N/A"),
+            raw_data["financial_stress"].get("stress_index", "N/A"),
+        )
+    except Exception as e:
+        logger.error(f"  Financial stress fetch FAILED: {e}")
+        raw_data["financial_stress"] = {"error": str(e)}
+
+    try:
+        raw_data["breakeven_10y"] = fred_data.get_10y_breakeven_expectation(timeframe)
+        logger.info(f"  10Y breakeven: {raw_data['breakeven_10y'].get('value', 'ERROR')}%")
+    except Exception as e:
+        logger.error(f"  10Y breakeven fetch FAILED: {e}")
+        raw_data["breakeven_10y"] = {"error": str(e)}
+
     # ── STEP 2: Validate data freshness ────────────────────────────────
     logger.info("[2/9] Validating data freshness...")
     freshness_report = validate_data_freshness(raw_data)
@@ -473,7 +498,23 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     yield_curve = raw_data["yields"].get("yield_curve_spread")
     bs_trend = raw_data["balance_sheet"].get("trend", "stable")
     m2_trend = raw_data.get("m2", {}).get("m2_trend", "stable")
-    liquidity_score, liquidity_reasoning = score_liquidity(yield_10y, yield_curve, bs_trend, m2_trend)
+    m2_yoy = raw_data.get("m2", {}).get("m2_yoy_change")
+    real_yield_10y = None
+    try:
+        be = raw_data.get("breakeven_10y") or {}
+        bv = be.get("value")
+        if yield_10y is not None and bv is not None:
+            real_yield_10y = float(yield_10y) - float(bv)
+    except (TypeError, ValueError):
+        real_yield_10y = None
+    liquidity_score, liquidity_reasoning = score_liquidity(
+        yield_10y,
+        yield_curve,
+        bs_trend,
+        m2_trend,
+        real_yield_10y=real_yield_10y,
+        m2_yoy_change=float(m2_yoy) if m2_yoy is not None else None,
+    )
     
     dxy_blob = raw_data["dxy"]
     _dc = dxy_blob.get("change")
@@ -496,7 +537,14 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     vix_val = raw_data["vix"].get("current_value")
     sp500_change = raw_data["sp500"].get("change")
     gold_change_val = raw_data["gold"].get("change")
-    risk_score, risk_reasoning = score_risk_sentiment(vix_val, sp500_change, gold_change_val)
+    hy_oas_val = raw_data.get("financial_stress", {}).get("hy_oas")
+    try:
+        hy_oas_f = float(hy_oas_val) if hy_oas_val is not None else None
+    except (TypeError, ValueError):
+        hy_oas_f = None
+    risk_score, risk_reasoning = score_risk_sentiment(
+        vix_val, sp500_change, gold_change_val, hy_oas=hy_oas_f
+    )
 
     # Economy section (Jobs, GDP, PMI)
     unemployment_rate = raw_data.get("jobs", {}).get("unemployment_rate")
@@ -533,15 +581,21 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "risk_sentiment": risk_reasoning,
     }
     
-    weighted_score, score_breakdown = compute_weighted_total(section_scores)
-    
+    weighted_stale, score_breakdown = compute_weighted_total_with_freshness(
+        section_scores, freshness_report.to_dict()
+    )
+    coh_adj, coh_reasoning = compute_coherence_adjustment(section_scores, raw_data)
+    weighted_score = int(max(0, min(100, weighted_stale + coh_adj)))
+
     logger.info(f"  Inflation:      {inflation_score}/100 - {inflation_reasoning}")
     logger.info(f"  Economy:        {economy_score}/100 - {economy_reasoning}")
     logger.info(f"  Fed Policy:     {fed_score}/100 - {fed_reasoning}")
     logger.info(f"  Liquidity:      {liquidity_score}/100 - {liquidity_reasoning}")
     logger.info(f"  DXY:            {dxy_score}/100 - {dxy_reasoning}")
     logger.info(f"  Risk Sentiment: {risk_score}/100 - {risk_reasoning}")
-    logger.info(f"  Weighted Total: {weighted_score}/100")
+    logger.info(f"  Weighted (stale-aware): {weighted_stale}/100 | Coherence: {coh_adj:+d} -> {weighted_score}/100")
+    if coh_reasoning and coh_reasoning != "none":
+        logger.info(f"  Coherence: {coh_reasoning}")
 
     # ── STEP 3b: Cross-signal LLM review ──────────────────────────────
     logger.info("[3b/9] Running cross-signal LLM review...")
@@ -592,13 +646,15 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
                     original = headlines[i]
                     # If fetcher or official scraper annotated explicit decision, boost
                     if original.get("_explicit_decision"):
-                        # Force high confidence and, for rate decisions / FOMC docs, set bias/impact
-                        cl_conf = float(cl.get("confidence", 0) or 0)
-                        if cl_conf < 0.98:
-                            cl["confidence"] = 0.98
-                            logger.info(f"Boosted headline confidence to 0.98 for explicit decision: {original.get('title','')[:140]}")
                         dtype = original.get("_decision_type")
-                        if dtype in ("rate_hike", "rate_cut", "rate_hold", "fomc_doc"):
+                        if dtype in MONETARY_EXPLICIT_CONFIDENCE_BOOST_TYPES:
+                            cl_conf = float(cl.get("confidence", 0) or 0)
+                            if cl_conf < 0.98:
+                                cl["confidence"] = 0.98
+                                logger.info(
+                                    "Boosted headline confidence to 0.98 for monetary explicit decision: %s",
+                                    original.get("title", "")[:140],
+                                )
                             # Map decision types to forced bias/impact
                             if dtype == "rate_hike":
                                 cl["event_bias"] = "hawkish"
@@ -796,8 +852,13 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "m2_yoy_change": raw_data.get("m2", {}).get("m2_yoy_change"),
         "section_scores": section_scores,
         "section_reasoning": section_reasoning,
+        "weighted_numeric_stale_downweight": weighted_stale,
+        "coherence_adjustment": coh_adj,
+        "coherence_reasoning": coh_reasoning,
         "weighted_numeric_score": weighted_score,
         "score_breakdown": score_breakdown,
+        "ten_year_breakeven": raw_data.get("breakeven_10y", {}).get("value"),
+        "real_yield_10y": real_yield_10y,
         "headlines_fetched": len(headlines),
         "headlines_classified": [
             {k: v for k, v in c.items() if not k.startswith("_")}
@@ -842,6 +903,11 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "move_index_change_label": raw_data.get("move_index", {}).get("change_label"),
         "move_index_change_unit": raw_data.get("move_index", {}).get("change_unit"),
         "move_index_trend": raw_data.get("move_index", {}).get("trend"),
+        "financial_stress_index": raw_data.get("financial_stress", {}).get("stress_index"),
+        "financial_stress_level": raw_data.get("financial_stress", {}).get("level"),
+        "financial_stress_trend": raw_data.get("financial_stress", {}).get("stress_trend"),
+        "hy_oas": raw_data.get("financial_stress", {}).get("hy_oas"),
+        "hy_trend": raw_data.get("financial_stress", {}).get("hy_trend"),
         "eem_price": raw_data.get("eem", {}).get("current_price"),
         "eem_change": raw_data.get("eem", {}).get("change"),
         "eem_change_label": raw_data.get("eem", {}).get("change_label"),
@@ -885,7 +951,8 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     print(f"    DXY:            {dxy_score:3d}/100")
     print(f"    Risk Sentiment: {risk_score:3d}/100")
     print(f"    -------------------------")
-    print(f"    Weighted Total: {weighted_score:3d}/100")
+    print(f"    Stale-aware base: {weighted_stale:3d}/100  (coherence {coh_adj:+d})")
+    print(f"    Weighted Total:   {weighted_score:3d}/100")
     print()
     print(f"  -- Adjustments --")
     print(f"    Headlines analyzed: {len(headlines)}")

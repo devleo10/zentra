@@ -8,6 +8,8 @@ CPI priority:
 import os
 import requests
 import pandas as pd
+
+from utils.http_retry import get_with_retries
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Literal, Tuple
 from dotenv import load_dotenv
@@ -277,7 +279,7 @@ def get_fred_data(
     series_id: str,
     start_date: Optional[str] = None,
     timeframe: str = "current",
-    sort_order: str = "desc",
+    sort_order: Optional[str] = "desc",
 ) -> pd.DataFrame:
     """
     Fetch data from FRED API
@@ -302,23 +304,29 @@ def get_fred_data(
         "api_key": FRED_API_KEY,
         "file_type": "json",
         "observation_start": start_date,
-        "sort_order": sort_order,
     }
+    if sort_order is not None:
+        params["sort_order"] = sort_order
     
     try:
-        response = requests.get(FRED_BASE_URL, params=params, timeout=15)
-        response.raise_for_status()
-        
+        response = get_with_retries(
+            FRED_BASE_URL,
+            params=params,
+            timeout=15,
+            max_attempts=3,
+            backoff_base=2.0,
+            log_4xx_body=True,
+        )
         data = response.json()
-        
+
         if "observations" not in data:
             return pd.DataFrame()
-        
+
         df = pd.DataFrame(data["observations"])
         df["date"] = pd.to_datetime(df["date"])
         df["value"] = pd.to_numeric(df["value"], errors="coerce")
         df = df.dropna(subset=["value"])
-        
+
         return df[["date", "value"]].sort_values("date")
     except Exception as e:
         logger.warning("Error fetching FRED data for %s: %s", series_id, e)
@@ -1048,13 +1056,47 @@ def get_pmi_data(timeframe: str = "current") -> Dict:
     """Get ISM Manufacturing PMI from FRED (NAPM series).
 
     PMI > 50 = expansion, < 50 = contraction. A key leading indicator.
+    Tries multiple request shapes (sort order, long history, no sort) to avoid FRED 400 quirks.
+    Fallback: Chicago Fed national activity index (CFNAI) scaled to ~PMI-like
+    50-center only when NAPM is unavailable (documented proxy, not ISM).
     """
     effective_start = (datetime.now() - timedelta(days=max(365, TIMEFRAME_DAYS.get(timeframe, 90)))).strftime("%Y-%m-%d")
+    long_start = "1990-01-01"
     df = pd.DataFrame()
-    for sort_o in ("desc", "asc"):
+    for sort_o in ("desc", "asc", None):
         df = get_fred_data("NAPM", start_date=effective_start, timeframe=timeframe, sort_order=sort_o)
         if not df.empty:
             break
+    if df.empty:
+        df = get_fred_data("NAPM", start_date=long_start, timeframe=timeframe, sort_order="asc")
+    if df.empty:
+        df = get_fred_data("NAPM", start_date=long_start, timeframe=timeframe, sort_order=None)
+
+    if df.empty:
+        # CFNAI 3-month moving average: negative = below trend, positive = above; map loosely to PMI scale
+        df_cf = get_fred_data("CFNAI", start_date=long_start, timeframe=timeframe, sort_order="asc")
+        if not df_cf.empty:
+            latest = df_cf.iloc[-1]
+            cfv = float(latest["value"])
+            latest_date = latest["date"].strftime("%Y-%m-%d")
+            # Map CFNAI roughly [-0.5, +0.5] -> PMI [45, 55] (center 50)
+            pmi_proxy = 50.0 + max(-5.0, min(5.0, cfv * 10.0))
+            logger.warning(
+                "PMI NAPM unavailable; using CFNAI proxy -> synthetic PMI %.1f (date=%s)",
+                pmi_proxy,
+                latest_date,
+            )
+            return {
+                "pmi_value": round(pmi_proxy, 1),
+                "pmi_trend": "stable",
+                "pmi_status": "expansion" if pmi_proxy >= 50 else "contraction",
+                "latest_date": latest_date,
+                "source": "FRED_CFNAI_proxy",
+                "data_as_of": latest_date,
+                "timeframe": timeframe,
+                "_fallback": True,
+                "_proxy_note": "CFNAI scaled to PMI-like level; not ISM Manufacturing PMI",
+            }
 
     if df.empty:
         last_val = _get_last_snapshot_field("pmi_value")
@@ -1183,10 +1225,12 @@ def get_financial_stress(timeframe: str = "current") -> Dict:
 
     stress_idx = None
     stress_trend = "stable"
+    stress_date = None
     try:
         df = get_fred_data("STLFSI4", start_date=effective_start)
         if not df.empty:
             stress_idx = round(float(df.iloc[-1]["value"]), 3)
+            stress_date = df.iloc[-1]["date"]
             if len(df) >= 2:
                 prev = float(df.iloc[-2]["value"])
                 if stress_idx > prev + 0.1:
@@ -1198,10 +1242,12 @@ def get_financial_stress(timeframe: str = "current") -> Dict:
 
     hy_oas = None
     hy_trend = "stable"
+    hy_date = None
     try:
         df2 = get_fred_data("BAMLH0A0HYM2", start_date=effective_start)
         if not df2.empty:
             hy_oas = round(float(df2.iloc[-1]["value"]), 2)
+            hy_date = df2.iloc[-1]["date"]
             if len(df2) >= 2:
                 prev2 = float(df2.iloc[-2]["value"])
                 if hy_oas > prev2 + 0.05:
@@ -1223,14 +1269,40 @@ def get_financial_stress(timeframe: str = "current") -> Dict:
         elif stress_idx > 0.5:
             level = "above_average"
 
+    latest_date = None
+    dts = [d for d in (stress_date, hy_date) if d is not None]
+    if dts:
+        latest_dt = max(pd.to_datetime(x) for x in dts)
+        latest_date = latest_dt.strftime("%Y-%m-%d")
+
     return {
         "stress_index": stress_idx,
         "stress_trend": stress_trend,
         "hy_oas": hy_oas,
         "hy_trend": hy_trend,
         "level": level,
+        "latest_date": latest_date,
+        "data_as_of": latest_date,
         "source": "FRED",
         "timeframe": timeframe,
+    }
+
+
+def get_10y_breakeven_expectation(timeframe: str = "current") -> Dict:
+    """10-year breakeven inflation (T10YIE) for real yield = nominal 10Y - breakeven."""
+    effective_start = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
+    df = get_fred_data("T10YIE", start_date=effective_start)
+    if df.empty:
+        return {"error": "No T10YIE data", "timeframe": timeframe}
+    latest = df.iloc[-1]
+    v = round(float(latest["value"]), 3)
+    ds = latest["date"].strftime("%Y-%m-%d")
+    return {
+        "value": v,
+        "latest_date": ds,
+        "data_as_of": ds,
+        "timeframe": timeframe,
+        "source": "FRED",
     }
 
 

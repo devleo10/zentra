@@ -3,6 +3,8 @@ Fetch cryptocurrency data from CoinGecko API
 """
 import logging
 import math
+import threading
+import time
 import requests
 from typing import Dict, Optional
 from datetime import datetime, timedelta
@@ -11,14 +13,46 @@ logger = logging.getLogger("btc_macro.data_fetchers.coingecko")
 
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
 
+# Minimum seconds between CoinGecko calls in one process (free tier friendly).
+_CG_MIN_INTERVAL_SEC = 1.25
+_cg_lock = threading.Lock()
+_cg_last_call_monotonic: float = 0.0
+
 _CG_HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; ZentraMacro/1.0)",
     "Accept": "application/json",
 }
 
 
-def _cg_get(url: str, *, timeout: float = 15, params=None):
-    return requests.get(url, params=params, timeout=timeout, headers=_CG_HEADERS)
+def _cg_throttle() -> None:
+    global _cg_last_call_monotonic
+    with _cg_lock:
+        now = time.monotonic()
+        wait = _CG_MIN_INTERVAL_SEC - (now - _cg_last_call_monotonic)
+        if wait > 0:
+            time.sleep(wait)
+        _cg_last_call_monotonic = time.monotonic()
+
+
+def _cg_get(url: str, *, timeout: float = 15, params=None, retries_on_429: int = 2):
+    """Throttled GET; honors Retry-After on 429 before final raise_for_status."""
+    attempts = max(1, retries_on_429 + 1)
+    for attempt in range(attempts):
+        _cg_throttle()
+        resp = requests.get(url, params=params, timeout=timeout, headers=_CG_HEADERS)
+        if resp.status_code == 429:
+            ra = resp.headers.get("Retry-After")
+            try:
+                wait_s = min(float(ra), 60.0) if ra else 2.0 * (attempt + 1)
+            except (TypeError, ValueError):
+                wait_s = 2.0 * (attempt + 1)
+            logger.warning("CoinGecko 429 for %s; sleeping %.1fs (attempt %s/%s)", url, wait_s, attempt + 1, attempts)
+            if attempt < attempts - 1:
+                time.sleep(wait_s)
+                continue
+        resp.raise_for_status()
+        return resp
+    raise RuntimeError("CoinGecko request failed")
 
 
 def _snapshot_btc_dominance():

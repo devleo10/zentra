@@ -20,6 +20,13 @@
     "cpi_mom_rising":       { "threshold":  0.3, "score": 30 },
     "cpi_mom_rising_fast":  { "threshold":  999, "score": 10 },
 
+    "_doc_pce": "PCE MoM typically prints softer than CPI; tighter bands than CPI.",
+    "pce_mom_falling_fast": { "threshold": -0.2, "score": 100 },
+    "pce_mom_falling":      { "threshold": -0.05, "score": 80 },
+    "pce_mom_flat":         { "threshold":  0.05, "score": 55 },
+    "pce_mom_rising":       { "threshold":  0.2, "score": 30 },
+    "pce_mom_rising_fast":  { "threshold":  999, "score": 10 },
+
     "pce_weight": 0.3,
     "cpi_weight": 0.5,
     "oil_weight": 0.2,
@@ -62,9 +69,19 @@
       { "threshold": 999, "score": 15 }
     ],
 
-    "unemployment_weight": 0.35,
-    "gdp_weight": 0.30,
-    "pmi_weight": 0.35
+    "_doc_nfp": "NFP MoM change in thousands; weak/negative payrolls = more bullish for BTC (Fed easing bias).",
+    "nfp_brackets": [
+      { "threshold": -200, "score": 90 },
+      { "threshold": -50, "score": 75 },
+      { "threshold": 50, "score": 55 },
+      { "threshold": 200, "score": 35 },
+      { "threshold": 999, "score": 20 }
+    ],
+
+    "unemployment_weight": 0.28,
+    "gdp_weight": 0.22,
+    "pmi_weight": 0.28,
+    "nfp_weight": 0.22
   },
 
   "fed_policy_thresholds": {
@@ -110,10 +127,20 @@
     "m2_expanding_bonus": 10,
     "m2_contracting_penalty": -10,
 
-    "yield_10y_weight": 0.35,
-    "yield_curve_weight": 0.25,
-    "balance_sheet_weight": 0.25,
-    "m2_weight": 0.15
+    "_doc_real_yield": "10Y nominal minus 10Y breakeven (% pts). Lower real yield = easier conditions = bullish.",
+    "real_yield_neutral_anchor": 1.0,
+    "real_yield_points_per_pp": 6,
+    "real_yield_adj_cap": 12,
+
+    "_doc_m2_yoy": "Extra adjustment on top of M2 trend from YoY % change (capped).",
+    "m2_yoy_scale": 1.5,
+    "m2_yoy_adj_cap": 6,
+
+    "yield_10y_weight": 0.32,
+    "yield_curve_weight": 0.22,
+    "balance_sheet_weight": 0.22,
+    "m2_weight": 0.14,
+    "real_yield_weight": 0.10
   },
 
   "dxy_thresholds": {
@@ -150,10 +177,19 @@
 
     "gold_safe_haven_penalty": -5,
     "gold_change_threshold": 3.0,
+    "gold_penalty_vix_elevated_above": 25,
+    "gold_penalty_mild_if_vix_calm": -2,
 
-    "vix_weight": 0.5,
-    "sp500_weight": 0.3,
-    "gold_weight": 0.2
+    "vix_weight": 0.42,
+    "sp500_weight": 0.26,
+    "gold_weight": 0.17,
+    "hy_oas_weight": 0.15,
+
+    "_doc_hy": "HY OAS (%) higher = credit stress = bearish for risk assets.",
+    "hy_oas_calm": { "threshold": 3.5, "score": 72 },
+    "hy_oas_moderate": { "threshold": 5.0, "score": 55 },
+    "hy_oas_stressed": { "threshold": 7.0, "score": 35 },
+    "hy_oas_extreme": { "threshold": 999, "score": 18 }
   },
 
   "headline_adjustment": {
@@ -194,18 +230,45 @@
   },
 
   "data_freshness": {
-    "cpi_max_age_days": 35,
-    "pce_max_age_days": 35,
-    "btc_price_max_age_minutes": 10,
-    "yields_max_age_hours": 24,
-    "dxy_max_age_hours": 24,
-    "vix_max_age_hours": 24,
-    "sp500_max_age_hours": 24,
+    "_doc": "All data freshness thresholds. Use explicit units (days/hours) for clarity. Critical blockers: btc_price only. Non-critical: all others.",
+    "cpi_max_age_days": 90,
+    "pce_max_age_days": 45,
+    "btc_price_max_age_hours": 24,
+    "yields_max_age_days": 5,
+    "dxy_max_age_days": 3,
+    "vix_max_age_days": 3,
+    "sp500_max_age_days": 3,
+    "gold_max_age_days": 3,
+    "oil_max_age_days": 3,
+    "fed_funds_max_age_days": 35,
     "headlines_max_age_hours": 48,
     "fed_balance_sheet_max_age_days": 10,
     "unemployment_max_age_days": 35,
     "gdp_max_age_days": 120,
     "pmi_max_age_days": 35,
-    "m2_max_age_days": 35
+    "m2_max_age_days": 35,
+    "hy_oas_max_age_days": 14
+  },
+
+  "stale_section_downweight": {
+    "_doc": "Multiply section weight by this factor when any linked freshness check is STALE or MISSING.",
+    "factor": 0.5,
+    "section_freshness_checks": {
+      "inflation": ["CPI", "PCE"],
+      "economy": ["Unemployment Rate", "GDP", "PMI"],
+      "fed_policy": ["Fed Funds Rate"],
+      "liquidity": ["10Y Yield", "M2 Money Supply", "Fed Balance Sheet"],
+      "dxy": ["DXY"],
+      "risk_sentiment": ["VIX", "S&P 500", "Gold", "HY OAS"]
+    }
+  },
+
+  "coherence_rules": {
+    "_doc": "Deterministic adjustment to weighted numeric score before headlines (capped).",
+    "max_adjustment": 8,
+    "vix_extreme_threshold": 30,
+    "vix_risk_score_cap": 38,
+    "inflation_fed_divergence_threshold": 50,
+    "inflation_fed_divergence_penalty": 5
   }
 }
