@@ -311,18 +311,40 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         logger.info(f"  BTC dominance: {raw_data['btc_dominance'].get('btc_dominance', 'ERROR')}%")
     except Exception as e:
         logger.error(f"  BTC dominance fetch FAILED: {e}")
-        raw_data["btc_dominance"] = {"error": str(e)}
+        raw_data["btc_dominance"] = {
+            "btc_dominance": 52.0,
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "timeframe": timeframe,
+            "_fallback": True,
+            "source": "exception_neutral",
+        }
 
     try:
         raw_data["stablecoins"] = coingecko_data.get_stablecoin_data(timeframe)
         logger.info(f"  Stablecoin dom: {raw_data['stablecoins'].get('total_stablecoin_dominance', 'ERROR')}%")
     except Exception as e:
         logger.error(f"  Stablecoin data fetch FAILED: {e}")
-        raw_data["stablecoins"] = {"error": str(e)}
+        raw_data["stablecoins"] = {
+            "usdt_dominance": 4.25,
+            "usdc_dominance": 4.25,
+            "total_stablecoin_dominance": 8.5,
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "timeframe": timeframe,
+            "_fallback": True,
+            "source": "exception_neutral",
+        }
 
     try:
         raw_data["btc_technicals"] = coingecko_data.get_btc_ohlcv_200d()
-        logger.info(f"  BTC 200d MA: ${raw_data['btc_technicals'].get('ma200', 'ERROR')}")
+        _bt = raw_data["btc_technicals"]
+        _ma = _bt.get("ma200")
+        if _ma is not None:
+            _ma_s = f"${_ma:,.0f}"
+        elif _bt.get("error"):
+            _ma_s = "ERROR"
+        else:
+            _ma_s = "N/A"
+        logger.info(f"  BTC 200d MA: {_ma_s}")
     except Exception as e:
         logger.error(f"  BTC technicals fetch FAILED: {e}")
         raw_data["btc_technicals"] = {"error": str(e)}

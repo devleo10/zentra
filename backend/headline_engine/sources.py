@@ -41,11 +41,12 @@ def _parse_rss(url: str, limit: int = 10) -> List[Dict]:
 
 def fetch_fomc_releases(days: int = 3) -> List[Dict]:
     """Fetch recent Fed press releases / FOMC outputs via RSS where available."""
-    # Federal Reserve provides several feeds; try press releases first
+    # Order: feeds that still respond reliably first (press_releases often 404).
     feeds = [
-        'https://www.federalreserve.gov/feeds/press_releases.xml',
         'https://www.federalreserve.gov/feeds/press_monetary.xml',
         'https://www.federalreserve.gov/feeds/speeches.xml',
+        'https://www.federalreserve.gov/feeds/press_all.xml',
+        'https://www.federalreserve.gov/feeds/press_releases.xml',
     ]
     # Try each feed in order
     for feed in feeds:
@@ -68,9 +69,14 @@ def fetch_fomc_releases(days: int = 3) -> List[Dict]:
 
 
 def fetch_bls_releases(days: int = 3) -> List[Dict]:
-    """Fetch recent BLS news releases via RSS."""
-    feed = 'https://www.bls.gov/feed/'
-    items = _parse_rss(feed, limit=10)
-    for it in items:
-        it['source'] = 'BLS'
-    return items
+    """Fetch recent BLS news releases via RSS (try multiple endpoints)."""
+    for feed in (
+        'https://www.bls.gov/feed/bls_news.xml',
+        'https://www.bls.gov/feed/',
+    ):
+        items = _parse_rss(feed, limit=10)
+        if items:
+            for it in items:
+                it['source'] = 'BLS'
+            return items
+    return []

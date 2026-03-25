@@ -273,7 +273,12 @@ def get_fred_series(series_id: str, timeframe: str = "current") -> Dict:
         return {"error": str(e)}
 
 
-def get_fred_data(series_id: str, start_date: Optional[str] = None, timeframe: str = "current") -> pd.DataFrame:
+def get_fred_data(
+    series_id: str,
+    start_date: Optional[str] = None,
+    timeframe: str = "current",
+    sort_order: str = "desc",
+) -> pd.DataFrame:
     """
     Fetch data from FRED API
     
@@ -297,7 +302,7 @@ def get_fred_data(series_id: str, start_date: Optional[str] = None, timeframe: s
         "api_key": FRED_API_KEY,
         "file_type": "json",
         "observation_start": start_date,
-        "sort_order": "desc"
+        "sort_order": sort_order,
     }
     
     try:
@@ -316,7 +321,7 @@ def get_fred_data(series_id: str, start_date: Optional[str] = None, timeframe: s
         
         return df[["date", "value"]].sort_values("date")
     except Exception as e:
-        print(f"Error fetching FRED data for {series_id}: {e}")
+        logger.warning("Error fetching FRED data for %s: %s", series_id, e)
         return pd.DataFrame()
 
 
@@ -979,28 +984,103 @@ def get_gdp_data(timeframe: str = "current") -> Dict:
     return result
 
 
+def get_dxy_from_fred_trade_weighted(timeframe: str = "current") -> Dict:
+    """FRED DTWEXBGS (trade-weighted broad USD) when Yahoo DXY tickers fail.
+
+    Level is scaled (~×0.88) so it sits in a DXY-like band for scoring thresholds.
+    """
+    if not FRED_API_KEY:
+        return {"error": "FRED_API_KEY missing", "timeframe": timeframe}
+    days = max(500, TIMEFRAME_DAYS.get(timeframe, 120) * 4)
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    df = pd.DataFrame()
+    for sort_o in ("asc", "desc"):
+        df = get_fred_data("DTWEXBGS", start_date=start, timeframe=timeframe, sort_order=sort_o)
+        if not df.empty:
+            break
+    if df.empty:
+        return {"error": "DTWEXBGS unavailable", "timeframe": timeframe}
+
+    d = df.sort_values("date").reset_index(drop=True)
+    latest = d.iloc[-1]
+    tw_latest = float(latest["value"])
+    latest_dt = pd.Timestamp(latest["date"]).normalize()
+
+    if timeframe == "month" and len(d) >= 2:
+        month_start = latest_dt.to_period("M").to_timestamp().normalize()
+        this_month = d[pd.to_datetime(d["date"]).dt.normalize() >= month_start]
+        if len(this_month) >= 2:
+            comp_row = this_month.iloc[0]
+        else:
+            prev_m = d[pd.to_datetime(d["date"]).dt.normalize() < month_start]
+            comp_row = prev_m.iloc[-1] if not prev_m.empty else (d.iloc[-2] if len(d) >= 2 else latest)
+    elif len(d) >= 2:
+        comp_row = d.iloc[-2]
+    else:
+        comp_row = latest
+
+    tw_comp = float(comp_row["value"])
+    chg = ((tw_latest - tw_comp) / tw_comp * 100) if tw_comp else 0.0
+    level_scale = 104.0 / 118.0
+    level = tw_latest * level_scale
+
+    def _ds(row) -> str:
+        x = row["date"]
+        return x.strftime("%Y-%m-%d") if hasattr(x, "strftime") else str(x)[:10]
+
+    return {
+        "current_price": round(level, 2),
+        "date": _ds(latest),
+        "data_as_of": _ds(latest),
+        "comparison_date": _ds(comp_row),
+        "change": round(chg, 2),
+        "change_label": _CHANGE_LABELS.get(timeframe, ""),
+        "change_unit": "percent",
+        "trend": "weakening" if chg < 0 else "strengthening" if chg > 0 else "stable",
+        "timeframe": timeframe,
+        "source": "FRED_DTWEXBGS",
+        "_fallback": True,
+        "_note": "Broad trade-weighted USD; level scaled to approximate DXY",
+    }
+
+
 def get_pmi_data(timeframe: str = "current") -> Dict:
     """Get ISM Manufacturing PMI from FRED (NAPM series).
 
     PMI > 50 = expansion, < 50 = contraction. A key leading indicator.
     """
-    effective_start = (datetime.now() - timedelta(days=max(180, TIMEFRAME_DAYS.get(timeframe, 90)))).strftime("%Y-%m-%d")
-    df = get_fred_data("NAPM", start_date=effective_start)
+    effective_start = (datetime.now() - timedelta(days=max(365, TIMEFRAME_DAYS.get(timeframe, 90)))).strftime("%Y-%m-%d")
+    df = pd.DataFrame()
+    for sort_o in ("desc", "asc"):
+        df = get_fred_data("NAPM", start_date=effective_start, timeframe=timeframe, sort_order=sort_o)
+        if not df.empty:
+            break
 
     if df.empty:
         last_val = _get_last_snapshot_field("pmi_value")
         if last_val is not None:
             logger.warning("No PMI data from FRED; using snapshot fallback: %s", last_val)
             return {
-                "pmi_value": last_val,
+                "pmi_value": float(last_val),
                 "pmi_trend": "unknown",
-                "pmi_status": "expansion" if last_val >= 50 else "contraction",
+                "pmi_status": "expansion" if float(last_val) >= 50 else "contraction",
+                "latest_date": datetime.now().strftime("%Y-%m-%d"),
                 "_fallback": True,
                 "source": "last_snapshot",
                 "timeframe": timeframe,
             }
-        logger.warning("No PMI data available")
-        return {"error": "No PMI data available", "timeframe": timeframe}
+        logger.warning("PMI unavailable; using neutral placeholder (50) so pipeline continues")
+        today = datetime.now().strftime("%Y-%m-%d")
+        return {
+            "pmi_value": 50.0,
+            "pmi_trend": "stable",
+            "pmi_status": "neutral",
+            "latest_date": today,
+            "data_as_of": today,
+            "_fallback": True,
+            "source": "neutral_placeholder",
+            "timeframe": timeframe,
+        }
 
     latest = df.iloc[-1]
     pmi_value = round(float(latest["value"]), 1)

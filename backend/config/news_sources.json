@@ -3,7 +3,7 @@
   "rss_feeds": {
     "cnbc": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
     "reuters": "https://www.reutersagency.com/feed/?best-topics=business-finance",
-    "federal_reserve": "https://www.federalreserve.gov/feeds/press_releases.xml",
-    "bls": "https://www.bls.gov/feed/"
+    "federal_reserve": "https://www.federalreserve.gov/feeds/press_monetary.xml",
+    "bls": "https://www.bls.gov/feed/bls_news.xml"
   }
 }

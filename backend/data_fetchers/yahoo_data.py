@@ -8,6 +8,7 @@ client sees the most recent DXY, VIX, S&P 500, and Gold values on each
 analysis run.
 """
 import logging
+import math
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
@@ -167,6 +168,44 @@ def _latest_and_comparison_for_timeframe(
     return _latest_and_comparison_rows(hist, days)
 
 
+def _dxy_from_eurusd_proxy(timeframe: str) -> Optional[Dict]:
+    """Approximate DXY change/level from EURUSD=X when DXY futures fail (e.g. cloud yfinance)."""
+    try:
+        ticker = yf.Ticker("EURUSD=X")
+        period = TIMEFRAME_PERIODS.get(timeframe, "3mo")
+        hist = ticker.history(period=period)
+        if hist.empty or len(hist) < 2:
+            return None
+        if len(hist) > 1:
+            latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe)
+        else:
+            latest = hist.iloc[-1]
+            comparison = latest
+        e0 = float(latest["Close"])
+        e1 = float(comparison["Close"])
+        if not e1:
+            return None
+        eur_change_pct = ((e0 - e1) / e1) * 100.0
+        dxy_change_proxy = -eur_change_pct
+        level_proxy = max(85.0, min(115.0, 100.0 + (1.085 - e0) * 85.0))
+        return {
+            "current_price": round(level_proxy, 2),
+            "date": _safe_date_str(latest.name),
+            "data_as_of": _safe_date_str(latest.name),
+            "comparison_date": _safe_date_str(comparison.name),
+            "change": round(dxy_change_proxy, 2),
+            "change_label": _change_label(timeframe),
+            "change_unit": "percent",
+            "trend": "weakening" if dxy_change_proxy < 0 else "strengthening" if dxy_change_proxy > 0 else "stable",
+            "timeframe": timeframe,
+            "source": "EURUSD=X_proxy",
+            "_fallback": True,
+        }
+    except Exception as e:
+        logger.debug("EURUSD DXY proxy failed: %s", e)
+        return None
+
+
 def get_dxy_data(timeframe: str = "current") -> Dict:
     """Get US Dollar Index (DXY) data with timeframe support"""
     try:
@@ -213,6 +252,19 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
                                 }
                 except Exception:
                     logger.exception("Error attempting last-snapshot fallback for DXY")
+
+            eu = _dxy_from_eurusd_proxy(timeframe)
+            if eu:
+                logger.warning("DXY: Yahoo index symbols empty; using EURUSD=X proxy")
+                return eu
+            try:
+                from data_fetchers import fred_data
+                fr = fred_data.get_dxy_from_fred_trade_weighted(timeframe)
+                if fr and not fr.get("error"):
+                    logger.warning("DXY: using FRED DTWEXBGS (trade-weighted USD) fallback")
+                    return fr
+            except Exception:
+                logger.exception("FRED DXY fallback failed")
 
             return {"error": "No DXY tickers available and no valid snapshot fallback", "timeframe": timeframe}
 
@@ -289,6 +341,17 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
 
         return result
     except Exception as e:
+        logger.warning("DXY primary fetch error: %s; trying proxies", e)
+        eu = _dxy_from_eurusd_proxy(timeframe)
+        if eu:
+            return eu
+        try:
+            from data_fetchers import fred_data
+            fr = fred_data.get_dxy_from_fred_trade_weighted(timeframe)
+            if fr and not fr.get("error"):
+                return fr
+        except Exception:
+            logger.exception("DXY FRED fallback after error")
         return {"error": f"DXY fetch error: {str(e)}", "timeframe": timeframe}
 
 
@@ -492,6 +555,35 @@ def get_btc_spot_yahoo(timeframe: str = "current") -> Dict:
         return {"error": f"BTC-USD fetch error: {str(e)}", "timeframe": timeframe}
 
 
+def get_btc_ma200_vol_from_yahoo() -> Dict:
+    """200D MA and 30D realized vol from Yahoo BTC-USD (CoinGecko OHLC fallback)."""
+    try:
+        ticker = yf.Ticker("BTC-USD")
+        hist = ticker.history(period="400d")
+        if hist.empty or len(hist) < 30:
+            return {"error": "Insufficient BTC-USD history for MA/vol"}
+        closes = hist["Close"].dropna().astype(float)
+        if len(closes) < 30:
+            return {"error": "Insufficient BTC closes"}
+        tail200 = closes.tail(200) if len(closes) >= 200 else closes
+        ma200 = float(tail200.mean())
+        recent = closes.tail(31).tolist()
+        realized_vol_30d = None
+        if len(recent) >= 2:
+            log_returns = [math.log(recent[i] / recent[i - 1]) for i in range(1, len(recent))]
+            mean_r = sum(log_returns) / len(log_returns)
+            variance = sum((r - mean_r) ** 2 for r in log_returns) / len(log_returns)
+            realized_vol_30d = round(math.sqrt(variance) * math.sqrt(365), 4)
+        return {
+            "ma200": round(ma200, 2),
+            "days_of_data": len(closes),
+            "realized_vol_30d": realized_vol_30d,
+            "_source": "yahoo_btc_usd",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def get_natural_gas_data(timeframe: str = "current") -> Dict:
     """Get Henry Hub Natural Gas futures price via yfinance (NG=F)."""
     try:
@@ -635,7 +727,13 @@ def get_dxy_structure(timeframe: str = "current") -> Dict:
             if not hist.empty:
                 break
         if hist is None or hist.empty or len(hist) < 20:
-            return {"structure": "unknown", "timeframe": timeframe}
+            t2 = yf.Ticker("EURUSD=X")
+            h2 = t2.history(period=period)
+            if not h2.empty and len(h2) >= 20:
+                hist = h2.copy()
+                hist["Close"] = -hist["Close"]
+            else:
+                return {"structure": "unknown", "timeframe": timeframe}
 
         closes = hist["Close"].dropna().values
         window = min(5, len(closes) // 4)

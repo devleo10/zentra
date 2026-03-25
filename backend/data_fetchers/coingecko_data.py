@@ -1,13 +1,54 @@
 """
 Fetch cryptocurrency data from CoinGecko API
 """
+import logging
 import math
 import requests
 from typing import Dict, Optional
 from datetime import datetime, timedelta
 
+logger = logging.getLogger("btc_macro.data_fetchers.coingecko")
 
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
+
+_CG_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; ZentraMacro/1.0)",
+    "Accept": "application/json",
+}
+
+
+def _cg_get(url: str, *, timeout: float = 15, params=None):
+    return requests.get(url, params=params, timeout=timeout, headers=_CG_HEADERS)
+
+
+def _snapshot_btc_dominance():
+    try:
+        from storage.db import get_latest_snapshots
+        rows = get_latest_snapshots(1)
+        if rows and rows[0].get("btc_dominance") is not None:
+            return float(rows[0]["btc_dominance"])
+    except Exception:
+        logger.debug("snapshot btc_dominance read failed", exc_info=True)
+    return None
+
+
+def _snapshot_stable_dom():
+    """Return (usdt_dom, usdc_dom, total_dom) from last snapshot if present."""
+    try:
+        from storage.db import get_latest_snapshots
+        rows = get_latest_snapshots(1)
+        if not rows:
+            return None
+        r = rows[0]
+        t = r.get("stablecoin_dominance")
+        if t is None:
+            return None
+        total = float(t)
+        half = round(total / 2.0, 2)
+        return half, half, total
+    except Exception:
+        logger.debug("snapshot stablecoin read failed", exc_info=True)
+    return None
 
 # Timeframe to days mapping for historical data
 TIMEFRAME_DAYS = {
@@ -29,7 +70,7 @@ def get_btc_price(timeframe: str = "current") -> Dict:
     }
     
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = _cg_get(url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         
@@ -70,7 +111,7 @@ def get_btc_historical(days: int = 30) -> Dict:
     }
     
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = _cg_get(url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         
@@ -155,51 +196,90 @@ def get_btc_spot_binance(timeframe: str = "current") -> Dict:
 
 
 def get_btc_dominance(timeframe: str = "current") -> Dict:
-    """Get Bitcoin market dominance"""
+    """Get Bitcoin market dominance (CoinGecko → snapshot → neutral estimate)."""
     url = f"{COINGECKO_BASE_URL}/global"
-    
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        market_cap_data = data.get("data", {}).get("market_cap_percentage", {})
-        btc_dominance = market_cap_data.get("btc", 0)
-        
+    today = datetime.now().strftime("%Y-%m-%d")
+    for timeout in (12, 22):
+        try:
+            response = _cg_get(url, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+            market_cap_data = data.get("data", {}).get("market_cap_percentage", {})
+            btc_dominance = market_cap_data.get("btc")
+            if btc_dominance is not None and float(btc_dominance) > 0:
+                return {
+                    "btc_dominance": round(float(btc_dominance), 2),
+                    "date": today,
+                    "timeframe": timeframe,
+                }
+        except Exception as e:
+            logger.warning("CoinGecko global (BTC dom) failed (timeout=%s): %s", timeout, e)
+    snap = _snapshot_btc_dominance()
+    if snap is not None:
+        logger.warning("BTC dominance: using last snapshot %.2f%%", snap)
         return {
-            "btc_dominance": round(btc_dominance, 2),
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "timeframe": timeframe
+            "btc_dominance": round(snap, 2),
+            "date": today,
+            "timeframe": timeframe,
+            "_fallback": True,
+            "source": "last_snapshot",
         }
-    except Exception as e:
-        return {"error": str(e), "timeframe": timeframe}
+    logger.warning("BTC dominance: using neutral estimate 52%%")
+    return {
+        "btc_dominance": 52.0,
+        "date": today,
+        "timeframe": timeframe,
+        "_fallback": True,
+        "source": "neutral_estimate",
+    }
 
 
 def get_stablecoin_data(timeframe: str = "current") -> Dict:
-    """Get stablecoin market cap data"""
+    """Stablecoin dominance from CoinGecko global → snapshot → neutral estimate."""
     url = f"{COINGECKO_BASE_URL}/global"
-    
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        market_cap_data = data.get("data", {}).get("market_cap_percentage", {})
-        
-        # Get USDT and USDC dominance
-        usdt_dom = market_cap_data.get("usdt", 0)
-        usdc_dom = market_cap_data.get("usdc", 0)
-        total_stable_dom = usdt_dom + usdc_dom
-        
+    today = datetime.now().strftime("%Y-%m-%d")
+    for timeout in (12, 22):
+        try:
+            response = _cg_get(url, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+            market_cap_data = data.get("data", {}).get("market_cap_percentage", {})
+            usdt_dom = float(market_cap_data.get("usdt") or 0)
+            usdc_dom = float(market_cap_data.get("usdc") or 0)
+            total_stable_dom = usdt_dom + usdc_dom
+            if total_stable_dom > 0:
+                return {
+                    "usdt_dominance": round(usdt_dom, 2),
+                    "usdc_dominance": round(usdc_dom, 2),
+                    "total_stablecoin_dominance": round(total_stable_dom, 2),
+                    "date": today,
+                    "timeframe": timeframe,
+                }
+        except Exception as e:
+            logger.warning("CoinGecko global (stables) failed (timeout=%s): %s", timeout, e)
+    snap = _snapshot_stable_dom()
+    if snap:
+        u, v, t = snap
+        logger.warning("Stablecoin dominance: using last snapshot total=%.2f%%", t)
         return {
-            "usdt_dominance": round(usdt_dom, 2),
-            "usdc_dominance": round(usdc_dom, 2),
-            "total_stablecoin_dominance": round(total_stable_dom, 2),
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "timeframe": timeframe
+            "usdt_dominance": u,
+            "usdc_dominance": v,
+            "total_stablecoin_dominance": round(t, 2),
+            "date": today,
+            "timeframe": timeframe,
+            "_fallback": True,
+            "source": "last_snapshot",
         }
-    except Exception as e:
-        return {"error": str(e), "timeframe": timeframe}
+    logger.warning("Stablecoin dominance: using neutral estimate")
+    return {
+        "usdt_dominance": 4.25,
+        "usdc_dominance": 4.25,
+        "total_stablecoin_dominance": 8.5,
+        "date": today,
+        "timeframe": timeframe,
+        "_fallback": True,
+        "source": "neutral_estimate",
+    }
 
 
 def get_eth_btc_ratio(timeframe: str = "current") -> Dict:
@@ -211,26 +291,46 @@ def get_eth_btc_ratio(timeframe: str = "current") -> Dict:
     }
     
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = _cg_get(url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         
         eth_price = data.get("ethereum", {}).get("usd", 0)
         btc_price = data.get("bitcoin", {}).get("usd", 0)
         
-        if btc_price > 0:
-            ratio = eth_price / btc_price
+        if btc_price and float(btc_price) > 0:
+            ratio = float(eth_price) / float(btc_price)
             return {
                 "eth_btc_ratio": round(ratio, 6),
                 "eth_price": eth_price,
                 "btc_price": btc_price,
                 "date": datetime.now().strftime("%Y-%m-%d"),
-                "timeframe": timeframe
+                "timeframe": timeframe,
             }
-        else:
-            return {"error": "Invalid price data", "timeframe": timeframe}
     except Exception as e:
-        return {"error": str(e), "timeframe": timeframe}
+        logger.warning("CoinGecko ETH/BTC ratio failed: %s", e)
+
+    try:
+        import yfinance as yf
+        eth = yf.Ticker("ETH-USD").history(period="5d")
+        btc = yf.Ticker("BTC-USD").history(period="5d")
+        if not eth.empty and not btc.empty:
+            ep = float(eth["Close"].iloc[-1])
+            bp = float(btc["Close"].iloc[-1])
+            if bp > 0:
+                return {
+                    "eth_btc_ratio": round(ep / bp, 6),
+                    "eth_price": round(ep, 2),
+                    "btc_price": round(bp, 2),
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "timeframe": timeframe,
+                    "_fallback": True,
+                    "source": "yahoo_eth_btc",
+                }
+    except Exception as e2:
+        logger.warning("Yahoo ETH/BTC fallback failed: %s", e2)
+
+    return {"error": "ETH/BTC ratio unavailable", "timeframe": timeframe}
 
 
 def get_btc_ohlcv_200d() -> Dict:
@@ -245,37 +345,49 @@ def get_btc_ohlcv_200d() -> Dict:
         "days": 200,
     }
     try:
-        response = requests.get(url, params=params, timeout=20)
+        response = _cg_get(url, params=params, timeout=22)
         response.raise_for_status()
         candles = response.json()
 
-        if not candles or len(candles) < 30:
-            return {"error": "Insufficient OHLCV data from CoinGecko"}
-
-        close_prices = [c[4] for c in candles]
-
-        # 200-day simple moving average of all available close prices
-        ma200 = sum(close_prices) / len(close_prices)
-
-        # 30-day annualized realized volatility from the most recent 31 closes
-        recent = close_prices[-31:] if len(close_prices) >= 31 else close_prices
-        realized_vol_30d = None
-        if len(recent) >= 2:
-            log_returns = [
-                math.log(recent[i] / recent[i - 1])
-                for i in range(1, len(recent))
-            ]
-            mean_r = sum(log_returns) / len(log_returns)
-            variance = sum((r - mean_r) ** 2 for r in log_returns) / len(log_returns)
-            realized_vol_30d = round(math.sqrt(variance) * math.sqrt(365), 4)
-
-        return {
-            "ma200": round(ma200, 2),
-            "days_of_data": len(close_prices),
-            "realized_vol_30d": realized_vol_30d,
-        }
+        if candles and len(candles) >= 30:
+            close_prices = [c[4] for c in candles]
+            ma200 = sum(close_prices) / len(close_prices)
+            recent = close_prices[-31:] if len(close_prices) >= 31 else close_prices
+            realized_vol_30d = None
+            if len(recent) >= 2:
+                log_returns = [
+                    math.log(recent[i] / recent[i - 1])
+                    for i in range(1, len(recent))
+                ]
+                mean_r = sum(log_returns) / len(log_returns)
+                variance = sum((r - mean_r) ** 2 for r in log_returns) / len(log_returns)
+                realized_vol_30d = round(math.sqrt(variance) * math.sqrt(365), 4)
+            return {
+                "ma200": round(ma200, 2),
+                "days_of_data": len(close_prices),
+                "realized_vol_30d": realized_vol_30d,
+            }
     except Exception as e:
-        return {"error": str(e)}
+        logger.warning("CoinGecko BTC OHLC failed: %s", e)
+
+    try:
+        from data_fetchers import yahoo_data
+        yb = yahoo_data.get_btc_ma200_vol_from_yahoo()
+        if yb and not yb.get("error"):
+            yb["_fallback"] = True
+            yb["source"] = "yahoo_btc_usd"
+            logger.warning("BTC MA200/vol: using Yahoo BTC-USD fallback")
+            return yb
+    except Exception as e:
+        logger.warning("Yahoo BTC MA/vol fallback failed: %s", e)
+
+    return {
+        "ma200": None,
+        "days_of_data": 0,
+        "realized_vol_30d": None,
+        "_fallback": True,
+        "source": "unavailable",
+    }
 
 
 def get_crypto_summary(timeframe: str = "current") -> Dict:
