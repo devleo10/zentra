@@ -190,6 +190,25 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     except Exception as e:
         logger.error(f"  BTC fetch FAILED: {e}")
         raw_data["btc"] = {"error": str(e)}
+
+    def _btc_payload_ok(btc: dict) -> bool:
+        if not btc or btc.get("error"):
+            return False
+        if btc.get("price_usd") in (None, 0, 0.0):
+            return False
+        if not btc.get("date"):
+            return False
+        return True
+
+    if not _btc_payload_ok(raw_data.get("btc") or {}):
+        logger.warning("  BTC: CoinGecko missing or invalid; trying Yahoo BTC-USD fallback")
+        yb = yahoo_data.get_btc_spot_yahoo(timeframe)
+        if _btc_payload_ok(yb):
+            raw_data["btc"] = yb
+            logger.info(f"  BTC (Yahoo): ${raw_data['btc'].get('price_usd', 'ERROR')}")
+        else:
+            logger.error(f"  BTC Yahoo fallback also failed: {yb}")
+            raw_data["btc"] = raw_data.get("btc") or yb or {"error": "btc_unavailable"}
     
     # Fed tone analysis — LLM-powered with keyword fallback
     try:

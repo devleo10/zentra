@@ -433,6 +433,65 @@ def get_gold_data(timeframe: str = "current") -> Dict:
         return {"error": f"Gold fetch error: {str(e)}", "timeframe": timeframe}
 
 
+def get_btc_spot_yahoo(timeframe: str = "current") -> Dict:
+    """Bitcoin spot via Yahoo BTC-USD.
+
+    Shape aligns with ``coingecko_data.get_btc_price`` (price_usd, change, date, …).
+    ``date`` uses *today* (like CoinGecko) so freshness checks stay valid when the
+    last daily bar is slightly behind wall clock (weekends).
+    """
+    try:
+        ticker = yf.Ticker("BTC-USD")
+        period = TIMEFRAME_PERIODS.get(timeframe, "3mo")
+        hist = ticker.history(period=period)
+        if hist.empty:
+            return {"error": "No BTC-USD history", "timeframe": timeframe}
+
+        if len(hist) > 1:
+            latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe)
+        else:
+            latest = hist.iloc[-1]
+            comparison = latest
+
+        price = float(latest["Close"])
+        cmp_price = float(comparison["Close"])
+        change_pct = ((price - cmp_price) / cmp_price) * 100 if cmp_price else 0.0
+
+        change_24h = 0.0
+        change_7d = 0.0
+        if len(hist) >= 2:
+            c0 = float(hist.iloc[-1]["Close"])
+            c1 = float(hist.iloc[-2]["Close"])
+            if c1:
+                change_24h = round(((c0 - c1) / c1) * 100, 2)
+        if len(hist) >= 6:
+            c0 = float(hist.iloc[-1]["Close"])
+            cold = float(hist.iloc[-6]["Close"])
+            if cold:
+                change_7d = round(((c0 - cold) / cold) * 100, 2)
+
+        if timeframe == "current":
+            eff_change = change_24h
+        elif timeframe == "week":
+            eff_change = change_7d if change_7d else round(change_pct, 2)
+        else:
+            eff_change = round(change_pct, 2)
+
+        return {
+            "price_usd": round(price, 2),
+            "change_24h": change_24h,
+            "change_7d": change_7d,
+            "change": eff_change,
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "bar_as_of": _safe_date_str(latest.name),
+            "timeframe": timeframe,
+            "_source": "yahoo_btc_usd",
+        }
+    except Exception as e:
+        logger.warning("Yahoo BTC-USD fetch failed: %s", e)
+        return {"error": f"BTC-USD fetch error: {str(e)}", "timeframe": timeframe}
+
+
 def get_natural_gas_data(timeframe: str = "current") -> Dict:
     """Get Henry Hub Natural Gas futures price via yfinance (NG=F)."""
     try:
