@@ -59,8 +59,10 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# CORS middleware — set CORS_ORIGINS env (comma-separated), e.g.
-# https://app.vercel.app,http://localhost:3000
+# CORS — browser dashboard on Vercel / localhost (no cookies on API calls).
+# CORS_ORIGINS: comma-separated exact origins, e.g. https://zentra01.vercel.app,http://localhost:3000
+# CORS_ORIGIN_REGEX: optional; matches extra origins (e.g. all Vercel previews):
+#   https://.*\.vercel\.app
 _cors_raw = os.getenv(
     "CORS_ORIGINS",
     "http://localhost:3000,http://localhost:3001",
@@ -68,12 +70,20 @@ _cors_raw = os.getenv(
 cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
 if not cors_origins:
     cors_origins = ["http://localhost:3000", "http://localhost:3001"]
+_cors_re = os.getenv("CORS_ORIGIN_REGEX", "").strip() or None
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_credentials=True,
+    allow_origin_regex=_cors_re,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    max_age=600,
+)
+logger.info(
+    "CORS: origins=%s regex=%s credentials=False",
+    cors_origins,
+    _cors_re or "(none)",
 )
 
 
