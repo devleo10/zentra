@@ -206,6 +206,21 @@ def _dxy_from_eurusd_proxy(timeframe: str) -> Optional[Dict]:
         return None
 
 
+def try_dxy_external_fallbacks(timeframe: str = "current") -> Optional[Dict]:
+    """Try EUR/USD proxy then FRED DTWEXBGS when primary DXY Yahoo path failed or is unusable."""
+    eu = _dxy_from_eurusd_proxy(timeframe)
+    if eu:
+        return eu
+    try:
+        from data_fetchers import fred_data
+        fr = fred_data.get_dxy_from_fred_trade_weighted(timeframe)
+        if fr and not fr.get("error"):
+            return fr
+    except Exception:
+        logger.exception("DXY FRED fallback in try_dxy_external_fallbacks")
+    return None
+
+
 def get_dxy_data(timeframe: str = "current") -> Dict:
     """Get US Dollar Index (DXY) data with timeframe support"""
     try:
@@ -280,6 +295,10 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
 
         current_price = float(latest["Close"])
         comparison_price = float(comparison["Close"])
+        if not math.isfinite(current_price) or current_price <= 0:
+            raise ValueError("invalid DXY close")
+        if not math.isfinite(comparison_price) or comparison_price <= 0:
+            raise ValueError("invalid DXY comparison close")
         change = ((current_price - comparison_price) / comparison_price) * 100 if comparison_price else 0.0
 
         # Log source and value for auditing

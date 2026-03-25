@@ -75,6 +75,8 @@ export interface V2AnalysisResult {
   dxy_change_label?: string | null
   dxy_change_unit?: "percent" | "points" | null
   dxy_trend: string | null
+  /** Yahoo symbol, EURUSD proxy, FRED_DTWEXBGS, last_snapshot, etc. */
+  dxy_source?: string | null
   vix: number | null
   ten_year_yield: number | null
   ten_year_yield_trend: string | null

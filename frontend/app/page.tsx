@@ -70,6 +70,12 @@ function formatMarketChange(
   return `${value > 0 ? "+" : ""}${value.toFixed(digits)}${suffix}${label ? ` ${label}` : ""}`
 }
 
+function dxyDeltaForDisplay(r: V2AnalysisResult): number | null {
+  if (r.dxy_change != null) return r.dxy_change
+  if (r.dxy_change_7d != null) return r.dxy_change_7d
+  return null
+}
+
 /* ── Skeleton helpers ──────────────────────────────────────────────── */
 
 function SkeletonPulse({ className = "", style }: { className?: string; style?: React.CSSProperties }) {
@@ -474,17 +480,37 @@ export default function Home() {
               {/* ── Col 2: Metrics grid ── */}
               <div className="space-y-3 sm:space-y-4">
                 <div className="grid grid-cols-2 gap-1.5 sm:gap-2 text-xs sm:text-sm">
-              {result.dxy_value != null && (
-                <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300" title="US Dollar Index">
-                  DXY <span className="text-white font-medium">{result.dxy_value.toFixed(2)}</span>
-                  {result.dxy_change_7d != null && (
-                    <>
-                      <span className={result.dxy_change_7d > 0.05 ? "text-green-400" : result.dxy_change_7d < -0.05 ? "text-red-400" : "text-gray-500"}>
-                        {" "}({formatMarketChange(result.dxy_change ?? result.dxy_change_7d, result.dxy_change_unit, result.dxy_change_label)})
-                      </span>
-                      <span className="ml-0.5"><DeltaArrow delta={result.dxy_change_7d} eps={0.05} /></span>
-                    </>
-                  )}
+              {(result.dxy_value != null || result.dxy_change != null || result.dxy_change_7d != null) && (
+                <span
+                  className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300"
+                  title={
+                    result.dxy_source === "EURUSD=X_proxy"
+                      ? "USD strength proxy from EUR/USD (fallback)"
+                      : result.dxy_source === "FRED_DTWEXBGS"
+                        ? "Broad trade-weighted USD (FRED DTWEXBGS); level scaled to approximate DXY"
+                        : result.dxy_source === "last_snapshot"
+                          ? "Last saved snapshot (stale fallback)"
+                          : result.dxy_source
+                            ? `Source: ${result.dxy_source}`
+                            : "US Dollar Index (DXY)"
+                  }
+                >
+                  DXY{" "}
+                  <span className="text-white font-medium">
+                    {result.dxy_value != null ? result.dxy_value.toFixed(2) : "—"}
+                  </span>
+                  {(() => {
+                    const dxyDelta = dxyDeltaForDisplay(result)
+                    if (dxyDelta == null) return null
+                    return (
+                      <>
+                        <span className={dxyDelta > 0.05 ? "text-green-400" : dxyDelta < -0.05 ? "text-red-400" : "text-gray-500"}>
+                          {" "}({formatMarketChange(dxyDelta, result.dxy_change_unit, result.dxy_change_label)})
+                        </span>
+                        <span className="ml-0.5"><DeltaArrow delta={dxyDelta} eps={0.05} /></span>
+                      </>
+                    )
+                  })()}
                 </span>
               )}
               {result.oil_price != null && (

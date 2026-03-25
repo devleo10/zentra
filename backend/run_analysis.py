@@ -96,6 +96,52 @@ def _config_hash() -> str:
     return hashlib.sha256(content).hexdigest()[:16]
 
 
+def _dxy_needs_repair(dxy: dict) -> bool:
+    """True when primary DXY payload is missing a usable level (UI/API hide the metric)."""
+    if not dxy:
+        return True
+    if dxy.get("error"):
+        return True
+    cp = dxy.get("current_price")
+    if cp is None:
+        return True
+    try:
+        f = float(cp)
+        if not math.isfinite(f) or f <= 0:
+            return True
+    except (TypeError, ValueError):
+        return True
+    return False
+
+
+def _dxy_api_fields(dxy_blob: dict):
+    """Snapshot/API dxy_value and dxy_change; avoid emitting 0% change when the fetch actually failed."""
+    if not dxy_blob:
+        return None, None
+    err = dxy_blob.get("error")
+    val = None
+    chg = None
+    try:
+        cp = dxy_blob.get("current_price")
+        if cp is not None:
+            f = float(cp)
+            if math.isfinite(f) and f > 0:
+                val = f
+    except (TypeError, ValueError):
+        pass
+    try:
+        c = dxy_blob.get("change")
+        if c is not None:
+            f = float(c)
+            if math.isfinite(f):
+                chg = f
+    except (TypeError, ValueError):
+        pass
+    if err and val is None:
+        chg = None
+    return val, chg
+
+
 def run_analysis(timeframe: str = "current", fresh: bool = False):
     """
     Execute the full analysis pipeline with timeframe support.
@@ -155,7 +201,13 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         logger.info(f"  DXY: {raw_data['dxy'].get('current_price', 'ERROR')}")
     except Exception as e:
         logger.error(f"  DXY fetch FAILED: {e}")
-        raw_data["dxy"] = {"error": str(e)}
+        raw_data["dxy"] = {"error": str(e), "timeframe": timeframe}
+
+    if _dxy_needs_repair(raw_data.get("dxy") or {}):
+        fb = yahoo_data.try_dxy_external_fallbacks(timeframe)
+        if fb:
+            raw_data["dxy"] = fb
+            logger.info("  DXY: repaired via EURUSD/FRED fallbacks")
     
     try:
         raw_data["vix"] = yahoo_data.get_vix_data(timeframe)
@@ -423,8 +475,22 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     m2_trend = raw_data.get("m2", {}).get("m2_trend", "stable")
     liquidity_score, liquidity_reasoning = score_liquidity(yield_10y, yield_curve, bs_trend, m2_trend)
     
-    dxy_change = raw_data["dxy"].get("change", 0)
-    dxy_level = raw_data["dxy"].get("current_price")  # Absolute DXY value (e.g. 104.2)
+    dxy_blob = raw_data["dxy"]
+    _dc = dxy_blob.get("change")
+    try:
+        dxy_change = float(_dc) if _dc is not None else 0.0
+        if not math.isfinite(dxy_change):
+            dxy_change = 0.0
+    except (TypeError, ValueError):
+        dxy_change = 0.0
+    dxy_level = dxy_blob.get("current_price")
+    try:
+        if dxy_level is not None:
+            dxy_level = float(dxy_level)
+            if not math.isfinite(dxy_level):
+                dxy_level = None
+    except (TypeError, ValueError):
+        dxy_level = None
     dxy_score, dxy_reasoning = score_dxy(dxy_change, dxy_level)
     
     vix_val = raw_data["vix"].get("current_value")
@@ -656,6 +722,8 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
             "matched_dovish": matched.get("dovish", []),
         })
 
+    dxy_api_val, dxy_api_chg = _dxy_api_fields(raw_data["dxy"])
+
     snapshot = {
         "timestamp": timestamp,
         "timeframe": timeframe,
@@ -673,12 +741,13 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "oil_change_unit": raw_data.get("oil", {}).get("change_unit"),
         "oil_price": raw_data.get("oil", {}).get("current_price"),
         "oil_trend": raw_data.get("oil", {}).get("trend"),
-        "dxy_value": raw_data["dxy"].get("current_price"),
-        "dxy_change": dxy_change,
-        "dxy_change_7d": dxy_change,
+        "dxy_value": dxy_api_val,
+        "dxy_change": dxy_api_chg,
+        "dxy_change_7d": dxy_api_chg,
         "dxy_change_label": raw_data["dxy"].get("change_label"),
         "dxy_change_unit": raw_data["dxy"].get("change_unit"),
         "dxy_trend": raw_data["dxy"].get("trend"),
+        "dxy_source": raw_data["dxy"].get("source"),
         "vix": vix_val,
         "vix_change": raw_data["vix"].get("change"),
         "vix_change_label": raw_data["vix"].get("change_label"),
