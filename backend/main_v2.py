@@ -516,6 +516,7 @@ async def health_check():
 @app.get("/api/keepalive")
 async def keepalive():
     """Lightweight endpoint for external uptime pingers (e.g., Render cron/UptimeRobot)."""
+    logger.info("Keepalive ping received")
     return {
         "status": "ok",
         "timestamp": datetime.now().isoformat(),
