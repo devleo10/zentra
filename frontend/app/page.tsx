@@ -56,8 +56,8 @@ function keywordsFoundInHeadlines(headlines: Array<{ title: string }>): { hawkis
   return { hawkish: [...new Set(hawkish)], dovish: [...new Set(dovish)] }
 }
 
-const getBiasStyle = (bias: string) => {
-  const b = bias.toLowerCase()
+const getBiasStyle = (bias: string | null | undefined) => {
+  const b = (bias ?? "").toLowerCase()
   if (b.includes("strong bull")) return "bg-green-500 text-white"
   if (b.includes("bull"))        return "bg-green-400 text-white"
   if (b.includes("bear") || b.includes("high risk")) return "bg-red-500 text-white"
@@ -929,7 +929,7 @@ export default function Home() {
                             {hl.event_bias}
                           </span>
                           <span className="text-gray-300 leading-snug min-w-0 flex-1" title={hl.title}>{hl.title}</span>
-                          {hl.source?.toLowerCase().includes("reuters") && (
+                          {(hl.source ?? "").toLowerCase().includes("reuters") && (
                             <span className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase bg-amber-500/20 text-amber-400 border border-amber-500/40" title="Reuters">Reuters</span>
                           )}
                           {hl.source && (

@@ -8,8 +8,8 @@ interface VerdictPanelProps {
 }
 
 export function VerdictPanel({ verdict }: VerdictPanelProps) {
-  const getBiasColor = (bias: string) => {
-    const biasLower = bias.toLowerCase()
+  const getBiasColor = (bias: string | null | undefined) => {
+    const biasLower = (bias ?? "").toLowerCase()
     if (biasLower.includes("bull")) return "bg-green-500"
     if (biasLower.includes("bear")) return "bg-red-500"
     if (biasLower.includes("neutral")) return "bg-yellow-400"

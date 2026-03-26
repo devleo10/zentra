@@ -56,8 +56,8 @@ const TIMEFRAMES = [
   { key: 'year', label: '1 Year', description: 'Annual perspective' }
 ];
 
-const getBiasColor = (bias: string): string => {
-  const lowerBias = bias.toLowerCase();
+const getBiasColor = (bias: string | null | undefined): string => {
+  const lowerBias = (bias ?? '').toLowerCase();
   if (lowerBias.includes('strong bull')) return 'bg-green-600';
   if (lowerBias.includes('bullish')) return 'bg-green-500';
   if (lowerBias.includes('neutral')) return 'bg-gray-500';
@@ -198,7 +198,7 @@ export default function TimeframeAnalysis() {
             </div>
           ) : (
             <div className="text-center text-muted-foreground py-8">
-              Click "Analyze" to run {tfConfig?.label.toLowerCase()} analysis
+              Click "Analyze" to run {(tfConfig?.label ?? 'timeframe').toLowerCase()} analysis
             </div>
           )}
         </CardContent>
