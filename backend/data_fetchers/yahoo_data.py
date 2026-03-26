@@ -13,7 +13,7 @@ import time
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 import json
 from pathlib import Path
 
@@ -153,6 +153,52 @@ def _mtd_comparison_row(hist: pd.DataFrame) -> pd.Series:
     return first_bar
 
 
+def _dxy_rolling_1m_fields(hist: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    """Rolling ~1 calendar month % change (latest vs last bar on/before latest−1M).
+
+    Aligns with common '1M' chart windows (TradingView-style rolling month),
+    distinct from MTD (first session of current month).
+    """
+    h = _normalize_hist_index(hist)
+    if len(h) < 2:
+        return None
+    try:
+        latest, comparison = _latest_and_comparison_rows(h, 1, months_offset=1)
+        cp = float(latest["Close"])
+        op = float(comparison["Close"])
+        if not math.isfinite(cp) or not math.isfinite(op) or op <= 0:
+            return None
+        chg = ((cp - op) / op) * 100.0
+        return {
+            "change_rolling_1m": round(chg, 2),
+            "change_rolling_1m_label": "1M",
+            "comparison_date_rolling_1m": _safe_date_str(comparison.name),
+        }
+    except Exception:
+        return None
+
+
+def _dxy_rolling_1m_fields_eurusd_proxy(hist: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    """Same window as _dxy_rolling_1m_fields but DXY-strength proxy = inverted EUR/USD % move."""
+    h = _normalize_hist_index(hist)
+    if len(h) < 2:
+        return None
+    try:
+        latest, comparison = _latest_and_comparison_rows(h, 1, months_offset=1)
+        e0 = float(latest["Close"])
+        e1 = float(comparison["Close"])
+        if not e1 or not math.isfinite(e0) or not math.isfinite(e1):
+            return None
+        dxy_chg = -(((e0 - e1) / e1) * 100.0)
+        return {
+            "change_rolling_1m": round(dxy_chg, 2),
+            "change_rolling_1m_label": "1M",
+            "comparison_date_rolling_1m": _safe_date_str(comparison.name),
+        }
+    except Exception:
+        return None
+
+
 def _latest_and_comparison_for_timeframe(
     hist: pd.DataFrame, timeframe: str, *, default_days: int = 7
 ) -> Tuple[pd.Series, pd.Series]:
@@ -189,7 +235,7 @@ def _dxy_from_eurusd_proxy(timeframe: str) -> Optional[Dict]:
         eur_change_pct = ((e0 - e1) / e1) * 100.0
         dxy_change_proxy = -eur_change_pct
         level_proxy = max(85.0, min(115.0, 100.0 + (1.085 - e0) * 85.0))
-        return {
+        out = {
             "current_price": round(level_proxy, 2),
             "date": _safe_date_str(latest.name),
             "data_as_of": _safe_date_str(latest.name),
@@ -202,6 +248,10 @@ def _dxy_from_eurusd_proxy(timeframe: str) -> Optional[Dict]:
             "source": "EURUSD=X_proxy",
             "_fallback": True,
         }
+        roll = _dxy_rolling_1m_fields_eurusd_proxy(hist)
+        if roll:
+            out.update(roll)
+        return out
     except Exception as e:
         logger.debug("EURUSD DXY proxy failed: %s", e)
         return None
@@ -371,6 +421,9 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
             "source": symbol,
             "_validation": validation,
         }
+        roll = _dxy_rolling_1m_fields(hist)
+        if roll:
+            result.update(roll)
 
         # If validation failed, mark suspect but keep the primary value.
         # Do NOT replace the DXY value with DTWEXBGS — that is a different index

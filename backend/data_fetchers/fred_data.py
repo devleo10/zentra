@@ -1040,7 +1040,7 @@ def get_dxy_from_fred_trade_weighted(timeframe: str = "current") -> Dict:
         x = row["date"]
         return x.strftime("%Y-%m-%d") if hasattr(x, "strftime") else str(x)[:10]
 
-    return {
+    out = {
         "current_price": round(level, 2),
         "date": _ds(latest),
         "data_as_of": _ds(latest),
@@ -1054,6 +1054,20 @@ def get_dxy_from_fred_trade_weighted(timeframe: str = "current") -> Dict:
         "_fallback": True,
         "_note": "Broad trade-weighted USD; level scaled to approximate DXY",
     }
+
+    # Rolling ~1 calendar month on the same series (TradingView-style 1M vs MTD).
+    cutoff_1m = latest_dt - pd.DateOffset(months=1)
+    past_1m = d[pd.to_datetime(d["date"]).dt.normalize() <= cutoff_1m]
+    if not past_1m.empty and tw_latest:
+        comp_1m = past_1m.iloc[-1]
+        tw_1m = float(comp_1m["value"])
+        if tw_1m:
+            chg_r = ((tw_latest - tw_1m) / tw_1m) * 100.0
+            out["change_rolling_1m"] = round(chg_r, 2)
+            out["change_rolling_1m_label"] = "1M"
+            out["comparison_date_rolling_1m"] = _ds(comp_1m)
+
+    return out
 
 
 def get_pmi_data(timeframe: str = "current") -> Dict:

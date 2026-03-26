@@ -86,6 +86,10 @@ export interface V2AnalysisResult {
   dxy_change_7d: number | null
   dxy_change_label?: string | null
   dxy_change_unit?: "percent" | "points" | null
+  /** Rolling ~1 calendar month % (TradingView-style), when provided by the fetcher */
+  dxy_change_rolling_1m?: number | null
+  dxy_change_rolling_1m_label?: string | null
+  dxy_comparison_date_rolling_1m?: string | null
   dxy_trend: string | null
   /** Yahoo symbol, EURUSD proxy, FRED_DTWEXBGS, last_snapshot, etc. */
   dxy_source?: string | null

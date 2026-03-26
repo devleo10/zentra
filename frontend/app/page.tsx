@@ -507,7 +507,10 @@ export default function Home() {
               {/* ── Col 2: Metrics grid ── */}
               <div className="space-y-3 sm:space-y-4">
                 <div className="grid grid-cols-2 gap-1.5 sm:gap-2 text-xs sm:text-sm">
-              {(result.dxy_value != null || result.dxy_change != null || result.dxy_change_7d != null) && (
+              {(result.dxy_value != null ||
+                result.dxy_change != null ||
+                result.dxy_change_7d != null ||
+                result.dxy_change_rolling_1m != null) && (
                 <span
                   className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300"
                   title={
@@ -528,13 +531,34 @@ export default function Home() {
                   </span>
                   {(() => {
                     const dxyDelta = dxyDeltaForDisplay(result)
-                    if (dxyDelta == null) return null
+                    const roll = result.dxy_change_rolling_1m
+                    const rollLabel = result.dxy_change_rolling_1m_label ?? "1M"
+                    const rollAsOf = result.dxy_comparison_date_rolling_1m
+                    if (dxyDelta == null && roll == null) return null
                     return (
                       <>
-                        <span className={dxyDelta > 0.05 ? "text-green-400" : dxyDelta < -0.05 ? "text-red-400" : "text-gray-500"}>
-                          {" "}({formatMarketChange(dxyDelta, result.dxy_change_unit, result.dxy_change_label)})
-                        </span>
-                        <span className="ml-0.5"><DeltaArrow delta={dxyDelta} eps={0.05} /></span>
+                        {dxyDelta != null && (
+                          <>
+                            <span className={dxyDelta > 0.05 ? "text-green-400" : dxyDelta < -0.05 ? "text-red-400" : "text-gray-500"}>
+                              {" "}({formatMarketChange(dxyDelta, result.dxy_change_unit, result.dxy_change_label)})
+                            </span>
+                            <span className="ml-0.5"><DeltaArrow delta={dxyDelta} eps={0.05} /></span>
+                          </>
+                        )}
+                        {roll != null && (
+                          <span
+                            className={roll > 0.05 ? "text-green-400/90" : roll < -0.05 ? "text-red-400/90" : "text-gray-500"}
+                            title={
+                              rollAsOf
+                                ? `Rolling ~1 month vs ${rollAsOf} (calendar-month window; compare to TradingView 1M)`
+                                : "Rolling ~1 calendar month % change (TradingView-style 1M window)"
+                            }
+                          >
+                            {dxyDelta != null ? " · " : " ("}
+                            {formatMarketChange(roll, result.dxy_change_unit ?? "percent", rollLabel)}
+                            {dxyDelta == null ? ")" : ""}
+                          </span>
+                        )}
                       </>
                     )
                   })()}
