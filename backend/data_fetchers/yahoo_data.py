@@ -179,7 +179,10 @@ def _dxy_rolling_1m_fields(hist: pd.DataFrame) -> Optional[Dict[str, Any]]:
 
 
 def _dxy_rolling_1m_fields_eurusd_proxy(hist: pd.DataFrame) -> Optional[Dict[str, Any]]:
-    """Same window as _dxy_rolling_1m_fields but DXY-strength proxy = inverted EUR/USD % move."""
+    """Same window as _dxy_rolling_1m_fields using EURUSD-derived proxy level math.
+
+    Compute percentage from proxy levels directly so displayed level and change are consistent.
+    """
     h = _normalize_hist_index(hist)
     if len(h) < 2:
         return None
@@ -187,9 +190,13 @@ def _dxy_rolling_1m_fields_eurusd_proxy(hist: pd.DataFrame) -> Optional[Dict[str
         latest, comparison = _latest_and_comparison_rows(h, 1, months_offset=1)
         e0 = float(latest["Close"])
         e1 = float(comparison["Close"])
-        if not e1 or not math.isfinite(e0) or not math.isfinite(e1):
+        if not math.isfinite(e0) or not math.isfinite(e1):
             return None
-        dxy_chg = -(((e0 - e1) / e1) * 100.0)
+        level_latest = max(85.0, min(115.0, 100.0 + (1.085 - e0) * 85.0))
+        level_comparison = max(85.0, min(115.0, 100.0 + (1.085 - e1) * 85.0))
+        if not math.isfinite(level_comparison) or level_comparison <= 0:
+            return None
+        dxy_chg = ((level_latest - level_comparison) / level_comparison) * 100.0
         return {
             "change_rolling_1m": round(dxy_chg, 2),
             "change_rolling_1m_label": "1M",
@@ -227,11 +234,13 @@ def _dxy_from_eurusd_proxy(timeframe: str) -> Optional[Dict]:
             comparison = latest
         e0 = float(latest["Close"])
         e1 = float(comparison["Close"])
-        if not e1:
+        if not math.isfinite(e0) or not math.isfinite(e1):
             return None
-        eur_change_pct = ((e0 - e1) / e1) * 100.0
-        dxy_change_proxy = -eur_change_pct
         level_proxy = max(85.0, min(115.0, 100.0 + (1.085 - e0) * 85.0))
+        level_proxy_comparison = max(85.0, min(115.0, 100.0 + (1.085 - e1) * 85.0))
+        if not math.isfinite(level_proxy_comparison) or level_proxy_comparison <= 0:
+            return None
+        dxy_change_proxy = ((level_proxy - level_proxy_comparison) / level_proxy_comparison) * 100.0
         out = {
             "current_price": round(level_proxy, 2),
             "date": _safe_date_str(latest.name),
@@ -623,9 +632,9 @@ def get_btc_spot_yahoo(timeframe: str = "current") -> Dict:
             c1 = float(hist.iloc[-2]["Close"])
             if c1:
                 change_24h = round(((c0 - c1) / c1) * 100, 2)
-        if len(hist) >= 6:
+        if len(hist) >= 8:
             c0 = float(hist.iloc[-1]["Close"])
-            cold = float(hist.iloc[-6]["Close"])
+            cold = float(hist.iloc[-8]["Close"])
             if cold:
                 change_7d = round(((c0 - cold) / cold) * 100, 2)
 
@@ -692,7 +701,34 @@ def get_natural_gas_data(timeframe: str = "current") -> Dict:
         else:
             return {"error": "No natural gas tickers available", "timeframe": timeframe}
 
-        if len(hist) > 1:
+        # For 1D/current view, use live intraday vs prior session close when possible.
+        # This aligns more closely with TradingView's default daily % change semantics.
+        if timeframe == "current":
+            try:
+                intraday = ticker.history(period="2d", interval="60m")
+                if intraday is not None and not intraday.empty:
+                    h = _normalize_hist_index(intraday)
+                    latest = h.iloc[-1]
+                    latest_day = h.index[-1].normalize()
+                    prev_session = h[h.index.normalize() < latest_day]
+                    if not prev_session.empty:
+                        comparison = prev_session.iloc[-1]
+                    elif len(h) > 1:
+                        comparison = h.iloc[-2]
+                    else:
+                        comparison = latest
+                elif len(hist) > 1:
+                    latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe)
+                else:
+                    latest = hist.iloc[-1]
+                    comparison = latest
+            except Exception:
+                if len(hist) > 1:
+                    latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe)
+                else:
+                    latest = hist.iloc[-1]
+                    comparison = latest
+        elif len(hist) > 1:
             latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe)
         else:
             latest = hist.iloc[-1]

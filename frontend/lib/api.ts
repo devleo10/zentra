@@ -206,6 +206,14 @@ export interface V2AnalysisResponse {
   meta: V2AnalysisMeta
 }
 
+export interface V2AnalysisProgress {
+  phase: "starting" | "polling" | "retrying"
+  message: string
+  nextRetryInSeconds: number
+  elapsedSeconds: number
+  maxWaitSeconds: number
+}
+
 // ── v2 API Calls ─────────────────────────────────────────────────────────
 
 async function _fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
@@ -250,6 +258,24 @@ function _parseApiError(response: Response, body: any): ApiError {
 }
 
 const _FETCH_TIMEOUT_MS = 180_000
+const _ANALYSIS_POLL_MAX_WAIT_MS = 300_000
+const _ANALYSIS_POLL_MIN_DELAY_MS = 2_000
+const _ANALYSIS_POLL_MAX_DELAY_MS = 12_000
+
+function _sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function _retryDelayMs(response: Response, body: any): number {
+  const fromHeader = Number(response.headers.get("Retry-After"))
+  const fromBody = Number(body?.retry_after_seconds)
+  const seconds =
+    (Number.isFinite(fromBody) && fromBody > 0 ? fromBody : NaN)
+      || (Number.isFinite(fromHeader) && fromHeader > 0 ? fromHeader : NaN)
+      || 4
+  const ms = seconds * 1_000
+  return Math.max(_ANALYSIS_POLL_MIN_DELAY_MS, Math.min(_ANALYSIS_POLL_MAX_DELAY_MS, ms))
+}
 
 function _readAnalysisMeta(response: Response): V2AnalysisMeta {
   const cacheStatus = response.headers.get("X-Analysis-Cache")
@@ -265,36 +291,104 @@ function _readAnalysisMeta(response: Response): V2AnalysisMeta {
   }
 }
 
-export async function runV2Analysis(timeframe: TimeFrame = "current"): Promise<V2AnalysisResponse> {
-  const url = `${API_BASE_URL}/api/v2/analyze/${timeframe}`
+export async function runV2Analysis(
+  timeframe: TimeFrame = "current",
+  onProgress?: (progress: V2AnalysisProgress) => void,
+): Promise<V2AnalysisResponse> {
+  const pollUrl = `${API_BASE_URL}/api/v2/analyze/${timeframe}`
+  const kickoffUrl = `${pollUrl}?fresh=true`
+  const startedAt = Date.now()
+  const maxWaitSeconds = Math.floor(_ANALYSIS_POLL_MAX_WAIT_MS / 1000)
 
-  // First attempt — normal call (may get cache/snapshot hit or kick off analysis).
-  let response: Response
+  const emitProgress = (phase: V2AnalysisProgress["phase"], message: string, waitMs: number) => {
+    if (!onProgress) return
+    onProgress({
+      phase,
+      message,
+      nextRetryInSeconds: Math.max(1, Math.ceil(waitMs / 1000)),
+      elapsedSeconds: Math.max(0, Math.floor((Date.now() - startedAt) / 1000)),
+      maxWaitSeconds,
+    })
+  }
+
+  // Kick off a fresh run first.
+  // This endpoint now returns 202 while work is in progress.
   try {
-    response = await _fetchWithTimeout(url, _FETCH_TIMEOUT_MS)
-  } catch (err: any) {
-    // Network / timeout / abort — the backend may still be running.
-    // Wait a moment then retry; if a snapshot was saved we get it back quickly.
-    await new Promise(r => setTimeout(r, 5_000))
-    try {
-      response = await _fetchWithTimeout(url, _FETCH_TIMEOUT_MS)
-    } catch {
-      throw new Error(
-        err?.name === "AbortError"
-          ? "Analysis timed out — the backend is still processing. Try again in a few seconds."
-          : "Network error — could not reach the server. It may be waking up from sleep; retry in ~30s."
+    const kickoff = await _fetchWithTimeout(kickoffUrl, _FETCH_TIMEOUT_MS)
+    if (kickoff.status === 429) {
+      let body: any = null
+      try { body = await kickoff.json() } catch { /* ignore */ }
+      const waitMs = _retryDelayMs(kickoff, body)
+      emitProgress(
+        "retrying",
+        "Server is busy due to rate limits. Retrying automatically.",
+        waitMs,
       )
+      await _sleep(waitMs)
     }
+    if (kickoff.ok && kickoff.status !== 202) {
+      const data = await kickoff.json()
+      if (data?.status !== "in_progress") {
+        return { data, meta: _readAnalysisMeta(kickoff) }
+      }
+    }
+    emitProgress("starting", "Analysis started on backend.", 4_000)
+  } catch {
+    // Backend may still be waking up; polling loop below handles recovery.
+    emitProgress("retrying", "Backend waking up... retrying shortly.", 5_000)
   }
 
-  if (!response.ok) {
-    let body: any
-    try { body = await response.json() } catch { body = await response.text() }
-    throw _parseApiError(response, body)
+  while (Date.now() - startedAt < _ANALYSIS_POLL_MAX_WAIT_MS) {
+    let response: Response
+    try {
+      response = await _fetchWithTimeout(pollUrl, _FETCH_TIMEOUT_MS)
+    } catch (err: any) {
+      // Network / timeout / abort — backend may still be running (cold start / in-progress).
+      emitProgress("retrying", "Waiting for backend response...", 5_000)
+      await _sleep(5_000)
+      continue
+    }
+
+    if (response.status === 202) {
+      let body: any = null
+      try { body = await response.json() } catch { /* ignore */ }
+      const waitMs = _retryDelayMs(response, body)
+      emitProgress("polling", body?.message || "Analysis is still running on backend.", waitMs)
+      await _sleep(waitMs)
+      continue
+    }
+
+    if (response.status === 429) {
+      let body: any = null
+      try { body = await response.json() } catch { /* ignore */ }
+      const waitMs = _retryDelayMs(response, body)
+      const bodyMessage = typeof body?.message === "string" ? body.message : ""
+      const message = body?.error === "analysis_already_running"
+        ? (bodyMessage || "Analysis is already running. Waiting for completion.")
+        : (bodyMessage || "Server is busy due to rate limits. Retrying automatically.")
+      emitProgress("retrying", message, waitMs)
+      await _sleep(waitMs)
+      continue
+    }
+
+    if (!response.ok) {
+      let body: any
+      try { body = await response.json() } catch { body = await response.text() }
+      throw _parseApiError(response, body)
+    }
+
+    const data = await response.json()
+    // Defensive guard: if backend unexpectedly returns an in-progress payload with 200.
+    if (data?.status === "in_progress") {
+      const waitMs = _retryDelayMs(response, data)
+      emitProgress("polling", data?.message || "Analysis in progress.", waitMs)
+      await _sleep(waitMs)
+      continue
+    }
+    return { data, meta: _readAnalysisMeta(response) }
   }
 
-  const data = await response.json()
-  return { data, meta: _readAnalysisMeta(response) }
+  throw new Error("Analysis is still running. Please retry in a few seconds.")
 }
 
 export async function pingKeepAlive(): Promise<void> {

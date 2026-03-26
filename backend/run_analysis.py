@@ -77,6 +77,14 @@ MONETARY_EXPLICIT_CONFIDENCE_BOOST_TYPES = frozenset(
 )
 
 
+def _safe_log_text(text: str) -> str:
+    """Return text that is safe to emit on non-UTF8 consoles (e.g., Windows cp1252)."""
+    if text is None:
+        return ""
+    # ASCII with replacement is universally safe for console/file handlers.
+    return str(text).encode("ascii", errors="replace").decode("ascii")
+
+
 def _compute_geopolitics_risk(classified_headlines: list) -> str:
     """Derive geopolitics risk level from classified headlines."""
     geo_count = 0
@@ -685,7 +693,7 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     # ── REPORT: Generate market news report for auditability ───────────
     try:
         report_text, report_meta = generate_market_report(classified)
-        logger.info("Market report generated:\n%s", report_text)
+        logger.info("Market report generated:\n%s", _safe_log_text(report_text))
     except Exception as e:
         logger.warning(f"Failed to generate market report: {e}")
         report_text = ""

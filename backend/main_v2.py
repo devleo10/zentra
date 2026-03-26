@@ -114,6 +114,24 @@ def _analyze_with_guard(timeframe: str, fresh: bool = False) -> JSONResponse:
     now = time.time()
     with _analysis_lock:
         state = _analysis_state[timeframe]
+        already_running = state.get("in_progress", False)
+
+        # Complete-only mode: while analysis is running, never emit stale/partial data.
+        if already_running:
+            retry_after = _ANALYSIS_RUNNING_RETRY_AFTER_SECONDS
+            detail = {
+                "status": "in_progress",
+                "error": "analysis_already_running",
+                "message": f"Analysis for timeframe={timeframe} is already in progress.",
+                "retry_after_seconds": retry_after,
+                "timeframe": timeframe,
+            }
+            return JSONResponse(
+                content=detail,
+                status_code=202,
+                headers={"Retry-After": str(retry_after), "X-Refresh-Status": "in_progress"},
+            )
+
         last_completed = state.get("last_completed_at")
         cache_age = _cache_age_seconds(last_completed)
         if (
@@ -138,27 +156,6 @@ def _analyze_with_guard(timeframe: str, fresh: bool = False) -> JSONResponse:
                 }
                 return JSONResponse(content=persisted, status_code=200, headers=headers)
 
-        already_running = state.get("in_progress", False)
-
-        if already_running:
-            if not fresh:
-                persisted = _latest_snapshot_for_timeframe(timeframe)
-                if persisted:
-                    headers = {"X-Analysis-Cache": "SNAPSHOT_STALE"}
-                    return JSONResponse(content=persisted, status_code=200, headers=headers)
-            retry_after = _ANALYSIS_RUNNING_RETRY_AFTER_SECONDS
-            detail = {
-                "error": "analysis_already_running",
-                "message": f"Analysis for timeframe={timeframe} is already in progress.",
-                "retry_after_seconds": retry_after,
-                "timeframe": timeframe,
-            }
-            return JSONResponse(
-                content=detail,
-                status_code=429,
-                headers={"Retry-After": str(retry_after)},
-            )
-
         # Mark in-progress *before* checking for a stale snapshot to return
         state["in_progress"] = True
         state["started_at"] = now
@@ -171,29 +168,17 @@ def _analyze_with_guard(timeframe: str, fresh: bool = False) -> JSONResponse:
     )
     thread.start()
 
-    # Return the best available data immediately while the background run proceeds.
-    persisted = _latest_snapshot_for_timeframe(timeframe)
-    if persisted:
-        headers = {
-            "X-Analysis-Cache": "SNAPSHOT_STALE_REFRESH_STARTED",
-            "X-Refresh-Status": "in_progress",
-        }
-        return JSONResponse(content=persisted, status_code=200, headers=headers)
-
-    # No snapshot at all — first-ever run. Block synchronously (unavoidable).
-    thread.join(timeout=300)
-    with _analysis_lock:
-        state = _analysis_state[timeframe]
-        if state.get("last_result") is not None:
-            return JSONResponse(
-                content=state["last_result"],
-                status_code=200,
-                headers={"X-Analysis-Cache": "MISS"},
-            )
-
-    raise HTTPException(
-        status_code=503,
-        detail="Analysis timed out. Please retry in a few seconds.",
+    # Return in-progress while background run proceeds (complete-only: no stale snapshot response).
+    retry_after = _ANALYSIS_RUNNING_RETRY_AFTER_SECONDS
+    return JSONResponse(
+        content={
+            "status": "in_progress",
+            "message": f"Analysis for timeframe={timeframe} started. Poll again shortly.",
+            "retry_after_seconds": retry_after,
+            "timeframe": timeframe,
+        },
+        status_code=202,
+        headers={"Retry-After": str(retry_after), "X-Refresh-Status": "in_progress"},
     )
 
 

@@ -6,6 +6,7 @@ import {
   ApiError,
   pingKeepAlive,
   runV2Analysis,
+  V2AnalysisProgress,
   V2AnalysisMeta,
   V2AnalysisResult,
   TimeFrame,
@@ -298,6 +299,10 @@ export default function Home() {
   const [summaryOpen, setSummaryOpen] = useState(false)
   const [retryInSec, setRetryInSec] = useState(0)
   const [clickCooldownSec, setClickCooldownSec] = useState(0)
+  const [pollMessage, setPollMessage] = useState<string | null>(null)
+  const [pollRetryInSec, setPollRetryInSec] = useState(0)
+  const [pollElapsedSec, setPollElapsedSec] = useState(0)
+  const [pollMaxWaitSec, setPollMaxWaitSec] = useState(300)
 
   const result = results[timeframe] ?? null
   const meta = resultMeta[timeframe] ?? null
@@ -320,6 +325,22 @@ export default function Home() {
   }, [clickCooldownSec])
 
   useEffect(() => {
+    if (!loading || pollRetryInSec <= 0) return
+    const t = setInterval(() => {
+      setPollRetryInSec((s) => (s > 0 ? s - 1 : 0))
+    }, 1000)
+    return () => clearInterval(t)
+  }, [loading, pollRetryInSec])
+
+  useEffect(() => {
+    if (!loading) return
+    const t = setInterval(() => {
+      setPollElapsedSec((s) => s + 1)
+    }, 1000)
+    return () => clearInterval(t)
+  }, [loading])
+
+  useEffect(() => {
     // Warm Render while dashboard is open to reduce cold starts.
     pingKeepAlive()
     const keepaliveIntervalMs = 4 * 60 * 1000
@@ -333,8 +354,17 @@ export default function Home() {
     if (loading || retryInSec > 0 || clickCooldownSec > 0) return
     setLoading(true)
     setError(null)
+    setPollMessage("Starting analysis on backend...")
+    setPollRetryInSec(0)
+    setPollElapsedSec(0)
+    setPollMaxWaitSec(300)
     try {
-      const response = await runV2Analysis(timeframe)
+      const response = await runV2Analysis(timeframe, (progress: V2AnalysisProgress) => {
+        setPollMessage(progress.message)
+        setPollRetryInSec(progress.nextRetryInSeconds)
+        setPollElapsedSec(progress.elapsedSeconds)
+        setPollMaxWaitSec(progress.maxWaitSeconds)
+      })
       setResults(prev => ({ ...prev, [timeframe]: response.data }))
       setResultMeta(prev => ({ ...prev, [timeframe]: response.meta }))
       setRetryInSec(0)
@@ -343,12 +373,13 @@ export default function Home() {
       if (err instanceof ApiError && err.status === 429) {
         const wait = err.retryAfterSeconds ?? 15
         setRetryInSec(wait)
-        setError(`Analysis already running. Try again in ${wait}s.`)
+        setError(`Backend is temporarily busy (rate limit). We'll retry automatically. You can also try again in ${wait}s.`)
       } else {
         setError(err instanceof Error ? err.message : "Analysis failed")
       }
     } finally {
       setLoading(false)
+      setPollRetryInSec(0)
     }
   }
 
@@ -424,13 +455,26 @@ export default function Home() {
 
         {/* Step ticker while loading */}
         {loading && (
-          <div className="flex items-center gap-2 px-1">
-            <div className="relative flex h-2.5 w-2.5">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
+          <div className="px-1 space-y-1">
+            <div className="flex items-center gap-2">
+              <div className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
+              </div>
+              <p className="text-blue-400/90 text-xs sm:text-sm font-medium tracking-wide animate-fade-pulse">
+                {currentStep}
+              </p>
             </div>
-            <p className="text-blue-400/90 text-xs sm:text-sm font-medium tracking-wide animate-fade-pulse">
-              {currentStep}
+            <p className="text-gray-500 text-[11px] sm:text-xs">
+              {pollMessage ?? "Waiting for backend analysis..."}
+              {" "}
+              {pollRetryInSec > 0
+                ? `Next retry in ${pollRetryInSec}s`
+                : "Preparing next check..."}
+              {` · elapsed ${pollElapsedSec}s / ${pollMaxWaitSec}s`}
+            </p>
+            <p className="text-gray-600 text-[10px] sm:text-xs">
+              Result appears only after full analysis completes.
             </p>
           </div>
         )}
