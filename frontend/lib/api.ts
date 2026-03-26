@@ -195,6 +195,17 @@ export interface V2HistoryEntry extends V2AnalysisResult {
   id: number
 }
 
+export interface V2AnalysisMeta {
+  cacheStatus: string | null
+  cacheAgeSeconds: number | null
+  refreshInProgress: boolean
+}
+
+export interface V2AnalysisResponse {
+  data: V2AnalysisResult
+  meta: V2AnalysisMeta
+}
+
 // ── v2 API Calls ─────────────────────────────────────────────────────────
 
 async function _fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
@@ -240,7 +251,21 @@ function _parseApiError(response: Response, body: any): ApiError {
 
 const _FETCH_TIMEOUT_MS = 180_000
 
-export async function runV2Analysis(timeframe: TimeFrame = "current"): Promise<V2AnalysisResult> {
+function _readAnalysisMeta(response: Response): V2AnalysisMeta {
+  const cacheStatus = response.headers.get("X-Analysis-Cache")
+  const cacheAgeRaw = response.headers.get("X-Cache-Age-Seconds")
+  const refreshStatus = response.headers.get("X-Refresh-Status")
+  const cacheAgeParsed = cacheAgeRaw != null ? Number(cacheAgeRaw) : NaN
+  return {
+    cacheStatus,
+    cacheAgeSeconds: Number.isFinite(cacheAgeParsed) ? cacheAgeParsed : null,
+    refreshInProgress:
+      refreshStatus === "in_progress" ||
+      cacheStatus === "SNAPSHOT_STALE_REFRESH_STARTED",
+  }
+}
+
+export async function runV2Analysis(timeframe: TimeFrame = "current"): Promise<V2AnalysisResponse> {
   const url = `${API_BASE_URL}/api/v2/analyze/${timeframe}`
 
   // First attempt — normal call (may get cache/snapshot hit or kick off analysis).
@@ -268,7 +293,8 @@ export async function runV2Analysis(timeframe: TimeFrame = "current"): Promise<V
     throw _parseApiError(response, body)
   }
 
-  return response.json()
+  const data = await response.json()
+  return { data, meta: _readAnalysisMeta(response) }
 }
 
 export async function pingKeepAlive(): Promise<void> {

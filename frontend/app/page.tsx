@@ -2,7 +2,14 @@
 
 import { useState, useEffect } from "react"
 import { Info } from "lucide-react"
-import { ApiError, pingKeepAlive, runV2Analysis, V2AnalysisResult, TimeFrame } from "@/lib/api"
+import {
+  ApiError,
+  pingKeepAlive,
+  runV2Analysis,
+  V2AnalysisMeta,
+  V2AnalysisResult,
+  TimeFrame,
+} from "@/lib/api"
 import {
   BitcoinMarketPanel,
   CpiPanel,
@@ -74,6 +81,17 @@ function dxyDeltaForDisplay(r: V2AnalysisResult): number | null {
   if (r.dxy_change != null) return r.dxy_change
   if (r.dxy_change_7d != null) return r.dxy_change_7d
   return null
+}
+
+function formatAgeFromSeconds(seconds: number | null): string {
+  if (seconds == null || seconds < 0) return "just now"
+  if (seconds < 60) return `${Math.max(1, seconds)}s ago`
+  const mins = Math.floor(seconds / 60)
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
 }
 
 /* ── Skeleton helpers ──────────────────────────────────────────────── */
@@ -274,12 +292,15 @@ function useAnalysisStep(loading: boolean) {
 export default function Home() {
   const [timeframe, setTimeframe] = useState<TimeFrame>("current")
   const [results, setResults] = useState<Partial<Record<TimeFrame, V2AnalysisResult>>>({})
+  const [resultMeta, setResultMeta] = useState<Partial<Record<TimeFrame, V2AnalysisMeta>>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [summaryOpen, setSummaryOpen] = useState(false)
   const [retryInSec, setRetryInSec] = useState(0)
+  const [clickCooldownSec, setClickCooldownSec] = useState(0)
 
   const result = results[timeframe] ?? null
+  const meta = resultMeta[timeframe] ?? null
   const currentStep = useAnalysisStep(loading)
 
   useEffect(() => {
@@ -289,6 +310,14 @@ export default function Home() {
     }, 1000)
     return () => clearInterval(t)
   }, [retryInSec])
+
+  useEffect(() => {
+    if (clickCooldownSec <= 0) return
+    const t = setInterval(() => {
+      setClickCooldownSec((s) => (s > 0 ? s - 1 : 0))
+    }, 1000)
+    return () => clearInterval(t)
+  }, [clickCooldownSec])
 
   useEffect(() => {
     // Warm Render while dashboard is open to reduce cold starts.
@@ -301,13 +330,15 @@ export default function Home() {
   }, [])
 
   const handleAnalyze = async () => {
-    if (loading || retryInSec > 0) return
+    if (loading || retryInSec > 0 || clickCooldownSec > 0) return
     setLoading(true)
     setError(null)
     try {
-      const data = await runV2Analysis(timeframe)
-      setResults(prev => ({ ...prev, [timeframe]: data }))
+      const response = await runV2Analysis(timeframe)
+      setResults(prev => ({ ...prev, [timeframe]: response.data }))
+      setResultMeta(prev => ({ ...prev, [timeframe]: response.meta }))
       setRetryInSec(0)
+      setClickCooldownSec(4)
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) {
         const wait = err.retryAfterSeconds ?? 15
@@ -349,13 +380,41 @@ export default function Home() {
             </div>
             <button
               onClick={handleAnalyze}
-              disabled={loading || retryInSec > 0}
+              disabled={loading || retryInSec > 0 || clickCooldownSec > 0}
               className="py-2 px-4 rounded-xl font-semibold text-xs sm:text-sm bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-400 transition-colors whitespace-nowrap"
             >
-              {loading ? "Analyzing..." : retryInSec > 0 ? `Wait ${retryInSec}s` : "Run Analysis"}
+              {loading
+                ? "Analyzing..."
+                : retryInSec > 0
+                  ? `Wait ${retryInSec}s`
+                  : clickCooldownSec > 0
+                    ? `Refresh in ${clickCooldownSec}s`
+                    : "Refresh now"}
             </button>
           </div>
         </div>
+
+        {result && (
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="px-2 py-1 rounded-full border border-gray-700 bg-gray-900 text-gray-300">
+              Last updated: {result.timestamp ? new Date(result.timestamp).toLocaleString() : "—"}
+            </span>
+            {meta?.refreshInProgress ? (
+              <>
+                <span className="px-2 py-1 rounded-full border border-blue-700/60 bg-blue-900/30 text-blue-300">
+                  Refreshing...
+                </span>
+                <span className="px-2 py-1 rounded-full border border-amber-700/60 bg-amber-900/25 text-amber-300">
+                  Showing last snapshot while live analysis runs.
+                </span>
+              </>
+            ) : (
+              <span className="px-2 py-1 rounded-full border border-gray-700 bg-gray-900 text-gray-400">
+                Updated {formatAgeFromSeconds(meta?.cacheAgeSeconds ?? null)}
+              </span>
+            )}
+          </div>
+        )}
 
         {error && (
           <div className="bg-red-900/40 border border-red-700 text-red-300 text-sm px-4 py-2 rounded-lg">
