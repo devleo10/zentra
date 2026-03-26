@@ -75,7 +75,7 @@ TIMEFRAME_COMPARISON = {
 _CHANGE_LABELS: Dict[str, str] = {
     "current": "1D",
     "week": "7D",
-    "month": "MTD",
+    "month": "1M",
     "year": "1Y",
 }
 
@@ -207,10 +207,7 @@ def _latest_and_comparison_for_timeframe(
         row = hist.iloc[-1]
         return row, row
     if timeframe == "month":
-        h = _normalize_hist_index(hist)
-        latest = h.iloc[-1]
-        comparison = _mtd_comparison_row(hist)
-        return latest, comparison
+        return _latest_and_comparison_rows(hist, 1, months_offset=1)
     days = TIMEFRAME_COMPARISON.get(timeframe, default_days)
     return _latest_and_comparison_rows(hist, days)
 

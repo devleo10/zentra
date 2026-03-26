@@ -42,7 +42,7 @@ TIMEFRAME_DAYS = {
 _CHANGE_LABELS = {
     "current": "1D",
     "week": "7D",
-    "month": "MTD",
+    "month": "1M",
     "year": "1Y",
 }
 
@@ -77,6 +77,19 @@ def _fred_first_observation_of_current_month(df: pd.DataFrame) -> pd.Series:
         prev = d[pd.to_datetime(d["date"]).dt.normalize() < month_start]
         return prev.iloc[-1] if not prev.empty else first_row
     return first_row
+
+
+def _fred_observation_on_or_before_months_ago(df: pd.DataFrame, months: int = 1) -> pd.Series:
+    """Last row with date <= (latest_date - N calendar months)."""
+    if df is None or df.empty:
+        raise ValueError("empty dataframe")
+    d = df.sort_values("date").copy()
+    latest_dt = pd.Timestamp(d.iloc[-1]["date"]).normalize()
+    cutoff = (latest_dt - pd.DateOffset(months=max(1, int(months)))).normalize()
+    past = d[pd.to_datetime(d["date"]).dt.normalize() <= cutoff]
+    if past.empty:
+        return d.iloc[0]
+    return past.iloc[-1]
 
 
 def _yield_month_end_track(df_10: pd.DataFrame, df_2: pd.DataFrame, n: int = 3) -> list:
@@ -718,14 +731,12 @@ def get_oil_data(timeframe: str = "current") -> Dict:
             h.index = idx
             latest_price = float(h.iloc[-1]["Close"])
             if timeframe == "month":
-                month_start = h.index[-1].normalize().to_period("M").to_timestamp().normalize()
-                current_month = h[h.index.normalize() >= month_start]
-                first_bar = current_month.iloc[0] if not current_month.empty else h.iloc[0]
-                if first_bar.name == h.index[-1]:
-                    prev_month = h[h.index.normalize() < month_start]
-                    first_bar = prev_month.iloc[-1] if not prev_month.empty else first_bar
-                prev_price = float(first_bar["Close"])
-                comparison_date = first_bar.name.strftime("%Y-%m-%d")
+                latest_date = h.index[-1].normalize()
+                cutoff = (latest_date - pd.DateOffset(months=1)).normalize()
+                past = h[h.index.normalize() <= cutoff]
+                comparison = past.iloc[-1] if not past.empty else h.iloc[0]
+                prev_price = float(comparison["Close"])
+                comparison_date = comparison.name.strftime("%Y-%m-%d")
             else:
                 latest_date = h.index[-1].normalize()
                 cutoff = latest_date - pd.Timedelta(days=max(1, int(comparison_days)))
@@ -757,7 +768,7 @@ def get_oil_data(timeframe: str = "current") -> Dict:
 
     latest = df.iloc[-1]
     if timeframe == "month":
-        prev_value = _fred_first_observation_of_current_month(df)
+        prev_value = _fred_observation_on_or_before_months_ago(df, 1)
     else:
         prev_value = _fred_observation_on_or_before_calendar_days_ago(df, comparison_days)
     change = ((latest["value"] - prev_value["value"]) / prev_value["value"]) * 100 if len(df) > 1 else 0
@@ -1019,13 +1030,7 @@ def get_dxy_from_fred_trade_weighted(timeframe: str = "current") -> Dict:
     latest_dt = pd.Timestamp(latest["date"]).normalize()
 
     if timeframe == "month" and len(d) >= 2:
-        month_start = latest_dt.to_period("M").to_timestamp().normalize()
-        this_month = d[pd.to_datetime(d["date"]).dt.normalize() >= month_start]
-        if len(this_month) >= 2:
-            comp_row = this_month.iloc[0]
-        else:
-            prev_m = d[pd.to_datetime(d["date"]).dt.normalize() < month_start]
-            comp_row = prev_m.iloc[-1] if not prev_m.empty else (d.iloc[-2] if len(d) >= 2 else latest)
+        comp_row = _fred_observation_on_or_before_months_ago(d, 1)
     elif len(d) >= 2:
         comp_row = d.iloc[-2]
     else:

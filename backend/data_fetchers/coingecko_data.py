@@ -14,9 +14,23 @@ logger = logging.getLogger("btc_macro.data_fetchers.coingecko")
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
 
 # Minimum seconds between CoinGecko calls in one process (free tier friendly).
-_CG_MIN_INTERVAL_SEC = 1.5
+_CG_MIN_INTERVAL_SEC = 2.0
 _cg_lock = threading.Lock()
 _cg_last_call_monotonic: float = 0.0
+
+# One /global response serves both BTC dominance and stablecoin dominance.
+_GLOBAL_CACHE_TTL_SEC = 600.0
+_GLOBAL_FAIL_BACKOFF_SEC = 120.0
+_global_payload_lock = threading.Lock()
+_global_payload: Optional[dict] = None
+_global_payload_ts: float = 0.0
+_global_skip_http_until: float = 0.0
+
+# One /simple/price for bitcoin+ethereum serves get_btc_price + get_eth_btc_ratio.
+_SIMPLE_MACRO_TTL_SEC = 180.0
+_simple_macro_lock = threading.Lock()
+_simple_macro_json: Optional[dict] = None
+_simple_macro_ts: float = 0.0
 
 _CG_HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; ZentraMacro/1.0)",
@@ -62,6 +76,56 @@ def _cg_get(
     raise RuntimeError("CoinGecko request failed")
 
 
+def _get_global_market_payload() -> Optional[dict]:
+    """Single throttled GET /global; cached ~10m. Serves dominance + stables (was 2× duplicate calls)."""
+    global _global_payload, _global_payload_ts, _global_skip_http_until
+    with _global_payload_lock:
+        now = time.monotonic()
+        if _global_payload is not None and (now - _global_payload_ts) < _GLOBAL_CACHE_TTL_SEC:
+            return _global_payload
+        if now < _global_skip_http_until:
+            return _global_payload
+        url = f"{COINGECKO_BASE_URL}/global"
+        try:
+            resp = _cg_get(url, timeout=20, retries_on_429=1, max_wait_on_429=10.0)
+            resp.raise_for_status()
+            body = resp.json()
+            inner = body.get("data")
+            _global_payload = inner if isinstance(inner, dict) else {}
+            _global_payload_ts = time.monotonic()
+            _global_skip_http_until = 0.0
+            return _global_payload
+        except Exception as e:
+            logger.warning("CoinGecko global fetch failed: %s", e)
+            _global_skip_http_until = time.monotonic() + _GLOBAL_FAIL_BACKOFF_SEC
+            return _global_payload
+
+
+def _cg_fetch_simple_macro() -> Optional[dict]:
+    """GET /simple/price for bitcoin+ethereum (24h/7d flags for BTC). Cached a few minutes."""
+    global _simple_macro_json, _simple_macro_ts
+    with _simple_macro_lock:
+        now = time.monotonic()
+        if _simple_macro_json is not None and (now - _simple_macro_ts) < _SIMPLE_MACRO_TTL_SEC:
+            return _simple_macro_json
+        url = f"{COINGECKO_BASE_URL}/simple/price"
+        params = {
+            "ids": "bitcoin,ethereum",
+            "vs_currencies": "usd",
+            "include_24hr_change": "true",
+            "include_7d_change": "true",
+        }
+        try:
+            resp = _cg_get(url, params=params, timeout=12, retries_on_429=2, max_wait_on_429=10.0)
+            resp.raise_for_status()
+            _simple_macro_json = resp.json()
+            _simple_macro_ts = time.monotonic()
+            return _simple_macro_json
+        except Exception as e:
+            logger.warning("CoinGecko simple/price (BTC+ETH bundle) failed: %s", e)
+            return None
+
+
 def _snapshot_btc_dominance():
     try:
         from storage.db import get_latest_snapshots
@@ -102,19 +166,10 @@ TIMEFRAME_DAYS = {
 
 def get_btc_price(timeframe: str = "current") -> Dict:
     """Get Bitcoin price data with timeframe support"""
-    url = f"{COINGECKO_BASE_URL}/simple/price"
-    params = {
-        "ids": "bitcoin",
-        "vs_currencies": "usd",
-        "include_24hr_change": "true",
-        "include_7d_change": "true"
-    }
-    
     try:
-        response = _cg_get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
+        data = _cg_fetch_simple_macro()
+        if not data:
+            raise RuntimeError("simple/price macro bundle empty")
         btc_data = data.get("bitcoin", {})
         
         result = {
@@ -204,24 +259,24 @@ def get_btc_spot_binance(timeframe: str = "current") -> Dict:
         change_7d = _pct(_close(kl[-8]), last_close) if len(kl) >= 8 else _pct(_close(kl[0]), last_close)
 
         latest_dt = datetime.fromtimestamp(last_open_ms / 1000.0, tz=timezone.utc)
-        month_start = latest_dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        month_start_ms = int(month_start.timestamp() * 1000)
-        month_first_close = None
+        cutoff_1m = latest_dt - timedelta(days=30)
+        cutoff_1m_ms = int(cutoff_1m.timestamp() * 1000)
+        close_1m = None
         for row in kl:
-            if int(row[0]) >= month_start_ms:
-                month_first_close = _close(row)
+            if int(row[0]) <= cutoff_1m_ms:
+                close_1m = _close(row)
+            else:
                 break
-        if month_first_close is None:
-            month_first_close = _close(kl[0])
-
-        change_mtd = _pct(month_first_close, last_close)
+        if close_1m is None:
+            close_1m = _close(kl[0])
+        change_1m = _pct(close_1m, last_close)
 
         if timeframe == "current":
             ch = change_24h
         elif timeframe == "week":
             ch = change_7d
         else:
-            ch = change_mtd
+            ch = change_1m
 
         return {
             "price_usd": round(last_close, 2),
@@ -238,23 +293,17 @@ def get_btc_spot_binance(timeframe: str = "current") -> Dict:
 
 def get_btc_dominance(timeframe: str = "current") -> Dict:
     """Get Bitcoin market dominance (CoinGecko → snapshot → neutral estimate)."""
-    url = f"{COINGECKO_BASE_URL}/global"
     today = datetime.now().strftime("%Y-%m-%d")
-    for timeout in (12, 22):
-        try:
-            response = _cg_get(url, timeout=timeout)
-            response.raise_for_status()
-            data = response.json()
-            market_cap_data = data.get("data", {}).get("market_cap_percentage", {})
-            btc_dominance = market_cap_data.get("btc")
-            if btc_dominance is not None and float(btc_dominance) > 0:
-                return {
-                    "btc_dominance": round(float(btc_dominance), 2),
-                    "date": today,
-                    "timeframe": timeframe,
-                }
-        except Exception as e:
-            logger.warning("CoinGecko global (BTC dom) failed (timeout=%s): %s", timeout, e)
+    payload = _get_global_market_payload()
+    if payload:
+        market_cap_data = payload.get("market_cap_percentage") or {}
+        btc_dominance = market_cap_data.get("btc")
+        if btc_dominance is not None and float(btc_dominance) > 0:
+            return {
+                "btc_dominance": round(float(btc_dominance), 2),
+                "date": today,
+                "timeframe": timeframe,
+            }
     snap = _snapshot_btc_dominance()
     if snap is not None:
         logger.warning("BTC dominance: using last snapshot %.2f%%", snap)
@@ -265,7 +314,7 @@ def get_btc_dominance(timeframe: str = "current") -> Dict:
             "_fallback": True,
             "source": "last_snapshot",
         }
-    logger.warning("BTC dominance: using neutral estimate 52%%")
+    logger.warning("BTC dominance: using neutral estimate 52%")
     return {
         "btc_dominance": 52.0,
         "date": today,
@@ -277,27 +326,21 @@ def get_btc_dominance(timeframe: str = "current") -> Dict:
 
 def get_stablecoin_data(timeframe: str = "current") -> Dict:
     """Stablecoin dominance from CoinGecko global → snapshot → neutral estimate."""
-    url = f"{COINGECKO_BASE_URL}/global"
     today = datetime.now().strftime("%Y-%m-%d")
-    for timeout in (12, 22):
-        try:
-            response = _cg_get(url, timeout=timeout)
-            response.raise_for_status()
-            data = response.json()
-            market_cap_data = data.get("data", {}).get("market_cap_percentage", {})
-            usdt_dom = float(market_cap_data.get("usdt") or 0)
-            usdc_dom = float(market_cap_data.get("usdc") or 0)
-            total_stable_dom = usdt_dom + usdc_dom
-            if total_stable_dom > 0:
-                return {
-                    "usdt_dominance": round(usdt_dom, 2),
-                    "usdc_dominance": round(usdc_dom, 2),
-                    "total_stablecoin_dominance": round(total_stable_dom, 2),
-                    "date": today,
-                    "timeframe": timeframe,
-                }
-        except Exception as e:
-            logger.warning("CoinGecko global (stables) failed (timeout=%s): %s", timeout, e)
+    payload = _get_global_market_payload()
+    if payload:
+        market_cap_data = payload.get("market_cap_percentage") or {}
+        usdt_dom = float(market_cap_data.get("usdt") or 0)
+        usdc_dom = float(market_cap_data.get("usdc") or 0)
+        total_stable_dom = usdt_dom + usdc_dom
+        if total_stable_dom > 0:
+            return {
+                "usdt_dominance": round(usdt_dom, 2),
+                "usdc_dominance": round(usdc_dom, 2),
+                "total_stablecoin_dominance": round(total_stable_dom, 2),
+                "date": today,
+                "timeframe": timeframe,
+            }
     snap = _snapshot_stable_dom()
     if snap:
         u, v, t = snap
@@ -325,17 +368,10 @@ def get_stablecoin_data(timeframe: str = "current") -> Dict:
 
 def get_eth_btc_ratio(timeframe: str = "current") -> Dict:
     """Get ETH/BTC ratio"""
-    url = f"{COINGECKO_BASE_URL}/simple/price"
-    params = {
-        "ids": "ethereum,bitcoin",
-        "vs_currencies": "usd"
-    }
-    
     try:
-        response = _cg_get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
+        data = _cg_fetch_simple_macro()
+        if not data:
+            raise RuntimeError("simple/price macro bundle empty")
         eth_price = data.get("ethereum", {}).get("usd", 0)
         btc_price = data.get("bitcoin", {}).get("usd", 0)
         

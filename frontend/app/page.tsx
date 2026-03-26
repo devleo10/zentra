@@ -15,7 +15,7 @@ import {
 const TIMEFRAMES: { value: TimeFrame; label: string }[] = [
   { value: "current", label: "Now" },
   { value: "week",    label: "7D" },
-  { value: "month",   label: "MTD" },
+  { value: "month",   label: "1M" },
 ]
 
 const SECTION_LABELS: Record<string, string> = {

@@ -91,6 +91,25 @@ def _snapshot_is_fresh_enough(snapshot: Optional[Dict[str, Any]], ttl_seconds: i
         return False
 
 
+def _run_analysis_background(timeframe: str, fresh: bool = False) -> None:
+    """Execute analysis in a background thread and cache the result."""
+    try:
+        from run_analysis import run_analysis as _run
+        result = _run(timeframe=timeframe, fresh=fresh)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        result = None
+    finally:
+        with _analysis_lock:
+            state = _analysis_state[timeframe]
+            state["in_progress"] = False
+            state["started_at"] = None
+            if result is not None:
+                state["last_result"] = result
+                state["last_completed_at"] = time.time()
+
+
 def _analyze_with_guard(timeframe: str, fresh: bool = False) -> JSONResponse:
     now = time.time()
     with _analysis_lock:
@@ -119,9 +138,10 @@ def _analyze_with_guard(timeframe: str, fresh: bool = False) -> JSONResponse:
                 }
                 return JSONResponse(content=persisted, status_code=200, headers=headers)
 
-        if state.get("in_progress"):
+        already_running = state.get("in_progress", False)
+
+        if already_running:
             if not fresh:
-                # If a run is already in-flight, return latest persisted snapshot when available.
                 persisted = _latest_snapshot_for_timeframe(timeframe)
                 if persisted:
                     headers = {"X-Analysis-Cache": "SNAPSHOT_STALE"}
@@ -139,34 +159,42 @@ def _analyze_with_guard(timeframe: str, fresh: bool = False) -> JSONResponse:
                 headers={"Retry-After": str(retry_after)},
             )
 
+        # Mark in-progress *before* checking for a stale snapshot to return
         state["in_progress"] = True
         state["started_at"] = now
 
-    try:
-        from run_analysis import run_analysis as _run
-        result = _run(timeframe=timeframe, fresh=fresh)
-    except SystemExit as e:
-        code = getattr(e, "code", None)
-        raise HTTPException(
-            status_code=503,
-            detail=f"Analysis aborted: critical data missing or stale (exit code {code})"
-        )
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
-    finally:
-        with _analysis_lock:
-            state = _analysis_state[timeframe]
-            state["in_progress"] = False
-            state["started_at"] = None
+    # Kick off the analysis in a background thread so we can respond quickly.
+    thread = threading.Thread(
+        target=_run_analysis_background,
+        args=(timeframe, fresh),
+        daemon=True,
+    )
+    thread.start()
 
+    # Return the best available data immediately while the background run proceeds.
+    persisted = _latest_snapshot_for_timeframe(timeframe)
+    if persisted:
+        headers = {
+            "X-Analysis-Cache": "SNAPSHOT_STALE_REFRESH_STARTED",
+            "X-Refresh-Status": "in_progress",
+        }
+        return JSONResponse(content=persisted, status_code=200, headers=headers)
+
+    # No snapshot at all — first-ever run. Block synchronously (unavoidable).
+    thread.join(timeout=300)
     with _analysis_lock:
         state = _analysis_state[timeframe]
-        state["last_result"] = result
-        state["last_completed_at"] = time.time()
+        if state.get("last_result") is not None:
+            return JSONResponse(
+                content=state["last_result"],
+                status_code=200,
+                headers={"X-Analysis-Cache": "MISS"},
+            )
 
-    return JSONResponse(content=result, status_code=200, headers={"X-Analysis-Cache": "MISS"})
+    raise HTTPException(
+        status_code=503,
+        detail="Analysis timed out. Please retry in a few seconds.",
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

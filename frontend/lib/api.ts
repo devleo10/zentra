@@ -197,41 +197,75 @@ export interface V2HistoryEntry extends V2AnalysisResult {
 
 // ── v2 API Calls ─────────────────────────────────────────────────────────
 
+async function _fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function _parseApiError(response: Response, body: any): ApiError {
+  let detail = ""
+  let retryAfterSeconds: number | undefined
+  try {
+    if (body?.detail) {
+      detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail)
+    } else if (body?.message) {
+      detail = String(body.message)
+    } else {
+      detail = JSON.stringify(body)
+    }
+    if (body?.retry_after_seconds != null) {
+      const parsed = Number(body.retry_after_seconds)
+      if (Number.isFinite(parsed) && parsed > 0) retryAfterSeconds = parsed
+    }
+  } catch { /* ignore */ }
+
+  if (!retryAfterSeconds) {
+    const ra = response.headers.get("Retry-After")
+    if (ra) {
+      const parsed = Number(ra)
+      if (Number.isFinite(parsed) && parsed > 0) retryAfterSeconds = parsed
+    }
+  }
+  return new ApiError(
+    `v2 Analysis failed: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ""}`,
+    response.status,
+    retryAfterSeconds
+  )
+}
+
+const _FETCH_TIMEOUT_MS = 180_000
+
 export async function runV2Analysis(timeframe: TimeFrame = "current"): Promise<V2AnalysisResult> {
-  const response = await fetch(`${API_BASE_URL}/api/v2/analyze/${timeframe}`)
+  const url = `${API_BASE_URL}/api/v2/analyze/${timeframe}`
+
+  // First attempt — normal call (may get cache/snapshot hit or kick off analysis).
+  let response: Response
+  try {
+    response = await _fetchWithTimeout(url, _FETCH_TIMEOUT_MS)
+  } catch (err: any) {
+    // Network / timeout / abort — the backend may still be running.
+    // Wait a moment then retry; if a snapshot was saved we get it back quickly.
+    await new Promise(r => setTimeout(r, 5_000))
+    try {
+      response = await _fetchWithTimeout(url, _FETCH_TIMEOUT_MS)
+    } catch {
+      throw new Error(
+        err?.name === "AbortError"
+          ? "Analysis timed out — the backend is still processing. Try again in a few seconds."
+          : "Network error — could not reach the server. It may be waking up from sleep; retry in ~30s."
+      )
+    }
+  }
 
   if (!response.ok) {
-    let detail = ""
-    let retryAfterSeconds: number | undefined
-    try {
-      const body = await response.json()
-      if (body?.detail) {
-        detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail)
-      } else if (body?.message) {
-        detail = String(body.message)
-      } else {
-        detail = JSON.stringify(body)
-      }
-      if (body?.retry_after_seconds != null) {
-        const parsed = Number(body.retry_after_seconds)
-        if (Number.isFinite(parsed) && parsed > 0) retryAfterSeconds = parsed
-      }
-    } catch {
-      detail = await response.text()
-    }
-
-    if (!retryAfterSeconds) {
-      const ra = response.headers.get("Retry-After")
-      if (ra) {
-        const parsed = Number(ra)
-        if (Number.isFinite(parsed) && parsed > 0) retryAfterSeconds = parsed
-      }
-    }
-    throw new ApiError(
-      `v2 Analysis failed: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ""}`,
-      response.status,
-      retryAfterSeconds
-    )
+    let body: any
+    try { body = await response.json() } catch { body = await response.text() }
+    throw _parseApiError(response, body)
   }
 
   return response.json()
