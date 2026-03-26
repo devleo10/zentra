@@ -35,6 +35,9 @@ const SECTION_LABELS: Record<string, string> = {
   risk_sentiment: "Risk",
 }
 
+const SNAPSHOT_STALE_SECONDS = Number(process.env.NEXT_PUBLIC_SNAPSHOT_STALE_SECONDS ?? "300")
+const REFRESH_TOOLTIP = "Runs a fresh backend analysis. If server returns 202/429, client backs off automatically using Retry-After."
+
 const HAWKISH_KEYWORDS = [
   "rate hike", "hawkish", "higher for longer", "inflation sticky",
   "tighten", "premature easing", "labor market strong", "upside risk",
@@ -93,6 +96,13 @@ function formatAgeFromSeconds(seconds: number | null): string {
   if (hours < 24) return `${hours}h ago`
   const days = Math.floor(hours / 24)
   return `${days}d ago`
+}
+
+function ageSecondsFromTimestamp(timestamp: string | null | undefined, nowMs: number): number | null {
+  if (!timestamp) return null
+  const tsMs = new Date(timestamp).getTime()
+  if (!Number.isFinite(tsMs)) return null
+  return Math.max(0, Math.floor((nowMs - tsMs) / 1000))
 }
 
 /* ── Skeleton helpers ──────────────────────────────────────────────── */
@@ -303,10 +313,17 @@ export default function Home() {
   const [pollRetryInSec, setPollRetryInSec] = useState(0)
   const [pollElapsedSec, setPollElapsedSec] = useState(0)
   const [pollMaxWaitSec, setPollMaxWaitSec] = useState(300)
+  const [nowMs, setNowMs] = useState(() => Date.now())
 
   const result = results[timeframe] ?? null
   const meta = resultMeta[timeframe] ?? null
   const currentStep = useAnalysisStep(loading)
+  const normalizedStaleThresholdSec = Number.isFinite(SNAPSHOT_STALE_SECONDS) && SNAPSHOT_STALE_SECONDS > 0
+    ? Math.floor(SNAPSHOT_STALE_SECONDS)
+    : 300
+  const snapshotAgeSeconds = ageSecondsFromTimestamp(result?.timestamp, nowMs) ?? meta?.cacheAgeSeconds ?? null
+  const snapshotIsStale = !!result && snapshotAgeSeconds != null && snapshotAgeSeconds >= normalizedStaleThresholdSec
+  const showActionButton = !result || loading || retryInSec > 0 || clickCooldownSec > 0 || snapshotIsStale
 
   useEffect(() => {
     if (retryInSec <= 0) return
@@ -341,6 +358,13 @@ export default function Home() {
   }, [loading])
 
   useEffect(() => {
+    const t = setInterval(() => {
+      setNowMs(Date.now())
+    }, 30_000)
+    return () => clearInterval(t)
+  }, [])
+
+  useEffect(() => {
     // Warm Render while dashboard is open to reduce cold starts.
     pingKeepAlive()
     const keepaliveIntervalMs = 4 * 60 * 1000
@@ -352,6 +376,10 @@ export default function Home() {
 
   const handleAnalyze = async () => {
     if (loading || retryInSec > 0 || clickCooldownSec > 0) return
+    if (meta?.refreshInProgress) {
+      setError("Analysis is already running on backend. Waiting for completion.")
+      return
+    }
     setLoading(true)
     setError(null)
     setPollMessage("Starting analysis on backend...")
@@ -409,19 +437,24 @@ export default function Home() {
                 </button>
               ))}
             </div>
-            <button
-              onClick={handleAnalyze}
-              disabled={loading || retryInSec > 0 || clickCooldownSec > 0}
-              className="py-2 px-4 rounded-xl font-semibold text-xs sm:text-sm bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-400 transition-colors whitespace-nowrap"
-            >
-              {loading
-                ? "Analyzing..."
-                : retryInSec > 0
-                  ? `Wait ${retryInSec}s`
-                  : clickCooldownSec > 0
-                    ? `Refresh in ${clickCooldownSec}s`
-                    : "Refresh now"}
-            </button>
+            {showActionButton && (
+              <button
+                onClick={handleAnalyze}
+                title={REFRESH_TOOLTIP}
+                disabled={loading || retryInSec > 0 || clickCooldownSec > 0 || !!meta?.refreshInProgress}
+                className="py-2 px-4 rounded-xl font-semibold text-xs sm:text-sm bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-400 transition-colors whitespace-nowrap"
+              >
+                {loading
+                  ? "Analyzing..."
+                  : retryInSec > 0
+                    ? `Wait ${retryInSec}s`
+                    : clickCooldownSec > 0
+                      ? `Refresh in ${clickCooldownSec}s`
+                      : result
+                        ? "Refresh now"
+                        : "Run analysis"}
+              </button>
+            )}
           </div>
         </div>
 
@@ -440,9 +473,22 @@ export default function Home() {
                 </span>
               </>
             ) : (
-              <span className="px-2 py-1 rounded-full border border-gray-700 bg-gray-900 text-gray-400">
-                Updated {formatAgeFromSeconds(meta?.cacheAgeSeconds ?? null)}
-              </span>
+              <>
+                <span
+                  title={REFRESH_TOOLTIP}
+                  className="px-2 py-1 rounded-full border border-gray-700 bg-gray-900 text-gray-400"
+                >
+                  Updated {formatAgeFromSeconds(snapshotAgeSeconds)}
+                </span>
+                {snapshotIsStale && (
+                  <span
+                    title={`Snapshot is older than ${Math.floor(normalizedStaleThresholdSec / 60)}m. ${REFRESH_TOOLTIP}`}
+                    className="px-2 py-1 rounded-full border border-amber-700/60 bg-amber-900/25 text-amber-300"
+                  >
+                    Stale snapshot
+                  </span>
+                )}
+              </>
             )}
           </div>
         )}
