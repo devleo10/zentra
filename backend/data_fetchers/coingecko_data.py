@@ -14,7 +14,7 @@ logger = logging.getLogger("btc_macro.data_fetchers.coingecko")
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
 
 # Minimum seconds between CoinGecko calls in one process (free tier friendly).
-_CG_MIN_INTERVAL_SEC = 1.25
+_CG_MIN_INTERVAL_SEC = 1.5
 _cg_lock = threading.Lock()
 _cg_last_call_monotonic: float = 0.0
 
@@ -34,8 +34,15 @@ def _cg_throttle() -> None:
         _cg_last_call_monotonic = time.monotonic()
 
 
-def _cg_get(url: str, *, timeout: float = 15, params=None, retries_on_429: int = 2):
-    """Throttled GET; honors Retry-After on 429 before final raise_for_status."""
+def _cg_get(
+    url: str,
+    *,
+    timeout: float = 15,
+    params=None,
+    retries_on_429: int = 1,
+    max_wait_on_429: float = 8.0,
+):
+    """Throttled GET with bounded 429 waits to keep total latency predictable."""
     attempts = max(1, retries_on_429 + 1)
     for attempt in range(attempts):
         _cg_throttle()
@@ -43,7 +50,7 @@ def _cg_get(url: str, *, timeout: float = 15, params=None, retries_on_429: int =
         if resp.status_code == 429:
             ra = resp.headers.get("Retry-After")
             try:
-                wait_s = min(float(ra), 60.0) if ra else 2.0 * (attempt + 1)
+                wait_s = min(float(ra), max_wait_on_429) if ra else 2.0 * (attempt + 1)
             except (TypeError, ValueError):
                 wait_s = 2.0 * (attempt + 1)
             logger.warning("CoinGecko 429 for %s; sleeping %.1fs (attempt %s/%s)", url, wait_s, attempt + 1, attempts)
@@ -376,7 +383,8 @@ def get_btc_ohlcv_200d() -> Dict:
     url = f"{COINGECKO_BASE_URL}/coins/bitcoin/ohlc"
     params = {
         "vs_currency": "usd",
-        "days": 200,
+        # CoinGecko OHLC commonly supports fixed windows; 180 is broadly accepted on free tier.
+        "days": 180,
     }
     try:
         response = _cg_get(url, params=params, timeout=22)

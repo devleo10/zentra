@@ -328,8 +328,12 @@ def get_fred_data(
         df = df.dropna(subset=["value"])
 
         return df[["date", "value"]].sort_values("date")
+    except requests.HTTPError as e:
+        status = getattr(getattr(e, "response", None), "status_code", "unknown")
+        logger.warning("Error fetching FRED data for %s: HTTP %s", series_id, status)
+        return pd.DataFrame()
     except Exception as e:
-        logger.warning("Error fetching FRED data for %s: %s", series_id, e)
+        logger.warning("Error fetching FRED data for %s: %s", series_id, type(e).__name__)
         return pd.DataFrame()
 
 
@@ -1060,17 +1064,10 @@ def get_pmi_data(timeframe: str = "current") -> Dict:
     Fallback: Chicago Fed national activity index (CFNAI) scaled to ~PMI-like
     50-center only when NAPM is unavailable (documented proxy, not ISM).
     """
-    effective_start = (datetime.now() - timedelta(days=max(365, TIMEFRAME_DAYS.get(timeframe, 90)))).strftime("%Y-%m-%d")
+    # NAPM appears unavailable for some FRED keys/accounts ("series does not exist").
+    # Try a single NAPM shape quickly, then move to CFNAI proxy to avoid repeated 400 spam.
     long_start = "1990-01-01"
-    df = pd.DataFrame()
-    for sort_o in ("desc", "asc", None):
-        df = get_fred_data("NAPM", start_date=effective_start, timeframe=timeframe, sort_order=sort_o)
-        if not df.empty:
-            break
-    if df.empty:
-        df = get_fred_data("NAPM", start_date=long_start, timeframe=timeframe, sort_order="asc")
-    if df.empty:
-        df = get_fred_data("NAPM", start_date=long_start, timeframe=timeframe, sort_order=None)
+    df = get_fred_data("NAPM", start_date=long_start, timeframe=timeframe, sort_order="asc")
 
     if df.empty:
         # CFNAI 3-month moving average: negative = below trend, positive = above; map loosely to PMI scale

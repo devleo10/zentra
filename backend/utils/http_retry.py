@@ -13,6 +13,16 @@ DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_BACKOFF_BASE = 2.0
 
 
+def _redact_params(params: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not params:
+        return params
+    redacted = dict(params)
+    for key in ("api_key", "apikey", "token", "access_token", "authorization"):
+        if key in redacted and redacted[key] is not None:
+            redacted[key] = "***REDACTED***"
+    return redacted
+
+
 def get_with_retries(
     url: str,
     *,
@@ -29,6 +39,7 @@ def get_with_retries(
     On 4xx (other than 429), logs response body snippet and raises HTTPError.
     """
     last_exc: Optional[BaseException] = None
+    safe_params = _redact_params(params)
     for attempt in range(max_attempts):
         try:
             resp = requests.get(url, params=params, headers=headers or {}, timeout=timeout)
@@ -51,7 +62,7 @@ def get_with_retries(
                 continue
             if 400 <= resp.status_code < 500 and log_4xx_body:
                 snippet = (resp.text or "")[:body_snippet_len]
-                logger.warning("HTTP %s for %s params=%s body_snippet=%s", resp.status_code, url, params, snippet)
+                logger.warning("HTTP %s for %s params=%s body_snippet=%s", resp.status_code, url, safe_params, snippet)
             resp.raise_for_status()
             return resp
         except (requests.Timeout, requests.ConnectionError) as e:
