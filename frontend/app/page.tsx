@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { Info } from "lucide-react"
-import { runV2Analysis, V2AnalysisResult, TimeFrame } from "@/lib/api"
+import { ApiError, pingKeepAlive, runV2Analysis, V2AnalysisResult, TimeFrame } from "@/lib/api"
 import {
   BitcoinMarketPanel,
   CpiPanel,
@@ -277,18 +277,45 @@ export default function Home() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [summaryOpen, setSummaryOpen] = useState(false)
+  const [retryInSec, setRetryInSec] = useState(0)
 
   const result = results[timeframe] ?? null
   const currentStep = useAnalysisStep(loading)
 
+  useEffect(() => {
+    if (retryInSec <= 0) return
+    const t = setInterval(() => {
+      setRetryInSec((s) => (s > 0 ? s - 1 : 0))
+    }, 1000)
+    return () => clearInterval(t)
+  }, [retryInSec])
+
+  useEffect(() => {
+    // Warm Render while dashboard is open to reduce cold starts.
+    pingKeepAlive()
+    const keepaliveIntervalMs = 4 * 60 * 1000
+    const interval = setInterval(() => {
+      pingKeepAlive()
+    }, keepaliveIntervalMs)
+    return () => clearInterval(interval)
+  }, [])
+
   const handleAnalyze = async () => {
+    if (loading || retryInSec > 0) return
     setLoading(true)
     setError(null)
     try {
       const data = await runV2Analysis(timeframe)
       setResults(prev => ({ ...prev, [timeframe]: data }))
+      setRetryInSec(0)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Analysis failed")
+      if (err instanceof ApiError && err.status === 429) {
+        const wait = err.retryAfterSeconds ?? 15
+        setRetryInSec(wait)
+        setError(`Analysis already running. Try again in ${wait}s.`)
+      } else {
+        setError(err instanceof Error ? err.message : "Analysis failed")
+      }
     } finally {
       setLoading(false)
     }
@@ -322,10 +349,10 @@ export default function Home() {
             </div>
             <button
               onClick={handleAnalyze}
-              disabled={loading}
+              disabled={loading || retryInSec > 0}
               className="py-2 px-4 rounded-xl font-semibold text-xs sm:text-sm bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-400 transition-colors whitespace-nowrap"
             >
-              {loading ? "Analyzing..." : "Run Analysis"}
+              {loading ? "Analyzing..." : retryInSec > 0 ? `Wait ${retryInSec}s` : "Run Analysis"}
             </button>
           </div>
         </div>

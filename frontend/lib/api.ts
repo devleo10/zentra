@@ -5,6 +5,18 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
 export type TimeFrame = "current" | "week" | "month"
 
+export class ApiError extends Error {
+  status: number
+  retryAfterSeconds?: number
+
+  constructor(message: string, status: number, retryAfterSeconds?: number) {
+    super(message)
+    this.name = "ApiError"
+    this.status = status
+    this.retryAfterSeconds = retryAfterSeconds
+  }
+}
+
 // ── v2 Types (Deterministic Engine) ──────────────────────────────────────
 
 export interface V2SectionScores {
@@ -185,11 +197,48 @@ export async function runV2Analysis(timeframe: TimeFrame = "current"): Promise<V
   const response = await fetch(`${API_BASE_URL}/api/v2/analyze/${timeframe}`)
 
   if (!response.ok) {
-    const errorText = await response.text()
-    throw new Error(`v2 Analysis failed: ${response.statusText} — ${errorText}`)
+    let detail = ""
+    let retryAfterSeconds: number | undefined
+    try {
+      const body = await response.json()
+      if (body?.detail) {
+        detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail)
+      } else if (body?.message) {
+        detail = String(body.message)
+      } else {
+        detail = JSON.stringify(body)
+      }
+      if (body?.retry_after_seconds != null) {
+        const parsed = Number(body.retry_after_seconds)
+        if (Number.isFinite(parsed) && parsed > 0) retryAfterSeconds = parsed
+      }
+    } catch {
+      detail = await response.text()
+    }
+
+    if (!retryAfterSeconds) {
+      const ra = response.headers.get("Retry-After")
+      if (ra) {
+        const parsed = Number(ra)
+        if (Number.isFinite(parsed) && parsed > 0) retryAfterSeconds = parsed
+      }
+    }
+    throw new ApiError(
+      `v2 Analysis failed: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ""}`,
+      response.status,
+      retryAfterSeconds
+    )
   }
 
   return response.json()
+}
+
+export async function pingKeepAlive(): Promise<void> {
+  try {
+    await fetch(`${API_BASE_URL}/api/keepalive`, { method: "GET", cache: "no-store" })
+  } catch {
+    // no-op: keepalive should never break UI flow
+  }
 }
 
 export async function getV2History(limit: number = 10): Promise<V2HistoryEntry[]> {

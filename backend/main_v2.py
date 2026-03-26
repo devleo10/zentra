@@ -19,6 +19,8 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from enum import Enum
+import threading
+import time
 
 # Ensure backend is on the path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -26,6 +28,145 @@ sys.path.insert(0, str(Path(__file__).parent))
 load_dotenv()
 
 logger = logging.getLogger("btc_macro.api")
+
+
+_VALID_TIMEFRAMES = ("current", "week", "month")
+_ANALYSIS_CACHE_TTL_SECONDS = int(os.getenv("ANALYSIS_CACHE_TTL_SECONDS", "120"))
+_ANALYSIS_RUNNING_RETRY_AFTER_SECONDS = int(os.getenv("ANALYSIS_RUNNING_RETRY_AFTER_SECONDS", "15"))
+_ANALYSIS_SNAPSHOT_TTL_SECONDS = int(os.getenv("ANALYSIS_SNAPSHOT_TTL_SECONDS", "1800"))
+_analysis_lock = threading.Lock()
+_analysis_state: Dict[str, Dict[str, Any]] = {
+    tf: {
+        "in_progress": False,
+        "started_at": None,
+        "last_result": None,
+        "last_completed_at": None,
+    }
+    for tf in _VALID_TIMEFRAMES
+}
+
+
+def _cache_age_seconds(last_completed_at: Optional[float]) -> Optional[int]:
+    if last_completed_at is None:
+        return None
+    return max(0, int(time.time() - float(last_completed_at)))
+
+
+def _parse_json_fields_in_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    for key in ["section_scores", "section_reasoning", "score_breakdown",
+                "headlines_classified", "data_freshness_info",
+                "headline_report_meta"]:
+        if isinstance(snapshot.get(key), str):
+            try:
+                snapshot[key] = json.loads(snapshot[key])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return snapshot
+
+
+def _latest_snapshot_for_timeframe(timeframe: str) -> Optional[Dict[str, Any]]:
+    """Read latest persisted snapshot for timeframe from SQLite."""
+    try:
+        from storage.db import get_latest_snapshots
+        rows = get_latest_snapshots(limit=50)
+        for row in rows:
+            if row.get("timeframe") == timeframe:
+                return _parse_json_fields_in_snapshot(dict(row))
+    except Exception:
+        logger.exception("Failed to read latest snapshot for timeframe=%s", timeframe)
+    return None
+
+
+def _snapshot_is_fresh_enough(snapshot: Optional[Dict[str, Any]], ttl_seconds: int) -> bool:
+    if not snapshot:
+        return False
+    ts = snapshot.get("timestamp")
+    if not ts:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(ts))
+        age = (datetime.now() - dt).total_seconds()
+        return age >= 0 and age <= ttl_seconds
+    except Exception:
+        return False
+
+
+def _analyze_with_guard(timeframe: str, fresh: bool = False) -> JSONResponse:
+    now = time.time()
+    with _analysis_lock:
+        state = _analysis_state[timeframe]
+        last_completed = state.get("last_completed_at")
+        cache_age = _cache_age_seconds(last_completed)
+        if (
+            not fresh
+            and state.get("last_result") is not None
+            and cache_age is not None
+            and cache_age <= _ANALYSIS_CACHE_TTL_SECONDS
+        ):
+            headers = {
+                "X-Analysis-Cache": "HIT",
+                "X-Cache-Age-Seconds": str(cache_age),
+            }
+            return JSONResponse(content=state["last_result"], status_code=200, headers=headers)
+
+        if not fresh:
+            persisted = _latest_snapshot_for_timeframe(timeframe)
+            if _snapshot_is_fresh_enough(persisted, _ANALYSIS_SNAPSHOT_TTL_SECONDS):
+                age_seconds = int((datetime.now() - datetime.fromisoformat(str(persisted["timestamp"]))).total_seconds())
+                headers = {
+                    "X-Analysis-Cache": "SNAPSHOT_HIT",
+                    "X-Cache-Age-Seconds": str(max(0, age_seconds)),
+                }
+                return JSONResponse(content=persisted, status_code=200, headers=headers)
+
+        if state.get("in_progress"):
+            if not fresh:
+                # If a run is already in-flight, return latest persisted snapshot when available.
+                persisted = _latest_snapshot_for_timeframe(timeframe)
+                if persisted:
+                    headers = {"X-Analysis-Cache": "SNAPSHOT_STALE"}
+                    return JSONResponse(content=persisted, status_code=200, headers=headers)
+            retry_after = _ANALYSIS_RUNNING_RETRY_AFTER_SECONDS
+            detail = {
+                "error": "analysis_already_running",
+                "message": f"Analysis for timeframe={timeframe} is already in progress.",
+                "retry_after_seconds": retry_after,
+                "timeframe": timeframe,
+            }
+            return JSONResponse(
+                content=detail,
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        state["in_progress"] = True
+        state["started_at"] = now
+
+    try:
+        from run_analysis import run_analysis as _run
+        result = _run(timeframe=timeframe, fresh=fresh)
+    except SystemExit as e:
+        code = getattr(e, "code", None)
+        raise HTTPException(
+            status_code=503,
+            detail=f"Analysis aborted: critical data missing or stale (exit code {code})"
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+    finally:
+        with _analysis_lock:
+            state = _analysis_state[timeframe]
+            state["in_progress"] = False
+            state["started_at"] = None
+
+    with _analysis_lock:
+        state = _analysis_state[timeframe]
+        state["last_result"] = result
+        state["last_completed_at"] = time.time()
+
+    return JSONResponse(content=result, status_code=200, headers={"X-Analysis-Cache": "MISS"})
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -109,26 +250,12 @@ async def v2_analyze(timeframe: str = "current", fresh: bool = False):
     - Returns full audit trail
     """
     # Validate timeframe
-    if timeframe not in ["current", "week", "month"]:
+    if timeframe not in _VALID_TIMEFRAMES:
         raise HTTPException(
             status_code=400, 
             detail=f"Invalid timeframe: {timeframe}. Must be one of: current, week, month"
         )
-    
-    try:
-        from run_analysis import run_analysis as _run
-        result = _run(timeframe=timeframe, fresh=fresh)
-        return JSONResponse(content=result, status_code=200)
-    except SystemExit as e:
-        code = getattr(e, "code", None)
-        raise HTTPException(
-            status_code=503,
-            detail=f"Analysis aborted: critical data missing or stale (exit code {code})"
-        )
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+    return _analyze_with_guard(timeframe=timeframe, fresh=fresh)
 
 
 @app.get("/api/v2/analyze/compare")
@@ -194,25 +321,12 @@ async def v2_analyze_timeframe(timeframe: str, fresh: bool = False):
         timeframe: Analysis timeframe - 'current', 'week', 'month', or 'year'
         fresh: If True, clear cached news/LLM intermediates before running.
     """
-    if timeframe not in ["current", "week", "month"]:
+    if timeframe not in _VALID_TIMEFRAMES:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid timeframe: {timeframe}. Must be one of: current, week, month"
         )
-
-    try:
-        from run_analysis import run_analysis as _run
-        result = _run(timeframe=timeframe, fresh=fresh)
-        return JSONResponse(content=result, status_code=200)
-    except SystemExit as e:
-        code = getattr(e, "code", None)
-        raise HTTPException(
-            status_code=503,
-            detail=f"Analysis aborted: critical data missing or stale (exit code {code})"
-        )
-    except Exception as e:
-        logger.error(f"Analysis error for timeframe {timeframe}: {e}")
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+    return _analyze_with_guard(timeframe=timeframe, fresh=fresh)
 
 
 def _generate_comparison_summary(results: Dict[str, Any]) -> Dict[str, Any]:
@@ -396,6 +510,16 @@ async def health_check():
         "status": status,
         "timestamp": datetime.now().isoformat(),
         "services": services
+    }
+
+
+@app.get("/api/keepalive")
+async def keepalive():
+    """Lightweight endpoint for external uptime pingers (e.g., Render cron/UptimeRobot)."""
+    return {
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "service": "btc_macro_api",
     }
 
 
