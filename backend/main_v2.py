@@ -6,7 +6,7 @@ This is the NEW deterministic-only server.
 - Uses config-driven numeric scoring
 - LLM only for headline classification (temperature=0)
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
@@ -28,6 +28,19 @@ sys.path.insert(0, str(Path(__file__).parent))
 load_dotenv()
 
 logger = logging.getLogger("btc_macro.api")
+
+from auth_dashboard import (
+    dashboard_auth_enabled,
+    issue_token,
+    require_dashboard_user,
+    token_ttl_seconds,
+    verify_credentials,
+)
+
+
+class LoginRequest(BaseModel):
+    client_id: str = Field(..., min_length=1)
+    client_secret: str = Field(..., min_length=1)
 
 
 _VALID_TIMEFRAMES = ("current", "week", "month")
@@ -242,11 +255,50 @@ logger.info(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  Dashboard auth (optional — enabled when DASHBOARD_CLIENT_ID + SECRET are set)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/auth/status")
+async def api_auth_status():
+    """Whether the API requires a Bearer token for protected routes."""
+    return {"auth_required": dashboard_auth_enabled()}
+
+
+@app.post("/api/auth/login")
+async def api_auth_login(body: LoginRequest):
+    """
+    Exchange login ID + password (JSON: client_id, client_secret) for a Bearer token.
+    Disabled when env credentials are not configured (local dev).
+    """
+    if not dashboard_auth_enabled():
+        return {
+            "access_token": None,
+            "token_type": "bearer",
+            "expires_in": 0,
+            "auth_required": False,
+        }
+    if not verify_credentials(body.client_id.strip(), body.client_secret):
+        raise HTTPException(status_code=401, detail="Invalid login ID or password")
+    tok = issue_token(body.client_id.strip())
+    return {
+        "access_token": tok,
+        "token_type": "bearer",
+        "expires_in": token_ttl_seconds(),
+        "auth_required": True,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  v2 DETERMINISTIC ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════════
 
 @app.post("/api/v2/analyze")
-async def v2_analyze(timeframe: str = "current", fresh: bool = False):
+async def v2_analyze(
+    timeframe: str = "current",
+    fresh: bool = False,
+    _auth: Optional[Dict[str, Any]] = Depends(require_dashboard_user),
+):
     """
     Run the deterministic analysis pipeline with timeframe support.
     
@@ -273,7 +325,8 @@ async def v2_analyze(timeframe: str = "current", fresh: bool = False):
 
 @app.get("/api/v2/analyze/compare")
 async def v2_compare_timeframes(
-    timeframes: str = "current,week,month"
+    timeframes: str = "current,week,month",
+    _auth: Optional[Dict[str, Any]] = Depends(require_dashboard_user),
 ):
     """
     Compare analysis across multiple timeframes.
@@ -323,7 +376,11 @@ async def v2_compare_timeframes(
 
 
 @app.get("/api/v2/analyze/{timeframe}")
-async def v2_analyze_timeframe(timeframe: str, fresh: bool = False):
+async def v2_analyze_timeframe(
+    timeframe: str,
+    fresh: bool = False,
+    _auth: Optional[Dict[str, Any]] = Depends(require_dashboard_user),
+):
     """
     Run analysis for a specific timeframe via GET request.
 
@@ -418,7 +475,10 @@ def _generate_timeframe_recommendation(scores: Dict, biases: Dict, avg_confidenc
 
 
 @app.get("/api/v2/history")
-async def v2_history(limit: int = 10):
+async def v2_history(
+    limit: int = 10,
+    _auth: Optional[Dict[str, Any]] = Depends(require_dashboard_user),
+):
     """Get past analysis snapshots from local SQLite."""
     try:
         from storage.db import get_latest_snapshots
@@ -439,7 +499,10 @@ async def v2_history(limit: int = 10):
 
 
 @app.get("/api/v2/history/{snapshot_id}")
-async def v2_history_detail(snapshot_id: int):
+async def v2_history_detail(
+    snapshot_id: int,
+    _auth: Optional[Dict[str, Any]] = Depends(require_dashboard_user),
+):
     """Get a specific snapshot by ID."""
     try:
         from storage.db import get_snapshot_by_id
@@ -463,7 +526,7 @@ async def v2_history_detail(snapshot_id: int):
 
 
 @app.get("/api/v2/config")
-async def v2_config():
+async def v2_config(_auth: Optional[Dict[str, Any]] = Depends(require_dashboard_user)):
     """Return the current scoring configuration (for transparency)."""
     try:
         config_path = Path(__file__).parent / "config" / "scoring_weights.json"
@@ -485,6 +548,8 @@ async def root():
         "version": "2.0.0",
         "status": "running",
         "endpoints": {
+            "/api/auth/status": "Whether Bearer auth is required",
+            "/api/auth/login": "Login ID + password → Bearer token (when auth enabled)",
             "/api/v2/analyze": "Run deterministic analysis (recommended)",
             "/api/v2/analyze/{timeframe}": "Run analysis for specific timeframe (current/week/month)",
             "/api/v2/analyze/compare": "Compare analysis across multiple timeframes",

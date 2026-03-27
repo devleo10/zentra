@@ -1,6 +1,8 @@
 /**
  * API client for backend — v2 (Deterministic Engine) + Legacy v1
  */
+import { authFetchHeaders } from "./auth"
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
 export type TimeFrame = "current" | "week" | "month"
@@ -220,7 +222,11 @@ async function _fetchWithTimeout(url: string, timeoutMs: number): Promise<Respon
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    return await fetch(url, { signal: controller.signal })
+    return await fetch(url, {
+      signal: controller.signal,
+      headers: authFetchHeaders(),
+      cache: "no-store",
+    })
   } finally {
     clearTimeout(timer)
   }
@@ -417,8 +423,41 @@ export async function pingKeepAlive(): Promise<void> {
   }
 }
 
+export async function getAuthStatus(): Promise<{ auth_required: boolean }> {
+  const response = await fetch(`${API_BASE_URL}/api/auth/status`, { cache: "no-store" })
+  if (!response.ok) {
+    return { auth_required: false }
+  }
+  return response.json()
+}
+
+export interface LoginResponse {
+  access_token: string | null
+  token_type: string
+  expires_in: number
+  auth_required: boolean
+}
+
+/** `loginId` / `password` map to server env DASHBOARD_CLIENT_ID / DASHBOARD_CLIENT_SECRET. */
+export async function loginDashboard(loginId: string, password: string): Promise<LoginResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_id: loginId, client_secret: password }),
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const detail = typeof body?.detail === "string" ? body.detail : "Login failed"
+    throw new Error(detail)
+  }
+  return body as LoginResponse
+}
+
 export async function getV2History(limit: number = 10): Promise<V2HistoryEntry[]> {
-  const response = await fetch(`${API_BASE_URL}/api/v2/history?limit=${limit}`)
+  const response = await fetch(`${API_BASE_URL}/api/v2/history?limit=${limit}`, {
+    headers: authFetchHeaders(),
+    cache: "no-store",
+  })
   if (!response.ok) {
     throw new Error(`History fetch failed: ${response.statusText}`)
   }
@@ -426,7 +465,10 @@ export async function getV2History(limit: number = 10): Promise<V2HistoryEntry[]
 }
 
 export async function getV2Config(): Promise<Record<string, any>> {
-  const response = await fetch(`${API_BASE_URL}/api/v2/config`)
+  const response = await fetch(`${API_BASE_URL}/api/v2/config`, {
+    headers: authFetchHeaders(),
+    cache: "no-store",
+  })
   if (!response.ok) {
     throw new Error(`Config fetch failed: ${response.statusText}`)
   }

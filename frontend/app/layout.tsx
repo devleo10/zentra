@@ -5,8 +5,8 @@ import "./globals.css"
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "BTC Macro AI Agent Dashboard",
-  description: "AI-powered Bitcoin macro analysis dashboard",
+  title: "BTC Macro Signal",
+  description: "Bitcoin macro analysis — preview and dashboard",
 }
 
 export default function RootLayout({
