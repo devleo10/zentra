@@ -291,6 +291,18 @@ function _readAnalysisMeta(response: Response): V2AnalysisMeta {
   }
 }
 
+function _isV2AnalysisResult(data: any): data is V2AnalysisResult {
+  return (
+    !!data
+    && typeof data === "object"
+    && typeof data.final_score === "number"
+    && typeof data.bias === "string"
+    && typeof data.action === "string"
+    && !!data.section_scores
+    && typeof data.section_scores === "object"
+  )
+}
+
 export async function runV2Analysis(
   timeframe: TimeFrame = "current",
   onProgress?: (progress: V2AnalysisProgress) => void,
@@ -329,6 +341,9 @@ export async function runV2Analysis(
     if (kickoff.ok && kickoff.status !== 202) {
       const data = await kickoff.json()
       if (data?.status !== "in_progress") {
+        if (!_isV2AnalysisResult(data)) {
+          throw new Error("Backend returned an unexpected analysis payload format.")
+        }
         return { data, meta: _readAnalysisMeta(kickoff) }
       }
     }
@@ -384,6 +399,9 @@ export async function runV2Analysis(
       emitProgress("polling", data?.message || "Analysis in progress.", waitMs)
       await _sleep(waitMs)
       continue
+    }
+    if (!_isV2AnalysisResult(data)) {
+      throw new Error("Backend returned an unexpected analysis payload format.")
     }
     return { data, meta: _readAnalysisMeta(response) }
   }

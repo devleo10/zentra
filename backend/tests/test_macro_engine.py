@@ -83,6 +83,39 @@ def test_coherence_penalizes_high_vix_with_high_risk_score():
     assert "VIX" in reason
 
 
+def test_validate_data_freshness_macro_fetched_at_makes_old_observation_fresh():
+    """Batch fetch stamp: observation month can be old if we just pulled from APIs."""
+    from datetime import datetime, timedelta
+
+    now = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    recent = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    data = {
+        "cpi": {"latest_date": "2020-01-01", "fetched_at": now},
+        "pce": {"latest_date": "2020-01-01", "fetched_at": now},
+        "yields": {"yield_10y": {"date": recent}, "fetched_at": now},
+        "dxy": {"date": recent},
+        "vix": {"date": recent},
+        "sp500": {"date": recent},
+        "gold": {"date": recent},
+        "oil": {"latest_date": recent, "fetched_at": now},
+        "fed_rate": {"latest_date": recent, "fetched_at": now},
+        "btc": {"date": today},
+        "balance_sheet": {"latest_date": recent, "fetched_at": now},
+        "jobs": {"unemployment_date": "2020-02-01", "fetched_at": now},
+        "gdp": {"latest_date": "2019-10-01", "fetched_at": now},
+        "pmi": {"latest_date": "2020-02-01", "fetched_at": now},
+        "m2": {"latest_date": "2020-02-01", "fetched_at": now},
+        "financial_stress": {"latest_date": recent, "fetched_at": now},
+    }
+    r = validate_data_freshness(data)
+    for c in r.checks:
+        assert c["status"] == "FRESH", (c["name"], c)
+    dq = r.to_dict()["data_quality"]
+    assert dq["stale_ratio"] == 0.0
+    assert dq["score"] == 100.0
+
+
 def test_validate_data_freshness_includes_oil_and_fed_and_hy():
     data = {
         "cpi": {"latest_date": "2026-01-01"},

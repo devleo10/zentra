@@ -111,6 +111,17 @@ def _config_hash() -> str:
     return hashlib.sha256(content).hexdigest()[:16]
 
 
+def _stamp_batch_fetched_at(raw_data: dict) -> None:
+    """
+    Mark when numeric payloads were retrieved. Freshness uses this for macro series
+    (avoids false STALE when observation dates are month/quarter starts).
+    """
+    ts = datetime.now().isoformat()
+    for val in raw_data.values():
+        if isinstance(val, dict) and "error" not in val:
+            val.setdefault("fetched_at", ts)
+
+
 def _dxy_needs_repair(dxy: dict) -> bool:
     """True when primary DXY payload is missing a usable level (UI/API hide the metric)."""
     if not dxy:
@@ -450,6 +461,8 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         logger.error(f"  10Y breakeven fetch FAILED: {e}")
         raw_data["breakeven_10y"] = {"error": str(e)}
 
+    _stamp_batch_fetched_at(raw_data)
+
     # ── STEP 2: Validate data freshness ────────────────────────────────
     logger.info("[2/9] Validating data freshness...")
     freshness_report = validate_data_freshness(raw_data)
@@ -787,6 +800,7 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         })
 
     dxy_api_val, dxy_api_chg = _dxy_api_fields(raw_data["dxy"])
+    freshness_payload = freshness_report.to_dict()
 
     snapshot = {
         "timestamp": timestamp,
@@ -884,7 +898,7 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "action": verdict["action"],
         "confidence_pct": verdict["confidence_pct"],
         "confidence_label": verdict["confidence_label"],
-        "data_freshness_info": freshness_report.to_dict(),
+        "data_freshness_info": freshness_payload,
         "config_hash": _config_hash(),
         "prompt_version": prompt_version,
         "llm_model": llm_model,

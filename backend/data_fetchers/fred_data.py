@@ -1083,10 +1083,17 @@ def get_pmi_data(timeframe: str = "current") -> Dict:
     Fallback: Chicago Fed national activity index (CFNAI) scaled to ~PMI-like
     50-center only when NAPM is unavailable (documented proxy, not ISM).
     """
-    # NAPM appears unavailable for some FRED keys/accounts ("series does not exist").
-    # Try a single NAPM shape quickly, then move to CFNAI proxy to avoid repeated 400 spam.
+    # Prefer ISM Manufacturing PMI (NAPM). If unavailable, try ISM Manufacturing New Orders
+    # (NAPMNO) — same 50 diffusion scale. CFNAI remains last-resort proxy.
     long_start = "1990-01-01"
-    df = get_fred_data("NAPM", start_date=long_start, timeframe=timeframe, sort_order="asc")
+    df = pd.DataFrame()
+    used_series: Optional[str] = None
+    for sid in ("NAPM", "NAPMNO"):
+        tdf = get_fred_data(sid, start_date=long_start, timeframe=timeframe, sort_order="asc")
+        if not tdf.empty:
+            df = tdf
+            used_series = sid
+            break
 
     if df.empty:
         # CFNAI 3-month moving average: negative = below trend, positive = above; map loosely to PMI scale
@@ -1156,11 +1163,20 @@ def get_pmi_data(timeframe: str = "current") -> Dict:
         "pmi_trend": pmi_trend,
         "pmi_status": pmi_status,
         "latest_date": latest_date,
-        "source": "FRED",
+        "source": f"FRED:{used_series}" if used_series else "FRED",
         "data_as_of": latest_date,
         "timeframe": timeframe,
     }
-    logger.info("PMI: %.1f (%s, trend=%s, date=%s)", pmi_value, pmi_status, pmi_trend, latest_date)
+    if used_series == "NAPMNO":
+        result["_proxy_note"] = "ISM Manufacturing New Orders (NAPMNO); headline PMI proxy when NAPM unavailable"
+    logger.info(
+        "PMI (%s): %.1f (%s, trend=%s, date=%s)",
+        used_series or "?",
+        pmi_value,
+        pmi_status,
+        pmi_trend,
+        latest_date,
+    )
     return result
 
 

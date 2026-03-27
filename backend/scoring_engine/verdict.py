@@ -93,6 +93,10 @@ def compute_final_verdict(
     freshness_score = _compute_freshness_score(data_freshness_info)
     freshness_penalty = _freshness_penalty_from_score(freshness_score)
     confidence_pct -= freshness_penalty
+
+    # 3e. Data-quality / stale-ratio penalty (many STALE checks → lower trust)
+    dq_penalty = _data_quality_stale_penalty(cfg, data_freshness_info)
+    confidence_pct -= dq_penalty
     confidence_pct = round(max(0, min(100, confidence_pct)), 1)
     
     # Confidence label
@@ -111,7 +115,7 @@ def compute_final_verdict(
         f"Confidence: {confidence_pct}% ({confidence_label}) "
         f"[agreement={agreement_pct:.0f}%, distance={distance_score:.0f}%, "
         f"headline_conf={headline_conf_score:.0f}%, freshness={freshness_score:.0f}%, "
-        f"freshness_penalty={freshness_penalty:.0f}]"
+        f"freshness_penalty={freshness_penalty:.0f}, dq_penalty={dq_penalty:.0f}]"
     )
     
     return {
@@ -130,6 +134,7 @@ def compute_final_verdict(
             "headline_conf_score": round(headline_conf_score, 1),
             "freshness_score": round(freshness_score, 1),
             "freshness_penalty": round(freshness_penalty, 1),
+            "data_quality_stale_penalty": round(dq_penalty, 1),
         }
     }
 
@@ -169,4 +174,27 @@ def _freshness_penalty_from_score(freshness_score: float) -> float:
         return 12.0
     if freshness_score < 75:
         return 6.0
+    return 0.0
+
+
+def _data_quality_stale_penalty(
+    cfg: Dict[str, Any],
+    data_freshness_info: Dict[str, Any] | None,
+) -> float:
+    dq_cfg = cfg.get("data_quality_confidence") or {}
+    if not data_freshness_info:
+        return 0.0
+    dq = data_freshness_info.get("data_quality") or {}
+    try:
+        sr = float(dq.get("stale_ratio") or 0.0)
+    except (TypeError, ValueError):
+        sr = 0.0
+    hard_thr = float(dq_cfg.get("stale_ratio_hard", 0.5))
+    soft_thr = float(dq_cfg.get("stale_ratio_soft", 0.35))
+    hard_pen = float(dq_cfg.get("penalty_hard", 15.0))
+    soft_pen = float(dq_cfg.get("penalty_soft", 8.0))
+    if sr >= hard_thr:
+        return hard_pen
+    if sr >= soft_thr:
+        return soft_pen
     return 0.0
