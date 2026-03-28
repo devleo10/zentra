@@ -270,7 +270,7 @@ def test_compute_final_verdict_includes_new_confidence_breakdown():
         section_scores={"inflation": 50, "economy": 20, "fed_policy": 50, "liquidity": 50, "dxy": 50, "risk_sentiment": 20},
         headline_confidence=0.8,
         cross_signal_adjustment=0,
-        data_freshness_info={"checks": [{"name": "PMI", "status": "MISSING", "is_critical": True}], "data_quality": {"score": 50.0, "stale_ratio": 0.0}},
+        data_freshness_info={"checks": [{"name": "CPI", "status": "MISSING", "is_critical": True}], "data_quality": {"score": 50.0, "stale_ratio": 0.0}},
         contradiction_flags=["x"],
         sanity_flags=["y"],
         downweighted_sections_count=2,
@@ -278,6 +278,36 @@ def test_compute_final_verdict_includes_new_confidence_breakdown():
     assert "data_quality_score" in verdict["components"]
     assert verdict["components"]["critical_metric_penalty"] > 0
     assert verdict["components"]["contradiction_multiplier"] < 1.0
+
+
+def test_compute_final_verdict_missing_pmi_has_no_critical_penalty():
+    verdict = compute_final_verdict(
+        weighted_numeric_score=50,
+        headline_adjustment=0,
+        section_scores={"inflation": 50, "economy": 50, "fed_policy": 50, "liquidity": 50, "dxy": 50, "risk_sentiment": 50},
+        headline_confidence=0.8,
+        cross_signal_adjustment=0,
+        data_freshness_info={"checks": [{"name": "PMI", "status": "MISSING", "is_critical": False}], "data_quality": {"score": 50.0, "stale_ratio": 0.0}},
+        contradiction_flags=[],
+        sanity_flags=[],
+        downweighted_sections_count=0,
+    )
+    assert verdict["components"]["critical_metric_penalty"] == 0
+
+
+def test_compute_final_verdict_missing_btc_etf_has_no_critical_penalty():
+    verdict = compute_final_verdict(
+        weighted_numeric_score=50,
+        headline_adjustment=0,
+        section_scores={"inflation": 50, "economy": 50, "fed_policy": 50, "liquidity": 50, "dxy": 50, "risk_sentiment": 50},
+        headline_confidence=0.8,
+        cross_signal_adjustment=0,
+        data_freshness_info={"checks": [{"name": "BTC ETF Volume", "status": "MISSING", "is_critical": False}], "data_quality": {"score": 50.0, "stale_ratio": 0.0}},
+        contradiction_flags=[],
+        sanity_flags=[],
+        downweighted_sections_count=0,
+    )
+    assert verdict["components"]["critical_metric_penalty"] == 0
 
 
 def test_compute_weighted_total_with_freshness_downweights_stale_section():
@@ -346,6 +376,72 @@ def test_compute_weighted_total_with_freshness_excludes_missing_section():
 
     assert score == 0
     assert breakdown.get("inflation") is None
+
+
+def test_compute_weighted_total_with_freshness_ignores_missing_pmi_check():
+    section_scores = {
+        "inflation": 20,
+        "economy": 80,
+        "fed_policy": 50,
+        "liquidity": 50,
+        "dxy": 50,
+        "risk_sentiment": 50,
+    }
+    checks_all_fresh = [
+        {"name": "CPI", "status": "FRESH"},
+        {"name": "PCE", "status": "FRESH"},
+        {"name": "Unemployment Rate", "status": "FRESH"},
+        {"name": "GDP", "status": "FRESH"},
+        {"name": "PMI", "status": "FRESH"},
+        {"name": "Fed Funds Rate", "status": "FRESH"},
+        {"name": "10Y Yield", "status": "FRESH"},
+        {"name": "M2 Money Supply", "status": "FRESH"},
+        {"name": "Fed Balance Sheet", "status": "FRESH"},
+        {"name": "DXY", "status": "FRESH"},
+        {"name": "VIX", "status": "FRESH"},
+        {"name": "S&P 500", "status": "FRESH"},
+        {"name": "Gold", "status": "FRESH"},
+        {"name": "HY OAS", "status": "FRESH"},
+    ]
+    checks_missing_pmi = [{**c, "status": "MISSING"} if c["name"] == "PMI" else c for c in checks_all_fresh]
+
+    score_fresh, _ = compute_weighted_total_with_freshness(section_scores, {"checks": checks_all_fresh})
+    score_missing_pmi, _ = compute_weighted_total_with_freshness(section_scores, {"checks": checks_missing_pmi})
+
+    assert score_missing_pmi == score_fresh
+
+
+def test_compute_weighted_total_with_freshness_ignores_missing_btc_etf_check():
+    section_scores = {
+        "inflation": 20,
+        "economy": 80,
+        "fed_policy": 50,
+        "liquidity": 50,
+        "dxy": 50,
+        "risk_sentiment": 50,
+    }
+    checks = [
+        {"name": "CPI", "status": "FRESH"},
+        {"name": "PCE", "status": "FRESH"},
+        {"name": "Unemployment Rate", "status": "FRESH"},
+        {"name": "GDP", "status": "FRESH"},
+        {"name": "PMI", "status": "FRESH"},
+        {"name": "Fed Funds Rate", "status": "FRESH"},
+        {"name": "10Y Yield", "status": "FRESH"},
+        {"name": "M2 Money Supply", "status": "FRESH"},
+        {"name": "Fed Balance Sheet", "status": "FRESH"},
+        {"name": "DXY", "status": "FRESH"},
+        {"name": "VIX", "status": "FRESH"},
+        {"name": "S&P 500", "status": "FRESH"},
+        {"name": "Gold", "status": "FRESH"},
+        {"name": "HY OAS", "status": "FRESH"},
+    ]
+    checks_with_missing_etf = checks + [{"name": "BTC ETF Volume", "status": "MISSING"}]
+
+    score_base, _ = compute_weighted_total_with_freshness(section_scores, {"checks": checks})
+    score_missing_etf, _ = compute_weighted_total_with_freshness(section_scores, {"checks": checks_with_missing_etf})
+
+    assert score_missing_etf == score_base
 
 
 def test_coherence_penalizes_high_vix_with_high_risk_score():
