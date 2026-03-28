@@ -93,6 +93,7 @@ export interface V2AnalysisResult {
   core_cpi_mom_avg_3m: number | null
   core_cpi_mom_avg_3m_prior: number | null
   core_cpi_mom_avg_3m_trend: string | null
+  pce_mom_change: number | null
   pce_mom_avg_3m: number | null
   pce_mom_avg_3m_prior: number | null
   pce_mom_avg_3m_trend: string | null
@@ -476,6 +477,37 @@ export async function getV2Config(): Promise<Record<string, any>> {
     throw new Error(`Config fetch failed: ${response.statusText}`)
   }
   return response.json()
+}
+
+// ── Dashboard auth helpers ──────────────────────────────────────────────────
+export interface AuthStatusResponse {
+  auth_required: boolean
+}
+
+export interface LoginResponse {
+  access_token: string | null
+  token_type: string
+  expires_in: number
+  auth_required: boolean
+}
+
+export async function getAuthStatus(): Promise<AuthStatusResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/auth/status`, { cache: "no-store" })
+  if (!response.ok) throw new Error(`Auth status fetch failed: ${response.statusText}`)
+  return response.json()
+}
+
+export async function loginDashboard(clientId: string, clientSecret: string): Promise<LoginResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`Login failed: ${res.status} ${res.statusText} - ${text}`)
+  }
+  return res.json()
 }
 
 // ── Legacy v1 Types ──────────────────────────────────────────────────────

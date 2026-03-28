@@ -516,7 +516,7 @@ export default function BtcMacroDashboard() {
           </div>
         )}
 
-        {result?.data_freshness_info?.warnings?.length > 0 && (
+        {Array.isArray(result?.data_freshness_info?.warnings) && result!.data_freshness_info!.warnings.length > 0 && (
           <div className="bg-amber-950/40 border border-amber-700/60 text-amber-200 text-sm px-4 py-3 rounded-lg">
             <div className="font-semibold mb-1">Live Data Warnings</div>
             <div className="text-xs sm:text-sm space-y-1">
