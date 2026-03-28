@@ -230,6 +230,8 @@ async def health_check():
     
     # Check NewsAPI key (optional)
     services["newsapi"] = "ok" if os.getenv("NEWS_API_KEY") else "optional"
+    services["alphavantage"] = "ok" if (os.getenv("ALPHAVANTAGE_API_KEY") or os.getenv("ALPHA_VANTAGE_API_KEY")) else "optional"
+    services["finnhub"] = "ok" if os.getenv("FINNHUB_API_KEY") else "optional"
     
     # Check if vector store exists
     from pathlib import Path

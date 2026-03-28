@@ -63,6 +63,14 @@ export interface V2AnalysisResult {
     warnings: string[]
     critical_failures: string[]
   }
+  regime?: string | null
+  regime_reasoning?: string | null
+  confidence_breakdown?: Record<string, number> | null
+  data_quality_score?: number | null
+  sanity_flags?: string[] | null
+  contradiction_flags?: string[] | null
+  section_confidence_multipliers?: Record<string, number> | null
+  section_weight_multipliers?: Record<string, number> | null
   config_hash: string
   prompt_version: string
   llm_model: string
@@ -176,6 +184,13 @@ export interface V2AnalysisResult {
   move_index_change_label?: string | null
   move_index_change_unit?: "percent" | "points" | null
   move_index_trend: string | null
+  eem_price?: number | null
+  eem_change?: number | null
+  eem_change_label?: string | null
+  eem_change_unit?: "percent" | "points" | null
+  eem_trend?: string | null
+  eem_source?: string | null
+  // Backward-compat alias during migration from NQEM to EEM
   nqem_price: number | null
   nqem_change: number | null
   nqem_change_label?: string | null
@@ -194,6 +209,9 @@ export interface V2AnalysisResult {
   btc_ma200: number | null
   btc_realized_vol_30d: number | null
   btc_etf_volume: number | null
+  btc_etf_net_flow_musd?: number | null
+  btc_etf_flow_date?: string | null
+  btc_etf_source?: string | null
   btc_etf_flow_level: string | null
   btc_market_arrow: "up" | "down" | null
   // DXY structure

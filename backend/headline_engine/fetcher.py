@@ -3,6 +3,8 @@ Headline ingestion and filtering pipeline.
 
 Fetches macro headlines from:
 - Official RSS (Federal Reserve, BLS)
+- Finnhub news
+- Alpha Vantage NEWS_SENTIMENT
 - NewsAPI (broad macro query + dedicated request for Reuters, Financial Times, Stratfor via domains)
 - Google News RSS (fallback)
 
@@ -27,6 +29,10 @@ logger = logging.getLogger("btc_macro.headline_engine")
 
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 NEWS_API_URL = "https://newsapi.org/v2/everything"
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+FINNHUB_NEWS_URL = "https://finnhub.io/api/v1/news"
+ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY") or os.getenv("ALPHA_VANTAGE_API_KEY")
+ALPHAVANTAGE_API_URL = "https://www.alphavantage.co/query"
 
 # Keywords that identify macro-relevant headlines
 MACRO_KEYWORDS = [
@@ -105,6 +111,8 @@ class HeadlineFetcher:
     def __init__(self, lookback_hours: int = 48):
         self.lookback_hours = lookback_hours
         self.api_key = NEWS_API_KEY
+        self.finnhub_api_key = FINNHUB_API_KEY
+        self.alphavantage_api_key = ALPHAVANTAGE_API_KEY
     
     def fetch_headlines(self) -> List[Dict]:
         """
@@ -150,6 +158,26 @@ class HeadlineFetcher:
             logger.debug("Official-source scrapers unavailable")
 
         # Source 1: NewsAPI (broad macro query)
+        if self.finnhub_api_key:
+            try:
+                finnhub_results = self._fetch_finnhub_news()
+                headlines.extend(finnhub_results)
+                logger.info(f"Finnhub returned {len(finnhub_results)} headlines")
+            except Exception as e:
+                safe_error = _http_error_summary(e)
+                errors.append(f"Finnhub: {safe_error}")
+                logger.warning("Finnhub news failed: %s", safe_error)
+
+        if self.alphavantage_api_key:
+            try:
+                av_results = self._fetch_alpha_vantage_news()
+                headlines.extend(av_results)
+                logger.info(f"Alpha Vantage returned {len(av_results)} headlines")
+            except Exception as e:
+                safe_error = _http_error_summary(e)
+                errors.append(f"Alpha Vantage: {safe_error}")
+                logger.warning("Alpha Vantage news failed: %s", safe_error)
+
         if self.api_key:
             try:
                 newsapi_results = self._fetch_newsapi()
@@ -239,6 +267,92 @@ class HeadlineFetcher:
 
         cache_put(cache_key, annotated)
         return annotated
+
+    def _fetch_finnhub_news(self) -> List[Dict]:
+        """Fetch macro headlines from Finnhub general news endpoint."""
+        cutoff = datetime.now() - timedelta(hours=max(1, self.lookback_hours))
+        params = {
+            "category": "general",
+            "token": self.finnhub_api_key,
+        }
+        response = requests.get(FINNHUB_NEWS_URL, params=params, timeout=15)
+        response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list):
+            return []
+
+        out = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ts = row.get("datetime")
+            pub = ""
+            try:
+                pub_dt = datetime.utcfromtimestamp(int(ts))
+                if pub_dt < cutoff:
+                    continue
+                pub = pub_dt.isoformat()
+            except Exception:
+                pass
+
+            title = row.get("headline", "") or ""
+            if not title:
+                continue
+            out.append(
+                {
+                    "title": title,
+                    "description": row.get("summary", "") or "",
+                    "published_at": pub,
+                    "source": row.get("source", "Finnhub") or "Finnhub",
+                    "url": row.get("url", "") or "",
+                }
+            )
+        return out
+
+    def _fetch_alpha_vantage_news(self) -> List[Dict]:
+        """Fetch macro headlines from Alpha Vantage NEWS_SENTIMENT."""
+        cutoff = datetime.now() - timedelta(hours=max(1, self.lookback_hours))
+        params = {
+            "function": "NEWS_SENTIMENT",
+            "apikey": self.alphavantage_api_key,
+            "sort": "LATEST",
+            "limit": 50,
+        }
+        response = requests.get(ALPHAVANTAGE_API_URL, params=params, timeout=15)
+        response.raise_for_status()
+        body = response.json()
+        feed = body.get("feed") if isinstance(body, dict) else None
+        if not isinstance(feed, list):
+            return []
+
+        out = []
+        for row in feed:
+            if not isinstance(row, dict):
+                continue
+            title = row.get("title", "") or ""
+            if not title:
+                continue
+
+            pub_raw = str(row.get("time_published") or "")
+            pub = pub_raw
+            try:
+                pub_dt = datetime.strptime(pub_raw, "%Y%m%dT%H%M%S")
+                if pub_dt < cutoff:
+                    continue
+                pub = pub_dt.isoformat()
+            except Exception:
+                pass
+
+            out.append(
+                {
+                    "title": title,
+                    "description": row.get("summary", "") or "",
+                    "published_at": pub,
+                    "source": row.get("source", "Alpha Vantage") or "Alpha Vantage",
+                    "url": row.get("url", "") or "",
+                }
+            )
+        return out
     
     def _fetch_newsapi(self) -> List[Dict]:
         """Fetch from NewsAPI (free tier: max 29 days lookback)."""

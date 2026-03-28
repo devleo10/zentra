@@ -16,30 +16,18 @@ def compute_final_verdict(
     headline_confidence: float,
     cross_signal_adjustment: int = 0,
     data_freshness_info: Dict[str, Any] | None = None,
+    contradiction_flags: list[str] | None = None,
+    sanity_flags: list[str] | None = None,
+    downweighted_sections_count: int = 0,
 ) -> Dict[str, Any]:
-    """
-    Compute final verdict deterministically.
-    
-    final_score = weighted_numeric_score + headline_adjustment + cross_signal_adjustment
-    
-    Args:
-        weighted_numeric_score: 0-100 from numeric engine
-        headline_adjustment: -10 to +10 from headline engine
-        section_scores: Dict of section key -> score (for agreement calc)
-        headline_confidence: Average confidence from headline classification (0-1)
-        cross_signal_adjustment: -5 to +5 from LLM cross-signal review
-    
-    Returns:
-        Dict with: final_score, bias, action, confidence, confidence_pct, reasoning
-    """
     cfg = get_scoring_config()
     cfg_bias = cfg["bias_thresholds"]
     cfg_conf = cfg["confidence_formula"]
-    
-    # 1. Final score
+    contradiction_flags = contradiction_flags or []
+    sanity_flags = sanity_flags or []
+
     final_score = max(0, min(100, weighted_numeric_score + headline_adjustment + cross_signal_adjustment))
-    
-    # 2. Bias classification (7 granular thresholds)
+
     if final_score >= cfg_bias["strong_bull"]["min"]:
         bias = "Strong Bull"
         action = "Aggressive BTC accumulation"
@@ -61,11 +49,8 @@ def compute_final_verdict(
     else:
         bias = "High Risk"
         action = "Stay out / hedge"
-    
-    # 3. Confidence calculation (deterministic)
+
     scores = list(section_scores.values())
-    
-    # 3a. Section agreement: what % of sections agree on direction?
     if scores:
         bullish_count = sum(1 for s in scores if s > 60)
         bearish_count = sum(1 for s in scores if s < 40)
@@ -73,51 +58,55 @@ def compute_final_verdict(
         agreement_pct = (max_aligned / len(scores)) * 100
     else:
         agreement_pct = 50.0
-    
-    # 3b. Distance from 50 (higher distance = more conviction)
-    distance = abs(final_score - 50)
-    max_distance = cfg_conf["max_distance_score"]
-    distance_score = min(100, (distance / max_distance) * 100)
-    
-    # 3c. Headline confidence (0-1 scaled to 0-100)
+
     headline_conf_score = headline_confidence * 100
-    
-    # Weighted confidence (base)
-    confidence_pct = (
-        agreement_pct * cfg_conf["section_agreement_weight"] +
-        distance_score * cfg_conf["distance_weight"] +
-        headline_conf_score * cfg_conf["headline_confidence_weight"]
+    freshness_score = _compute_freshness_score(data_freshness_info)
+    data_quality_score = _compute_data_quality_score(data_freshness_info)
+    model_stability_score = _compute_model_stability_score(
+        contradiction_flags,
+        sanity_flags,
+        downweighted_sections_count,
     )
 
-    # 3d. Freshness adjustment (penalty-only)
-    freshness_score = _compute_freshness_score(data_freshness_info)
+    confidence_pct = (
+        freshness_score * cfg_conf.get("freshness_weight", 0.30) +
+        agreement_pct * cfg_conf.get("section_agreement_weight", 0.25) +
+        data_quality_score * cfg_conf.get("data_quality_weight", 0.20) +
+        headline_conf_score * cfg_conf.get("headline_confidence_weight", 0.15) +
+        model_stability_score * cfg_conf.get("model_stability_weight", 0.10)
+    )
+
     freshness_penalty = _freshness_penalty_from_score(freshness_score)
     confidence_pct -= freshness_penalty
-
-    # 3e. Data-quality / stale-ratio penalty (many STALE checks → lower trust)
     dq_penalty = _data_quality_stale_penalty(cfg, data_freshness_info)
     confidence_pct -= dq_penalty
+    critical_metric_penalty = _critical_metric_penalty(cfg_conf, data_freshness_info)
+    confidence_pct -= critical_metric_penalty
+    contradiction_multiplier = 1.0
+    if contradiction_flags:
+        contradiction_multiplier = float(cfg_conf.get("contradiction_multiplier", 0.8))
+        confidence_pct *= contradiction_multiplier
     confidence_pct = round(max(0, min(100, confidence_pct)), 1)
-    
-    # Confidence label
+
     if confidence_pct >= 75:
         confidence_label = "High"
     elif confidence_pct >= 50:
         confidence_label = "Medium"
     else:
         confidence_label = "Low"
-    
+
     cross_part = f" + CrossSignal: {cross_signal_adjustment:+d}" if cross_signal_adjustment else ""
     reasoning = (
         f"Numeric: {weighted_numeric_score} + Headlines: {headline_adjustment:+d}"
         f"{cross_part} = {final_score}. "
         f"Bias: {bias}. "
         f"Confidence: {confidence_pct}% ({confidence_label}) "
-        f"[agreement={agreement_pct:.0f}%, distance={distance_score:.0f}%, "
-        f"headline_conf={headline_conf_score:.0f}%, freshness={freshness_score:.0f}%, "
-        f"freshness_penalty={freshness_penalty:.0f}, dq_penalty={dq_penalty:.0f}]"
+        f"[freshness={freshness_score:.0f}%, agreement={agreement_pct:.0f}%, data_quality={data_quality_score:.0f}%, "
+        f"headline_conf={headline_conf_score:.0f}%, model_stability={model_stability_score:.0f}%, "
+        f"freshness_penalty={freshness_penalty:.0f}, dq_penalty={dq_penalty:.0f}, critical_penalty={critical_metric_penalty:.0f}, "
+        f"contradiction_multiplier={contradiction_multiplier:.2f}]"
     )
-    
+
     return {
         "final_score": final_score,
         "bias": bias,
@@ -130,24 +119,24 @@ def compute_final_verdict(
             "headline_adjustment": headline_adjustment,
             "cross_signal_adjustment": cross_signal_adjustment,
             "agreement_pct": round(agreement_pct, 1),
-            "distance_score": round(distance_score, 1),
+            "data_quality_score": round(data_quality_score, 1),
             "headline_conf_score": round(headline_conf_score, 1),
             "freshness_score": round(freshness_score, 1),
+            "model_stability_score": round(model_stability_score, 1),
             "freshness_penalty": round(freshness_penalty, 1),
             "data_quality_stale_penalty": round(dq_penalty, 1),
+            "critical_metric_penalty": round(critical_metric_penalty, 1),
+            "contradiction_multiplier": round(contradiction_multiplier, 2),
         }
     }
 
 
 def _compute_freshness_score(data_freshness_info: Dict[str, Any] | None) -> float:
-    """Convert freshness checks into a 0-100 score."""
     if not data_freshness_info:
         return 50.0
-
     checks = data_freshness_info.get("checks", [])
     if not checks:
         return 50.0
-
     weighted_sum = 0.0
     weight_total = 0.0
     for chk in checks:
@@ -158,16 +147,24 @@ def _compute_freshness_score(data_freshness_info: Dict[str, Any] | None) -> floa
             score = 100.0
         elif status == "STALE":
             score = 45.0
-        else:  # MISSING / unknown
+        else:
             score = 0.0
         weighted_sum += score * weight
         weight_total += weight
-
     return (weighted_sum / weight_total) if weight_total else 50.0
 
 
+def _compute_data_quality_score(data_freshness_info: Dict[str, Any] | None) -> float:
+    if not data_freshness_info:
+        return 50.0
+    dq = data_freshness_info.get("data_quality") or {}
+    try:
+        return float(dq.get("score", 50.0))
+    except (TypeError, ValueError):
+        return 50.0
+
+
 def _freshness_penalty_from_score(freshness_score: float) -> float:
-    """Penalty bands to reduce overconfident outputs on stale data."""
     if freshness_score < 40:
         return 20.0
     if freshness_score < 60:
@@ -177,10 +174,7 @@ def _freshness_penalty_from_score(freshness_score: float) -> float:
     return 0.0
 
 
-def _data_quality_stale_penalty(
-    cfg: Dict[str, Any],
-    data_freshness_info: Dict[str, Any] | None,
-) -> float:
+def _data_quality_stale_penalty(cfg: Dict[str, Any], data_freshness_info: Dict[str, Any] | None) -> float:
     dq_cfg = cfg.get("data_quality_confidence") or {}
     if not data_freshness_info:
         return 0.0
@@ -198,3 +192,27 @@ def _data_quality_stale_penalty(
     if sr >= soft_thr:
         return soft_pen
     return 0.0
+
+
+def _critical_metric_penalty(cfg_conf: Dict[str, Any], data_freshness_info: Dict[str, Any] | None) -> float:
+    if not data_freshness_info:
+        return 0.0
+    penalties = cfg_conf.get("critical_metric_penalties") or {}
+    checks = data_freshness_info.get("checks") or []
+    total = 0.0
+    for chk in checks:
+        if chk.get("status") == "MISSING":
+            total += float(penalties.get(chk.get("name"), 0.0) or 0.0)
+    return total
+
+
+def _compute_model_stability_score(
+    contradiction_flags: list[str],
+    sanity_flags: list[str],
+    downweighted_sections_count: int,
+) -> float:
+    score = 100.0
+    score -= len(contradiction_flags) * 20.0
+    score -= len(sanity_flags) * 15.0
+    score -= max(0, downweighted_sections_count) * 5.0
+    return max(0.0, min(100.0, score))

@@ -116,7 +116,7 @@ function SkeletonPulse({ className = "", style }: { className?: string; style?: 
 
 const SKELETON_SECTIONS = Object.keys(SECTION_LABELS)
 const SKELETON_BAR_TARGETS = [72, 45, 58, 63, 38, 80]
-const SKELETON_METRICS = ["DXY", "WTI", "VIX", "S&P 500", "Gold", "10Y", "Fed Rate", "Fed tone", "MOVE", "NQEM", "PMI", "GDP"]
+const SKELETON_METRICS = ["DXY", "WTI", "VIX", "S&P 500", "Gold", "10Y", "Fed Rate", "Fed tone", "MOVE", "EEM", "PMI", "GDP"]
 
 function LoadingSkeleton() {
   return (
@@ -914,18 +914,27 @@ export default function BtcMacroDashboard() {
                   <span className="ml-0.5"><TrendArrow trend={result.move_index_trend} /></span>
                 </span>
               )}
-              {result.nqem_price != null && (
-                <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300" title="NQEM emerging markets ETF">
-                  NQEM <span className="text-white font-medium">{result.nqem_price.toFixed(2)}</span>
-                  {result.nqem_change != null && (
-                    <span className={result.nqem_change > 0.05 ? "text-green-400" : result.nqem_change < -0.05 ? "text-red-400" : "text-gray-500"}>
-                      {" "}({formatMarketChange(result.nqem_change, result.nqem_change_unit, result.nqem_change_label)})
-                    </span>
-                  )}
-                  <span className="ml-0.5"><TrendArrow trend={result.nqem_trend} /></span>
-                  <HistoricalBadge source={result.nqem_source} />
-                </span>
-              )}
+              {(() => {
+                const eemPrice = result.eem_price ?? result.nqem_price
+                const eemChange = result.eem_change ?? result.nqem_change
+                const eemChangeUnit = result.eem_change_unit ?? result.nqem_change_unit
+                const eemChangeLabel = result.eem_change_label ?? result.nqem_change_label
+                const eemTrend = result.eem_trend ?? result.nqem_trend
+                const eemSource = result.eem_source ?? result.nqem_source
+                if (eemPrice == null) return null
+                return (
+                  <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300" title="EEM emerging markets ETF">
+                    EEM <span className="text-white font-medium">{eemPrice.toFixed(2)}</span>
+                    {eemChange != null && (
+                      <span className={eemChange > 0.05 ? "text-green-400" : eemChange < -0.05 ? "text-red-400" : "text-gray-500"}>
+                        {" "}({formatMarketChange(eemChange, eemChangeUnit, eemChangeLabel)})
+                      </span>
+                    )}
+                    <span className="ml-0.5"><TrendArrow trend={eemTrend} /></span>
+                    <HistoricalBadge source={eemSource} />
+                  </span>
+                )
+              })()}
               {result.dxy_structure != null && result.dxy_structure !== "unknown" && (
                 <span className={`bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 ${
                   result.dxy_structure === "downtrend" ? "text-green-400" :

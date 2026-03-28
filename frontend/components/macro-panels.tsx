@@ -263,6 +263,7 @@ export function BitcoinMarketPanel({ result }: { result: V2AnalysisResult }) {
     result.btc_dominance != null ||
     result.btc_ma200 != null ||
     result.btc_etf_volume != null ||
+    result.btc_etf_net_flow_musd != null ||
     result.btc_price != null
   if (!has) return null
 
@@ -308,9 +309,20 @@ export function BitcoinMarketPanel({ result }: { result: V2AnalysisResult }) {
             30d Vol <span className="text-white font-medium">{(result.btc_realized_vol_30d * 100).toFixed(0)}%</span>
           </span>
         )}
-        {result.btc_etf_volume != null && (
+        {(result.btc_etf_volume != null || result.btc_etf_net_flow_musd != null) && (
           <span>
-            ETF Vol <span className="text-white font-medium">{(result.btc_etf_volume / 1_000_000).toFixed(0)}M</span>
+            {result.btc_etf_volume != null && (
+              <>
+                ETF Vol <span className="text-white font-medium">{(result.btc_etf_volume / 1_000_000).toFixed(0)}M</span>
+              </>
+            )}
+            {result.btc_etf_net_flow_musd != null && (
+              <span className={result.btc_etf_net_flow_musd >= 0 ? "text-green-400" : "text-red-400"}>
+                {result.btc_etf_volume != null ? " · " : "ETF Flow "}
+                {result.btc_etf_net_flow_musd > 0 ? "+" : ""}
+                {result.btc_etf_net_flow_musd.toFixed(0)}M
+              </span>
+            )}
             <span
               className={
                 result.btc_etf_flow_level === "high"
@@ -334,6 +346,7 @@ export function BitcoinMarketPanel({ result }: { result: V2AnalysisResult }) {
                 }
               />
             </span>
+            <HistoricalBadge source={result.btc_etf_source} />
           </span>
         )}
       </div>

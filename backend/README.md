@@ -19,6 +19,8 @@ Create a `.env` file in the `backend/` directory:
 OPENAI_API_KEY=your_openai_api_key_here
 FRED_API_KEY=your_fred_api_key_here
 NEWS_API_KEY=your_newsapi_key_here
+ALPHAVANTAGE_API_KEY=your_alphavantage_api_key_here
+FINNHUB_API_KEY=your_finnhub_api_key_here
 BACKEND_PORT=8000
 CORS_ORIGINS=http://localhost:3000
 ```
@@ -27,6 +29,8 @@ CORS_ORIGINS=http://localhost:3000
 - **OpenAI** (`OPENAI_API_KEY`): Required for LLM and embeddings. Get from https://platform.openai.com
 - **FRED**: Free. Get from https://fred.stlouisfed.org/docs/api/api_key.html
 - **NewsAPI**: Free tier available. Get from https://newsapi.org. When set, headlines are also fetched from **Reuters**, **Financial Times**, and **Stratfor** (via the `domains` parameter). Stratfor may return no results if not indexed by NewsAPI.
+- **Alpha Vantage** (`ALPHAVANTAGE_API_KEY`): Optional. Used for ISM/PMI fallback and NEWS_SENTIMENT fallback.
+- **Finnhub** (`FINNHUB_API_KEY`): Optional. Used for macro headline fallback.
 
 **Optional env (OpenAI):**
 - `OPENAI_BASE_URL` — override API base URL (e.g. for proxies).

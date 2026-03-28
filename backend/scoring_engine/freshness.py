@@ -66,13 +66,16 @@ def compute_data_quality_metrics(checks: List[Dict[str, Any]]) -> Dict[str, Any]
     fresh = sum(1 for c in checks if c.get("status") == "FRESH")
     stale = sum(1 for c in checks if c.get("status") == "STALE")
     missing = sum(1 for c in checks if c.get("status") == "MISSING")
-    score = round(100.0 * fresh / total, 1)
+    available = fresh + stale
+    score = round(100.0 * available / total, 1)
     stale_ratio = round(stale / total, 4)
     return {
         "score": score,
+        "availability_score": score,
         "fresh": fresh,
         "stale": stale,
         "missing": missing,
+        "available": available,
         "total": total,
         "stale_ratio": stale_ratio,
     }
@@ -367,6 +370,14 @@ def validate_data_freshness(data: Dict[str, Any]) -> FreshnessReport:
     report.add_check(
         "Unemployment Rate",
         _parse_date(jobs.get("unemployment_date") or jobs.get("data_as_of")),
+        _days("unemployment_max_age_days", 70),
+        is_critical=False,
+        fetched_at=_blob_fetched_at(jobs),
+        macro_fetch_max_age=macro_fetch_max,
+    )
+    report.add_check(
+        "NFP",
+        _parse_date(jobs.get("unemployment_date") or jobs.get("data_as_of")) if jobs.get("nfp_change") is not None else None,
         _days("unemployment_max_age_days", 70),
         is_critical=False,
         fetched_at=_blob_fetched_at(jobs),

@@ -598,6 +598,8 @@ async def health_check():
     services["fred"] = "ok" if os.getenv("FRED_API_KEY") else "missing_key"
     services["bls"] = "ok" if os.getenv("BLS_API_KEY") else "optional (FRED fallback available)"
     services["newsapi"] = "ok" if os.getenv("NEWS_API_KEY") else "optional (Google RSS fallback available)"
+    services["alphavantage"] = "ok" if (os.getenv("ALPHAVANTAGE_API_KEY") or os.getenv("ALPHA_VANTAGE_API_KEY")) else "optional"
+    services["finnhub"] = "ok" if os.getenv("FINNHUB_API_KEY") else "optional"
 
     sqlite_db = Path(__file__).parent / "storage" / "macro_snapshots.db"
     services["sqlite_db"] = "ok" if sqlite_db.exists() else "will_be_created_on_first_run"

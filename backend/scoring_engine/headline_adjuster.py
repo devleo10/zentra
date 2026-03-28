@@ -42,6 +42,7 @@ def compute_headline_adjustment(classified_headlines: List[Dict[str, Any]]) -> T
     max_pos = cfg["max_positive_adjustment"]
     max_neg = cfg["max_negative_adjustment"]
     use_scaling = cfg.get("confidence_scaling", True)
+    source_weights = cfg.get("source_weights", {})
     
     adjustments = []
     reasons = []
@@ -54,16 +55,19 @@ def compute_headline_adjustment(classified_headlines: List[Dict[str, Any]]) -> T
         
         bias = h.get("event_bias", "neutral")
         impact = h.get("risk_impact", "neutral")
+        source = str(h.get("source") or h.get("_headline_source") or "Others")
         
         # Determine raw adjustment from lookup table
         raw_adj = _lookup_adjustment(bias, impact, cfg)
+        source_weight = _lookup_source_weight(source, source_weights)
         
         # Scale by confidence if enabled
         if use_scaling:
             raw_adj = raw_adj * conf
+        raw_adj = raw_adj * source_weight
         
         adjustments.append(raw_adj)
-        reasons.append(f"[{bias}/{impact} conf={conf:.2f}] adj={raw_adj:+.1f}: {h.get('reason', '')}")
+        reasons.append(f"[{bias}/{impact} conf={conf:.2f} src={source} w={source_weight:.2f}] adj={raw_adj:+.1f}: {h.get('reason', '')}")
     
     if not adjustments:
         return 0, "No qualifying headlines (all below confidence threshold or none provided)"
@@ -101,3 +105,12 @@ def _lookup_adjustment(bias: str, impact: str, cfg: Dict) -> float:
             return cfg["hawkish_neutral"]
     else:
         return cfg["neutral_adjustment"]
+
+
+def _lookup_source_weight(source: str, source_weights: Dict[str, float]) -> float:
+    for name, weight in source_weights.items():
+        if name == "__default__":
+            continue
+        if source.lower() == name.lower():
+            return float(weight)
+    return float(source_weights.get("__default__", 0.5))

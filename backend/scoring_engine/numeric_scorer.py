@@ -10,29 +10,27 @@ from typing import Dict, Any, Tuple, Optional, List
 from scoring_engine.config_loader import get_scoring_config
 
 
-def score_inflation(cpi_mom_change: float, pce_mom_change: Optional[float], oil_change: Optional[float]) -> Tuple[int, str]:
+def score_inflation(
+    cpi_yoy_rate: Optional[float],
+    core_cpi_yoy_rate: Optional[float],
+    oil_change: Optional[float],
+    breakeven_10y: Optional[float] = None,
+) -> Tuple[int, str, Dict[str, Any]]:
     cfg = get_scoring_config()["inflation_thresholds"]
 
-    if cpi_mom_change is None:
-        cpi_mom_change = 0.0
+    cpi_score = 50
+    if cpi_yoy_rate is not None:
+        cpi_score = _threshold_score(
+            cpi_yoy_rate,
+            [(b["threshold"], b["score"]) for b in cfg.get("cpi_yoy_brackets", [])],
+        )
 
-    cpi_score = _threshold_score(cpi_mom_change, [
-        (cfg["cpi_mom_falling_fast"]["threshold"], cfg["cpi_mom_falling_fast"]["score"]),
-        (cfg["cpi_mom_falling"]["threshold"], cfg["cpi_mom_falling"]["score"]),
-        (cfg["cpi_mom_flat"]["threshold"], cfg["cpi_mom_flat"]["score"]),
-        (cfg["cpi_mom_rising"]["threshold"], cfg["cpi_mom_rising"]["score"]),
-        (cfg["cpi_mom_rising_fast"]["threshold"], cfg["cpi_mom_rising_fast"]["score"]),
-    ])
-
-    pce_score = cpi_score
-    if pce_mom_change is not None:
-        pce_score = _threshold_score(pce_mom_change, [
-            (cfg["pce_mom_falling_fast"]["threshold"], cfg["pce_mom_falling_fast"]["score"]),
-            (cfg["pce_mom_falling"]["threshold"], cfg["pce_mom_falling"]["score"]),
-            (cfg["pce_mom_flat"]["threshold"], cfg["pce_mom_flat"]["score"]),
-            (cfg["pce_mom_rising"]["threshold"], cfg["pce_mom_rising"]["score"]),
-            (cfg["pce_mom_rising_fast"]["threshold"], cfg["pce_mom_rising_fast"]["score"]),
-        ])
+    core_score = cpi_score
+    if core_cpi_yoy_rate is not None:
+        core_score = _threshold_score(
+            core_cpi_yoy_rate,
+            [(b["threshold"], b["score"]) for b in cfg.get("core_cpi_yoy_brackets", [])],
+        )
 
     oil_score = cfg["oil_neutral_score"]
     if oil_change is not None:
@@ -43,24 +41,62 @@ def score_inflation(cpi_mom_change: float, pce_mom_change: Optional[float], oil_
         else:
             oil_score = cfg["oil_neutral_score"]
 
+    breakeven_score = 50
+    if breakeven_10y is not None:
+        low_thr = float(cfg.get("breakeven_low_threshold", 2.0))
+        hi_thr = float(cfg.get("breakeven_high_threshold", 2.5))
+        if breakeven_10y <= low_thr:
+            breakeven_score = 80
+        elif breakeven_10y < hi_thr:
+            breakeven_score = 50
+        else:
+            breakeven_score = 20
+
+    forward_score = (
+        oil_score * float(cfg.get("forward_weight_oil", 0.5)) +
+        breakeven_score * float(cfg.get("forward_weight_breakeven", 0.5))
+    )
     final = (
         cpi_score * cfg["cpi_weight"] +
-        pce_score * cfg["pce_weight"] +
-        oil_score * cfg["oil_weight"]
+        core_score * cfg["core_cpi_weight"] +
+        forward_score * cfg["forward_weight"]
     )
     final = int(round(max(0, min(100, final))))
 
-    _cpi_str = f"{cpi_mom_change:+.2f}%"
-    _pce_str = f"{pce_mom_change:+.2f}%" if pce_mom_change is not None else "N/A"
+    divergence = bool(
+        cpi_yoy_rate is not None
+        and core_cpi_yoy_rate is not None
+        and cpi_yoy_rate <= float(cfg.get("controlled_cpi_threshold", 2.7))
+        and core_cpi_yoy_rate <= float(cfg.get("controlled_core_threshold", 2.8))
+        and (
+            (oil_change is not None and oil_change >= float(cfg.get("divergence_oil_threshold", 10.0)))
+            or (breakeven_10y is not None and breakeven_10y >= float(cfg.get("divergence_breakeven_threshold", 2.5)))
+        )
+    )
+    details = {
+        "cpi_score": int(round(cpi_score)),
+        "core_cpi_score": int(round(core_score)),
+        "forward_inflation_score": int(round(forward_score)),
+        "oil_score": int(round(oil_score)),
+        "breakeven_score": int(round(breakeven_score)),
+        "divergence_flag": divergence,
+        "confidence_haircut": float(cfg.get("divergence_confidence_haircut", 0.2)) if divergence else 0.0,
+    }
+
+    _cpi_str = f"{cpi_yoy_rate:.2f}%" if cpi_yoy_rate is not None else "N/A"
+    _core_str = f"{core_cpi_yoy_rate:.2f}%" if core_cpi_yoy_rate is not None else "N/A"
     _oil_str = f"{oil_change:+.2f}%" if oil_change is not None else "N/A"
+    _be_str = f"{breakeven_10y:.2f}%" if breakeven_10y is not None else "N/A"
     reasoning = (
-        f"CPI MoM: {_cpi_str} -> score {cpi_score} | "
-        f"PCE MoM: {_pce_str} -> score {pce_score} | "
-        f"Oil window change: {_oil_str} -> score {oil_score} | "
+        f"CPI YoY: {_cpi_str} -> {cpi_score} | "
+        f"Core CPI YoY: {_core_str} -> {core_score} | "
+        f"Forward inflation: oil {_oil_str} -> {oil_score}, breakeven {_be_str} -> {breakeven_score}, blended {forward_score:.0f} | "
+        f"Divergence: {'yes' if divergence else 'no'}"
+        f"{f' (-{int(details['confidence_haircut'] * 100)}% conf)' if divergence else ''} | "
         f"Weighted: {final}"
     )
 
-    return final, reasoning
+    return final, reasoning, details
 
 
 def score_fed_policy(
@@ -331,10 +367,12 @@ def score_risk_sentiment(
 def score_economy(
     unemployment_rate: Optional[float],
     unemployment_trend: str = "stable",
+    unemployment_trend_3m: str = "stable",
     nfp_change: Optional[float] = None,
     gdp_growth: Optional[float] = None,
     pmi_value: Optional[float] = None,
-) -> Tuple[int, str]:
+    regime: str = "neutral",
+) -> Tuple[int, str, Dict[str, Any]]:
     cfg = get_scoring_config().get("economy_thresholds", {})
 
     ur_score = 50
@@ -349,12 +387,22 @@ def score_economy(
         ])
         ur_score = _threshold_score(unemployment_rate, [(b["threshold"], b["score"]) for b in ur_brackets])
 
-        trend_bonus = cfg.get("unemployment_trend_rising_bonus", 10)
-        trend_penalty = cfg.get("unemployment_trend_falling_penalty", -10)
+        short_component = 0.0
+        medium_component = 0.0
         if unemployment_trend == "rising":
-            ur_score = min(100, ur_score + trend_bonus)
+            short_component = float(cfg.get("unemployment_trend_short_rising_penalty", -15))
         elif unemployment_trend == "falling":
-            ur_score = max(0, ur_score + trend_penalty)
+            short_component = float(cfg.get("unemployment_trend_short_falling_bonus", 10))
+        if unemployment_trend_3m == "rising":
+            medium_component = float(cfg.get("unemployment_trend_medium_rising_penalty", -10))
+        elif unemployment_trend_3m == "falling":
+            medium_component = float(cfg.get("unemployment_trend_medium_falling_bonus", 5))
+        trend_adj = (0.7 * short_component) + (0.3 * medium_component)
+        ur_score = max(0, min(100, ur_score + trend_adj))
+    else:
+        short_component = 0.0
+        medium_component = 0.0
+        trend_adj = 0.0
 
     gdp_score = 50
     if gdp_growth is not None:
@@ -391,6 +439,17 @@ def score_economy(
         ])
         nfp_score = _threshold_score(nfp_change, [(b["threshold"], b["score"]) for b in nfp_brackets])
 
+    regime_adj = 0
+    weak_growth = bool(
+        (nfp_change is not None and nfp_change < 0) or
+        unemployment_trend == "rising" or
+        (gdp_growth is not None and gdp_growth < 1.0)
+    )
+    if regime == "risk_off" and weak_growth:
+        regime_adj = int(cfg.get("regime_adjustments", {}).get("risk_off_weak_growth_penalty", -8))
+    elif regime == "liquidity_driven" and weak_growth:
+        regime_adj = int(cfg.get("regime_adjustments", {}).get("liquidity_driven_weak_growth_relief", 8))
+
     ur_w = cfg.get("unemployment_weight", 0.28)
     gdp_w = cfg.get("gdp_weight", 0.22)
     pmi_w = cfg.get("pmi_weight", 0.28)
@@ -412,9 +471,13 @@ def score_economy(
         tw = sum(w for _, w in parts)
         final = sum(s * w for s, w in parts) / tw
 
-    final = int(round(max(0, min(100, final))))
+    final = int(round(max(0, min(100, final + regime_adj))))
 
-    ur_str = f"{unemployment_rate:.1f}% ({unemployment_trend})" if unemployment_rate is not None else "N/A"
+    ur_str = (
+        f"{unemployment_rate:.1f}% (1m={unemployment_trend}, 3m={unemployment_trend_3m})"
+        if unemployment_rate is not None
+        else "N/A"
+    )
     gdp_str = f"{gdp_growth:+.1f}%" if gdp_growth is not None else "N/A"
     pmi_str = f"{pmi_value:.1f}" if pmi_value is not None else "N/A"
     nfp_str = f"{nfp_change:+.0f}k" if nfp_change is not None else "N/A"
@@ -423,14 +486,27 @@ def score_economy(
     pmi_score_str = str(pmi_score) if pmi_value is not None else "excluded"
     nfp_score_str = str(nfp_score) if nfp_change is not None else "excluded"
     reasoning = (
-        f"Unemployment: {ur_str} -> {ur_score_str} | "
+        f"Unemployment: {ur_str} -> {ur_score_str} "
+        f"[lvl/trend_short/trend_3m={short_component:+.0f}/{medium_component:+.0f}, blend={trend_adj:+.1f}] | "
         f"GDP: {gdp_str} -> {gdp_score_str} | "
         f"PMI: {pmi_str} -> {pmi_score_str} | "
         f"NFP: {nfp_str} -> {nfp_score_str} | "
+        f"Regime({regime}) adj: {regime_adj:+d} | "
         f"Weighted: {final}"
     )
 
-    return final, reasoning
+    details = {
+        "unemployment_level_score": ur_score if unemployment_rate is not None else None,
+        "unemployment_short_trend_component": round(short_component, 2),
+        "unemployment_medium_trend_component": round(medium_component, 2),
+        "unemployment_trend_blend": round(trend_adj, 2),
+        "nfp_score": nfp_score if nfp_change is not None else None,
+        "gdp_score": gdp_score if gdp_growth is not None else None,
+        "pmi_score": pmi_score if pmi_value is not None else None,
+        "regime_adjustment": regime_adj,
+    }
+
+    return final, reasoning, details
 
 
 def compute_weighted_total(section_scores: Dict[str, int]) -> Tuple[int, Dict[str, float]]:
@@ -457,12 +533,13 @@ def compute_weighted_total(section_scores: Dict[str, int]) -> Tuple[int, Dict[st
 def compute_weighted_total_with_freshness(
     section_scores: Dict[str, int],
     freshness_info: Optional[Dict[str, Any]],
+    dynamic_weights: Optional[Dict[str, float]] = None,
 ) -> Tuple[int, Dict[str, float]]:
     """
     Downweight sections when linked freshness checks are STALE or MISSING.
     """
     cfg = get_scoring_config()
-    weights = dict(cfg["section_weights"])
+    weights = dict(dynamic_weights or cfg["section_weights"])
     down = cfg.get("stale_section_downweight", {})
     factor = float(down.get("factor", 0.5))
     mapping = down.get("section_freshness_checks", {})

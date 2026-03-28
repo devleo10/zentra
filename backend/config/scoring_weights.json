@@ -2,99 +2,231 @@
   "_version": "3.0.0",
   "_description": "Deterministic scoring weights and thresholds. All numeric scoring is driven by this config. No LLM involvement in numeric scores.",
   "_last_updated": "2026-03-12",
-
   "section_weights": {
     "inflation": 0.15,
     "economy": 0.13,
     "fed_policy": 0.22,
-    "liquidity": 0.20,
+    "liquidity": 0.2,
     "dxy": 0.17,
     "risk_sentiment": 0.13
   },
-
   "inflation_thresholds": {
-    "_doc": "CPI MoM change (percentage). Falling CPI = bullish for BTC.",
-    "cpi_mom_falling_fast": { "threshold": -0.3, "score": 100 },
-    "cpi_mom_falling":      { "threshold": -0.1, "score": 80 },
-    "cpi_mom_flat":         { "threshold":  0.1, "score": 55 },
-    "cpi_mom_rising":       { "threshold":  0.3, "score": 30 },
-    "cpi_mom_rising_fast":  { "threshold":  999, "score": 10 },
-
-    "_doc_pce": "PCE MoM typically prints softer than CPI; tighter bands than CPI.",
-    "pce_mom_falling_fast": { "threshold": -0.2, "score": 100 },
-    "pce_mom_falling":      { "threshold": -0.05, "score": 80 },
-    "pce_mom_flat":         { "threshold":  0.05, "score": 55 },
-    "pce_mom_rising":       { "threshold":  0.2, "score": 30 },
-    "pce_mom_rising_fast":  { "threshold":  999, "score": 10 },
-
-    "pce_weight": 0.3,
-    "cpi_weight": 0.5,
-    "oil_weight": 0.2,
-
+    "_doc": "Inflation section blends realized CPI/core inflation with forward inflation proxies.",
+    "cpi_yoy_brackets": [
+      {
+        "threshold": 2.0,
+        "score": 85
+      },
+      {
+        "threshold": 2.5,
+        "score": 72
+      },
+      {
+        "threshold": 3.0,
+        "score": 55
+      },
+      {
+        "threshold": 3.5,
+        "score": 38
+      },
+      {
+        "threshold": 4.0,
+        "score": 25
+      },
+      {
+        "threshold": 999,
+        "score": 10
+      }
+    ],
+    "core_cpi_yoy_brackets": [
+      {
+        "threshold": 2.0,
+        "score": 80
+      },
+      {
+        "threshold": 2.5,
+        "score": 68
+      },
+      {
+        "threshold": 3.0,
+        "score": 50
+      },
+      {
+        "threshold": 3.5,
+        "score": 35
+      },
+      {
+        "threshold": 4.0,
+        "score": 22
+      },
+      {
+        "threshold": 999,
+        "score": 10
+      }
+    ],
+    "breakeven_low_threshold": 2.0,
+    "breakeven_high_threshold": 2.5,
     "oil_change_bullish_threshold": -5.0,
     "oil_change_bearish_threshold": 10.0,
     "oil_bullish_score": 80,
     "oil_neutral_score": 50,
-    "oil_bearish_score": 20
+    "oil_bearish_score": 20,
+    "forward_weight_oil": 0.5,
+    "forward_weight_breakeven": 0.5,
+    "cpi_weight": 0.5,
+    "core_cpi_weight": 0.3,
+    "forward_weight": 0.2,
+    "divergence_oil_threshold": 10.0,
+    "divergence_breakeven_threshold": 2.5,
+    "controlled_cpi_threshold": 2.7,
+    "controlled_core_threshold": 2.8,
+    "divergence_confidence_haircut": 0.2
   },
-
   "economy_thresholds": {
-    "_doc": "Economy section: weak economy = Fed easing = bullish for BTC. Strong economy = tight Fed = bearish.",
+    "_doc": "Economy section: stronger growth/labor backdrop = more bullish for BTC in the default market-reaction lens; regime logic can soften or amplify weak-growth effects.",
     "unemployment_brackets": [
-      { "threshold": 3.5, "score": 20 },
-      { "threshold": 4.0, "score": 35 },
-      { "threshold": 4.5, "score": 50 },
-      { "threshold": 5.0, "score": 65 },
-      { "threshold": 6.0, "score": 80 },
-      { "threshold": 999, "score": 90 }
+      {
+        "threshold": 3.5,
+        "score": 85
+      },
+      {
+        "threshold": 4.0,
+        "score": 72
+      },
+      {
+        "threshold": 4.5,
+        "score": 55
+      },
+      {
+        "threshold": 5.0,
+        "score": 35
+      },
+      {
+        "threshold": 6.0,
+        "score": 20
+      },
+      {
+        "threshold": 999,
+        "score": 10
+      }
     ],
     "unemployment_trend_rising_bonus": 10,
     "unemployment_trend_falling_penalty": -10,
-
     "gdp_brackets": [
-      { "threshold": -1.0, "score": 85 },
-      { "threshold": 0.0, "score": 75 },
-      { "threshold": 1.0, "score": 60 },
-      { "threshold": 2.0, "score": 45 },
-      { "threshold": 3.0, "score": 30 },
-      { "threshold": 999, "score": 15 }
+      {
+        "threshold": -1.0,
+        "score": 10
+      },
+      {
+        "threshold": 0.0,
+        "score": 20
+      },
+      {
+        "threshold": 1.0,
+        "score": 35
+      },
+      {
+        "threshold": 2.0,
+        "score": 55
+      },
+      {
+        "threshold": 3.0,
+        "score": 72
+      },
+      {
+        "threshold": 999,
+        "score": 85
+      }
     ],
-
     "pmi_brackets": [
-      { "threshold": 45.0, "score": 85 },
-      { "threshold": 48.0, "score": 70 },
-      { "threshold": 50.0, "score": 58 },
-      { "threshold": 52.0, "score": 42 },
-      { "threshold": 55.0, "score": 28 },
-      { "threshold": 999, "score": 15 }
+      {
+        "threshold": 45.0,
+        "score": 15
+      },
+      {
+        "threshold": 48.0,
+        "score": 30
+      },
+      {
+        "threshold": 50.0,
+        "score": 45
+      },
+      {
+        "threshold": 52.0,
+        "score": 60
+      },
+      {
+        "threshold": 55.0,
+        "score": 75
+      },
+      {
+        "threshold": 999,
+        "score": 85
+      }
     ],
-
     "_doc_nfp": "NFP MoM change in thousands; weak/negative payrolls = more bullish for BTC (Fed easing bias).",
     "nfp_brackets": [
-      { "threshold": -200, "score": 90 },
-      { "threshold": -50, "score": 75 },
-      { "threshold": 50, "score": 55 },
-      { "threshold": 200, "score": 35 },
-      { "threshold": 999, "score": 20 }
+      {
+        "threshold": -100,
+        "score": 20
+      },
+      {
+        "threshold": 0,
+        "score": 35
+      },
+      {
+        "threshold": 50,
+        "score": 50
+      },
+      {
+        "threshold": 200,
+        "score": 60
+      },
+      {
+        "threshold": 999,
+        "score": 80
+      }
     ],
-
     "unemployment_weight": 0.28,
     "gdp_weight": 0.22,
     "pmi_weight": 0.28,
-    "nfp_weight": 0.22
+    "nfp_weight": 0.22,
+    "unemployment_trend_short_rising_penalty": -15,
+    "unemployment_trend_short_falling_bonus": 10,
+    "unemployment_trend_medium_rising_penalty": -10,
+    "unemployment_trend_medium_falling_bonus": 5,
+    "regime_adjustments": {
+      "risk_off_weak_growth_penalty": -8,
+      "liquidity_driven_weak_growth_relief": 8
+    }
   },
-
   "fed_policy_thresholds": {
     "_doc": "Keyword-based base score + Fed Funds Rate level and direction adjustments. Dovish/low rate = bullish for BTC.",
-    "dovish_strong": { "min_dovish": 4, "max_hawkish": 1, "score": 90 },
-    "dovish":        { "min_dovish": 2, "max_hawkish": 1, "score": 75 },
-    "neutral":       { "score": 50 },
-    "hawkish":       { "min_hawkish": 2, "max_dovish": 1, "score": 25 },
-    "hawkish_strong":{ "min_hawkish": 4, "max_dovish": 1, "score": 10 },
-
+    "dovish_strong": {
+      "min_dovish": 4,
+      "max_hawkish": 1,
+      "score": 90
+    },
+    "dovish": {
+      "min_dovish": 2,
+      "max_hawkish": 1,
+      "score": 75
+    },
+    "neutral": {
+      "score": 50
+    },
+    "hawkish": {
+      "min_hawkish": 2,
+      "max_dovish": 1,
+      "score": 25
+    },
+    "hawkish_strong": {
+      "min_hawkish": 4,
+      "max_dovish": 1,
+      "score": 10
+    },
     "pivot_keyword_bonus": 10,
     "max_pivot_bonus": 20,
-
     "_doc_rate": "Fed Funds Rate level adjustments applied on top of keyword base score.",
     "fed_rate_very_low_threshold": 1.0,
     "fed_rate_low_threshold": 2.5,
@@ -110,125 +242,204 @@
     "fed_rate_max_total_adj": 25,
     "fed_rate_min_total_adj": -25
   },
-
   "liquidity_thresholds": {
     "_doc": "Yield levels and Fed balance sheet trends. Expanding liquidity = bullish for BTC.",
-    "yield_10y_low":       { "threshold": 3.0, "score": 85 },
-    "yield_10y_moderate":  { "threshold": 4.0, "score": 60 },
-    "yield_10y_high":      { "threshold": 5.0, "score": 35 },
-    "yield_10y_very_high": { "threshold": 999, "score": 15 },
-
+    "yield_10y_low": {
+      "threshold": 3.0,
+      "score": 85
+    },
+    "yield_10y_moderate": {
+      "threshold": 4.0,
+      "score": 60
+    },
+    "yield_10y_high": {
+      "threshold": 5.0,
+      "score": 35
+    },
+    "yield_10y_very_high": {
+      "threshold": 999,
+      "score": 15
+    },
     "yield_curve_inverted_penalty": -15,
     "yield_curve_steepening_bonus": 10,
-
     "balance_sheet_expanding_bonus": 15,
     "balance_sheet_contracting_penalty": -15,
-
     "m2_expanding_bonus": 10,
     "m2_contracting_penalty": -10,
-
     "_doc_real_yield": "10Y nominal minus 10Y breakeven (% pts). Lower real yield = easier conditions = bullish.",
     "real_yield_neutral_anchor": 1.0,
     "real_yield_points_per_pp": 6,
     "real_yield_adj_cap": 12,
-
     "_doc_m2_yoy": "Extra adjustment on top of M2 trend from YoY % change (capped).",
     "m2_yoy_scale": 1.5,
     "m2_yoy_adj_cap": 6,
-
     "yield_10y_weight": 0.32,
     "yield_curve_weight": 0.22,
     "balance_sheet_weight": 0.22,
     "m2_weight": 0.14,
-    "real_yield_weight": 0.10
+    "real_yield_weight": 0.1
   },
-
   "dxy_thresholds": {
     "_doc": "DXY scoring uses both 7-day change (momentum) and absolute level. Falling/weak DXY = bullish for BTC.",
-    "dxy_falling_fast":  { "threshold": -2.0, "score": 95 },
-    "dxy_falling":       { "threshold": -0.5, "score": 75 },
-    "dxy_flat":          { "threshold":  0.5, "score": 50 },
-    "dxy_rising":        { "threshold":  2.0, "score": 25 },
-    "dxy_rising_fast":   { "threshold":  999, "score": 5 },
-
+    "dxy_falling_fast": {
+      "threshold": -2.0,
+      "score": 95
+    },
+    "dxy_falling": {
+      "threshold": -0.5,
+      "score": 75
+    },
+    "dxy_flat": {
+      "threshold": 0.5,
+      "score": 50
+    },
+    "dxy_rising": {
+      "threshold": 2.0,
+      "score": 25
+    },
+    "dxy_rising_fast": {
+      "threshold": 999,
+      "score": 5
+    },
     "_doc_level": "Absolute DXY level adjustments. DXY > 105 = strong dollar headwind, < 95 = weak dollar tailwind.",
-    "dxy_level_very_weak":   { "threshold":  90, "adjustment":  15 },
-    "dxy_level_weak":        { "threshold":  95, "adjustment":  10 },
-    "dxy_level_neutral_low": { "threshold": 100, "adjustment":   5 },
-    "dxy_level_neutral":     { "threshold": 104, "adjustment":   0 },
-    "dxy_level_strong":      { "threshold": 107, "adjustment": -10 },
-    "dxy_level_very_strong": { "threshold": 999, "adjustment": -15 },
-
+    "dxy_level_very_weak": {
+      "threshold": 98,
+      "adjustment": 20
+    },
+    "dxy_level_weak": {
+      "threshold": 102,
+      "adjustment": 0
+    },
+    "dxy_level_neutral_low": {
+      "threshold": 105,
+      "adjustment": -15
+    },
+    "dxy_level_neutral": {
+      "threshold": 999,
+      "adjustment": -30
+    },
+    "dxy_level_strong": {
+      "threshold": 107,
+      "adjustment": -10
+    },
+    "dxy_level_very_strong": {
+      "threshold": 999,
+      "adjustment": -15
+    },
     "change_weight": 0.6,
-    "level_weight":  0.4
+    "level_weight": 0.4
   },
-
   "risk_sentiment_thresholds": {
     "_doc": "VIX levels and S&P 500 trend. Risk-on = bullish for BTC.",
-    "vix_very_low":  { "threshold": 12, "score": 80 },
-    "vix_low":       { "threshold": 16, "score": 70 },
-    "vix_moderate":  { "threshold": 20, "score": 50 },
-    "vix_high":      { "threshold": 30, "score": 25 },
-    "vix_extreme":   { "threshold": 999, "score": 10 },
-
+    "vix_very_low": {
+      "threshold": 12,
+      "score": 80
+    },
+    "vix_low": {
+      "threshold": 16,
+      "score": 70
+    },
+    "vix_moderate": {
+      "threshold": 20,
+      "score": 50
+    },
+    "vix_high": {
+      "threshold": 30,
+      "score": 25
+    },
+    "vix_extreme": {
+      "threshold": 999,
+      "score": 10
+    },
     "sp500_rising_bonus": 10,
     "sp500_falling_penalty": -10,
     "sp500_change_threshold": 1.0,
-
     "gold_safe_haven_penalty": -5,
     "gold_change_threshold": 3.0,
     "gold_penalty_vix_elevated_above": 25,
     "gold_penalty_mild_if_vix_calm": -2,
-
     "vix_weight": 0.42,
     "sp500_weight": 0.26,
     "gold_weight": 0.17,
     "hy_oas_weight": 0.15,
-
     "_doc_hy": "HY OAS (%) higher = credit stress = bearish for risk assets.",
-    "hy_oas_calm": { "threshold": 3.5, "score": 72 },
-    "hy_oas_moderate": { "threshold": 5.0, "score": 55 },
-    "hy_oas_stressed": { "threshold": 7.0, "score": 35 },
-    "hy_oas_extreme": { "threshold": 999, "score": 18 }
+    "hy_oas_calm": {
+      "threshold": 3.5,
+      "score": 72
+    },
+    "hy_oas_moderate": {
+      "threshold": 5.0,
+      "score": 55
+    },
+    "hy_oas_stressed": {
+      "threshold": 7.0,
+      "score": 35
+    },
+    "hy_oas_extreme": {
+      "threshold": 999,
+      "score": 18
+    }
   },
-
   "headline_adjustment": {
     "_doc": "Caps and rules for headline-based macro event score adjustment.",
     "max_positive_adjustment": 10,
     "max_negative_adjustment": -10,
-
-    "dovish_risk_on":    7,
-    "dovish_neutral":    4,
-    "dovish_risk_off":   0,
-
+    "dovish_risk_on": 7,
+    "dovish_neutral": 4,
+    "dovish_risk_off": 0,
     "hawkish_risk_off": -7,
-    "hawkish_neutral":  -4,
-    "hawkish_risk_on":   0,
-
+    "hawkish_neutral": -4,
+    "hawkish_risk_on": 0,
     "neutral_adjustment": 0,
-
     "min_confidence_to_apply": 0.5,
-    "confidence_scaling": true
+    "confidence_scaling": true,
+    "source_weights": {
+      "Reuters": 1.0,
+      "Federal Reserve": 1.0,
+      "Bloomberg": 0.9,
+      "CNBC": 0.7,
+      "__default__": 0.5
+    }
   },
-
   "bias_thresholds": {
-    "strong_bull":        { "min": 80 },
-    "bullish":            { "min": 70 },
-    "cautiously_bullish": { "min": 60 },
-    "neutral_upside":     { "min": 50 },
-    "neutral_downside":   { "min": 40 },
-    "bearish":            { "min": 25 },
-    "high_risk":          { "min": 0 }
+    "strong_bull": {
+      "min": 80
+    },
+    "bullish": {
+      "min": 70
+    },
+    "cautiously_bullish": {
+      "min": 60
+    },
+    "neutral_upside": {
+      "min": 50
+    },
+    "neutral_downside": {
+      "min": 40
+    },
+    "bearish": {
+      "min": 25
+    },
+    "high_risk": {
+      "min": 0
+    }
   },
-
   "confidence_formula": {
-    "_doc": "confidence = (section_agreement_weight * agreement_pct) + (distance_weight * distance_from_50) + (headline_confidence_weight * headline_conf)",
-    "section_agreement_weight": 0.40,
-    "distance_weight": 0.35,
-    "headline_confidence_weight": 0.25,
-    "max_distance_score": 50
+    "_doc": "confidence = freshness + agreement + data quality + headline confidence + model stability, followed by contradiction multiplier",
+    "freshness_weight": 0.3,
+    "section_agreement_weight": 0.25,
+    "data_quality_weight": 0.2,
+    "headline_confidence_weight": 0.15,
+    "model_stability_weight": 0.1,
+    "contradiction_multiplier": 0.8,
+    "critical_metric_penalties": {
+      "PMI": 20.0,
+      "NFP": 15.0,
+      "CPI": 15.0,
+      "Fed Funds Rate": 12.0,
+      "DXY": 12.0
+    }
   },
-
   "data_freshness": {
     "_doc": "Macro series: if fetched_at is set on the payload (batch stamp after fetch), freshness uses macro_fetched_max_age_hours OR observation max age (whichever passes). Market series use observation/snapshot dates only.",
     "macro_fetched_max_age_hours": 168,
@@ -250,7 +461,6 @@
     "m2_max_age_days": 70,
     "hy_oas_max_age_days": 14
   },
-
   "data_quality_confidence": {
     "_doc": "Extra confidence penalty when many inputs are STALE (stale_ratio = stale checks / total checks). Applied after freshness_penalty in verdict.",
     "stale_ratio_soft": 0.35,
@@ -258,20 +468,38 @@
     "stale_ratio_hard": 0.5,
     "penalty_hard": 15.0
   },
-
   "stale_section_downweight": {
     "_doc": "Multiply section weight by this factor when any linked freshness check is STALE or MISSING.",
     "factor": 0.5,
     "section_freshness_checks": {
-      "inflation": ["CPI", "PCE"],
-      "economy": ["Unemployment Rate", "GDP", "PMI"],
-      "fed_policy": ["Fed Funds Rate"],
-      "liquidity": ["10Y Yield", "M2 Money Supply", "Fed Balance Sheet"],
-      "dxy": ["DXY"],
-      "risk_sentiment": ["VIX", "S&P 500", "Gold", "HY OAS"]
+      "inflation": [
+        "CPI",
+        "PCE"
+      ],
+      "economy": [
+        "Unemployment Rate",
+        "GDP",
+        "PMI"
+      ],
+      "fed_policy": [
+        "Fed Funds Rate"
+      ],
+      "liquidity": [
+        "10Y Yield",
+        "M2 Money Supply",
+        "Fed Balance Sheet"
+      ],
+      "dxy": [
+        "DXY"
+      ],
+      "risk_sentiment": [
+        "VIX",
+        "S&P 500",
+        "Gold",
+        "HY OAS"
+      ]
     }
   },
-
   "coherence_rules": {
     "_doc": "Deterministic adjustment to weighted numeric score before headlines (capped).",
     "max_adjustment": 8,
@@ -279,5 +507,37 @@
     "vix_risk_score_cap": 38,
     "inflation_fed_divergence_threshold": 50,
     "inflation_fed_divergence_penalty": 5
+  },
+  "regime_detection": {
+    "risk_off_vix_threshold": 25.0,
+    "risk_off_hy_oas_threshold": 5.0,
+    "liquidity_trends": [
+      "expanding",
+      "slight expansion"
+    ],
+    "risk_off_weight_multipliers": {
+      "inflation": 1.0,
+      "economy": 0.8,
+      "fed_policy": 1.0,
+      "liquidity": 1.0,
+      "dxy": 1.25,
+      "risk_sentiment": 1.25
+    },
+    "liquidity_driven_weight_multipliers": {
+      "inflation": 1.0,
+      "economy": 0.9,
+      "fed_policy": 1.15,
+      "liquidity": 1.25,
+      "dxy": 1.0,
+      "risk_sentiment": 0.9
+    },
+    "neutral_weight_multipliers": {
+      "inflation": 1.0,
+      "economy": 1.0,
+      "fed_policy": 1.0,
+      "liquidity": 1.0,
+      "dxy": 1.0,
+      "risk_sentiment": 1.0
+    }
   }
 }

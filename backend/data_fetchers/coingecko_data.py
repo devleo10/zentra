@@ -56,6 +56,7 @@ STABLECOIN_SYMBOLS = frozenset(
         "FRAX",
     }
 )
+STABLECOIN_IDS = ("tether", "usd-coin", "dai")
 
 _CG_HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; ZentraMacro/1.0)",
@@ -329,6 +330,54 @@ def _snapshot_series_change(field_name: str, current_value: float, timeframe: st
         logger.debug("snapshot %s change calc failed", field_name, exc_info=True)
         return None
 
+
+def _cg_stablecoin_dominance_from_markets() -> Optional[Dict[str, float]]:
+    payload = _get_global_market_payload() or {}
+    total_market_cap = _safe_float((payload.get("total_market_cap") or {}).get("usd"))
+    if total_market_cap is None or total_market_cap <= 0:
+        return None
+
+    try:
+        response = _cg_get(
+            f"{COINGECKO_BASE_URL}/coins/markets",
+            params={
+                "vs_currency": "usd",
+                "per_page": 250,
+                "page": 1,
+            },
+            timeout=20,
+            retries_on_429=2,
+            max_wait_on_429=10.0,
+        )
+        rows = response.json()
+        if not isinstance(rows, list):
+            return None
+    except Exception as e:
+        logger.warning("CoinGecko stablecoin markets fetch failed: %s", e)
+        return None
+
+    caps = {"tether": 0.0, "usd-coin": 0.0, "dai": 0.0}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cid = str(row.get("id") or "").strip().lower()
+        if cid not in caps:
+            continue
+        cap = _safe_float(row.get("market_cap"))
+        if cap is not None and cap > 0:
+            caps[cid] = cap
+
+    total_stable_cap = sum(caps.values())
+    if total_stable_cap <= 0:
+        return None
+
+    return {
+        "usdt_dominance": round(caps["tether"] / total_market_cap * 100.0, 2),
+        "usdc_dominance": round(caps["usd-coin"] / total_market_cap * 100.0, 2),
+        "dai_dominance": round(caps["dai"] / total_market_cap * 100.0, 2),
+        "total_stablecoin_dominance": round(total_stable_cap / total_market_cap * 100.0, 2),
+    }
+
 # Timeframe to days mapping for historical data
 TIMEFRAME_DAYS = {
     "current": 1,
@@ -560,20 +609,34 @@ def get_stablecoin_data(timeframe: str = "current") -> Dict:
         market_cap_data = payload.get("market_cap_percentage") or {}
         usdt_dom = float(market_cap_data.get("usdt") or 0)
         usdc_dom = float(market_cap_data.get("usdc") or 0)
-        total_stable_dom = usdt_dom + usdc_dom
+        dai_dom = float(market_cap_data.get("dai") or 0)
+
+        market_caps_dom = _cg_stablecoin_dominance_from_markets()
+        source = "CoinGecko"
+        if market_caps_dom:
+            if usdt_dom <= 0:
+                usdt_dom = market_caps_dom["usdt_dominance"]
+            if usdc_dom <= 0:
+                usdc_dom = market_caps_dom["usdc_dominance"]
+            if dai_dom <= 0:
+                dai_dom = market_caps_dom["dai_dominance"]
+            source = "CoinGecko:global+markets"
+
+        total_stable_dom = usdt_dom + usdc_dom + dai_dom
         if total_stable_dom > 0:
             total_stable_dom = round(total_stable_dom, 2)
             delta = _snapshot_series_change("stablecoin_dominance", total_stable_dom, timeframe)
             return {
                 "usdt_dominance": round(usdt_dom, 2),
                 "usdc_dominance": round(usdc_dom, 2),
+                "dai_dominance": round(dai_dom, 2),
                 "total_stablecoin_dominance": total_stable_dom,
                 "change": delta,
                 "change_source": "snapshot_history" if delta is not None else None,
                 "trend": "rising" if delta is not None and delta > 0.05 else "falling" if delta is not None and delta < -0.05 else "stable",
                 "date": today,
                 "timeframe": timeframe,
-                "source": "CoinGecko",
+                "source": source,
             }
     coinlore_global = _coinlore_global_market_payload()
     coinlore_tickers = _coinlore_top_tickers()
@@ -592,11 +655,13 @@ def get_stablecoin_data(timeframe: str = "current") -> Dict:
         if total_stable_mcap > 0:
             usdt_dom = stable_caps.get("USDT", 0.0) / total_mcap * 100.0
             usdc_dom = stable_caps.get("USDC", 0.0) / total_mcap * 100.0
+            dai_dom = stable_caps.get("DAI", 0.0) / total_mcap * 100.0
             total_stable_dom = round(total_stable_mcap / total_mcap * 100.0, 2)
             delta = _snapshot_series_change("stablecoin_dominance", total_stable_dom, timeframe)
             return {
                 "usdt_dominance": round(usdt_dom, 2),
                 "usdc_dominance": round(usdc_dom, 2),
+                "dai_dominance": round(dai_dom, 2),
                 "total_stablecoin_dominance": total_stable_dom,
                 "change": delta,
                 "change_source": "snapshot_history" if delta is not None else None,
@@ -612,6 +677,7 @@ def get_stablecoin_data(timeframe: str = "current") -> Dict:
         return {
             "usdt_dominance": None,
             "usdc_dominance": None,
+            "dai_dominance": None,
             "total_stablecoin_dominance": round(snap, 2),
             "change": None,
             "change_source": None,

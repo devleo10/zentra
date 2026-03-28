@@ -1,5 +1,7 @@
 """
-Fetch Fed speeches and macro news from NewsAPI with free-tier fallback.
+Fetch Fed speeches and macro news from multiple providers.
+Primary sources: Finnhub and Alpha Vantage News Sentiment.
+Fallbacks: NewsAPI and Google News RSS.
 Includes LLM-powered semantic tone analysis with keyword fallback.
 """
 import os
@@ -20,6 +22,10 @@ logger = logging.getLogger("btc_macro.news_data")
 
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 NEWS_API_URL = "https://newsapi.org/v2/everything"
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+FINNHUB_NEWS_URL = "https://finnhub.io/api/v1/news"
+ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY") or os.getenv("ALPHA_VANTAGE_API_KEY")
+ALPHAVANTAGE_API_URL = "https://www.alphavantage.co/query"
 
 _LLM_CONFIG_PATH = Path(__file__).parent.parent / "config" / "llm_config.json"
 
@@ -124,6 +130,142 @@ def _fetch_google_news_rss(query: str, num: int = 10) -> List[Dict]:
         return []
 
 
+def _query_keywords(query: str) -> List[str]:
+    tokens = re.findall(r"[A-Za-z]{4,}", query.lower())
+    stop = {
+        "federal", "reserve", "interest", "rates", "macro", "news", "with",
+        "from", "that", "this", "rate", "inflation", "fed", "or", "and",
+    }
+    out = [t for t in tokens if t not in stop]
+    return out[:12]
+
+
+def _text_matches_query(title: str, description: str, query: str) -> bool:
+    text = f"{title} {description}".lower()
+    keys = _query_keywords(query)
+    if not keys:
+        return True
+    return any(k in text for k in keys)
+
+
+def _dedupe_articles(articles: List[Dict]) -> List[Dict]:
+    seen = set()
+    out = []
+    for article in articles:
+        title = str(article.get("title") or "").strip()
+        if not title:
+            continue
+        key = title.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(article)
+    return out
+
+
+def _fetch_finnhub_news(query: str, days: int) -> List[Dict]:
+    if not FINNHUB_API_KEY:
+        return []
+    try:
+        response = requests.get(
+            FINNHUB_NEWS_URL,
+            params={"category": "general", "token": FINNHUB_API_KEY},
+            timeout=10,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list):
+            return []
+
+        cutoff = datetime.now() - timedelta(days=days)
+        out = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ts = row.get("datetime")
+            pub = ""
+            try:
+                pub_dt = datetime.utcfromtimestamp(int(ts))
+                pub = pub_dt.isoformat()
+                if pub_dt < cutoff:
+                    continue
+            except Exception:
+                pub_dt = None
+
+            title = str(row.get("headline") or "")
+            desc = str(row.get("summary") or "")
+            if not _text_matches_query(title, desc, query):
+                continue
+            out.append(
+                {
+                    "title": title,
+                    "description": desc,
+                    "published_at": pub,
+                    "source": str(row.get("source") or "Finnhub"),
+                    "url": str(row.get("url") or ""),
+                }
+            )
+        return out
+    except Exception as e:
+        logger.warning("Finnhub news fetch failed: %s", e)
+        return []
+
+
+def _fetch_alpha_vantage_news(query: str, days: int) -> List[Dict]:
+    if not ALPHAVANTAGE_API_KEY:
+        return []
+    try:
+        response = requests.get(
+            ALPHAVANTAGE_API_URL,
+            params={
+                "function": "NEWS_SENTIMENT",
+                "apikey": ALPHAVANTAGE_API_KEY,
+                "sort": "LATEST",
+                "limit": 50,
+            },
+            timeout=12,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        rows = payload.get("feed") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            return []
+
+        cutoff = datetime.now() - timedelta(days=days)
+        out = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            title = str(row.get("title") or "")
+            desc = str(row.get("summary") or "")
+            if not _text_matches_query(title, desc, query):
+                continue
+
+            pub_raw = str(row.get("time_published") or "")
+            pub = pub_raw
+            try:
+                pub_dt = datetime.strptime(pub_raw, "%Y%m%dT%H%M%S")
+                pub = pub_dt.isoformat()
+                if pub_dt < cutoff:
+                    continue
+            except Exception:
+                pass
+
+            out.append(
+                {
+                    "title": title,
+                    "description": desc,
+                    "published_at": pub,
+                    "source": str(row.get("source") or "Alpha Vantage"),
+                    "url": str(row.get("url") or ""),
+                }
+            )
+        return out
+    except Exception as e:
+        logger.warning("Alpha Vantage news fetch failed: %s", e)
+        return []
+
+
 def get_fed_speeches(days: int = 7) -> List[Dict]:
     """
     Get recent Federal Reserve speeches and statements.
@@ -147,18 +289,19 @@ def get_fed_speeches(days: int = 7) -> List[Dict]:
 
     query = '"Federal Reserve" OR FOMC OR "Jerome Powell" OR "Fed Chair" OR "Fed funds" OR "interest rates"'
 
-    # Try NewsAPI first (only if within free-tier date limit)
-    if NEWS_API_KEY and days <= NEWSAPI_MAX_DAYS:
-        articles = _fetch_newsapi(query, days)
-        if articles:
-            filtered = _filter_fed_policy_articles(articles)
-            logger.info("Fed article filter kept %d of %d fetched articles", len(filtered), len(articles))
-            cache_put(cache_key, filtered)
-            return filtered
+    articles: List[Dict] = []
 
-    # Fallback: Google News RSS (free, no date limits)
-    print(f"Using Google News RSS fallback for Fed speeches (days={days})...")
-    articles = _fetch_google_news_rss(query, num=10)
+    articles.extend(_fetch_finnhub_news(query, days))
+    articles.extend(_fetch_alpha_vantage_news(query, days))
+
+    if NEWS_API_KEY and days <= NEWSAPI_MAX_DAYS:
+        articles.extend(_fetch_newsapi(query, days))
+
+    if not articles:
+        print(f"Using Google News RSS fallback for Fed speeches (days={days})...")
+        articles = _fetch_google_news_rss(query, num=10)
+
+    articles = _dedupe_articles(articles)
     filtered = _filter_fed_policy_articles(articles)
     logger.info("Fed article filter kept %d of %d fetched articles", len(filtered), len(articles))
     if filtered:
@@ -529,16 +672,19 @@ def get_macro_news(days: int = 7) -> List[Dict]:
 
     query = "inflation OR CPI OR GDP OR unemployment OR Fed rate"
 
-    # Try NewsAPI first (only if within free-tier limit)
-    if NEWS_API_KEY and days <= NEWSAPI_MAX_DAYS:
-        articles = _fetch_newsapi(query, days)
-        if articles:
-            cache_put(cache_key, articles)
-            return articles
+    articles: List[Dict] = []
 
-    # Fallback: Google News RSS
-    print(f"Using Google News RSS fallback for macro news (days={days})...")
-    articles = _fetch_google_news_rss(query, num=10)
+    articles.extend(_fetch_finnhub_news(query, days))
+    articles.extend(_fetch_alpha_vantage_news(query, days))
+
+    if NEWS_API_KEY and days <= NEWSAPI_MAX_DAYS:
+        articles.extend(_fetch_newsapi(query, days))
+
+    if not articles:
+        print(f"Using Google News RSS fallback for macro news (days={days})...")
+        articles = _fetch_google_news_rss(query, num=10)
+
+    articles = _dedupe_articles(articles)
     if articles:
         cache_put(cache_key, articles)
     return articles

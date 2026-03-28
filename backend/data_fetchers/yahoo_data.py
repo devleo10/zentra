@@ -11,6 +11,7 @@ import logging
 import math
 import time
 import os
+import re
 from io import StringIO
 import yfinance as yf
 import pandas as pd
@@ -38,6 +39,9 @@ USE_LAST_SNAPSHOT_FOR_FALLBACK = bool(_CFG.get("use_last_snapshot_for_fallback",
 STRICT_LIVE_OFFICIAL_ONLY = os.getenv("STRICT_LIVE_OFFICIAL_ONLY", "1").strip().lower() not in {"0", "false", "no"}
 ECB_API_BASE_URL = "https://data-api.ecb.europa.eu/service/data/EXR"
 LBMA_TODAY_URL = "https://prices.lbma.org.uk/json/today.json"
+TRADINGVIEW_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
+FARSIDE_BTC_ETF_URL = "https://farside.co.uk/?p=997"
+FARSIDE_BTC_ETF_WP_URL = "https://farside.co.uk/wp-json/wp/v2/posts"
 
 
 def _safe_date_str(ts) -> str:
@@ -1292,6 +1296,102 @@ def _yahoo_pct_change_series(symbol: str, timeframe: str) -> Dict:
     }
 
 
+def _tradingview_scan_latest_close(ticker: str) -> Optional[float]:
+    payload = {
+        "symbols": {
+            "tickers": [ticker],
+            "query": {"types": []},
+        },
+        "columns": ["close"],
+    }
+    try:
+        resp = requests.post(TRADINGVIEW_SCANNER_URL, json=payload, timeout=15)
+        resp.raise_for_status()
+        body = resp.json()
+        rows = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(rows, list) or not rows:
+            return None
+        first = rows[0] if isinstance(rows[0], dict) else None
+        if not isinstance(first, dict):
+            return None
+        values = first.get("d")
+        if not isinstance(values, list) or not values:
+            return None
+        val = float(values[0])
+        if not math.isfinite(val):
+            return None
+        return val
+    except Exception as e:
+        logger.debug("TradingView scan failed for %s: %s", ticker, e)
+        return None
+
+
+def _strip_html(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text or "")).strip()
+
+
+def _farside_btc_etf_flow() -> Optional[Dict[str, Any]]:
+    def _parse_flow_blob(blob: str) -> Optional[Tuple[float, Optional[str]]]:
+        clean = _strip_html(blob)
+        if not clean:
+            return None
+        date_match = re.search(
+            r"(\b\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}\b|\b[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}\b)",
+            clean,
+        )
+        flow_match = re.search(
+            r"(?:Net\s*flow|Netflow|Total)\D{0,20}([+-]?\d+(?:\.\d+)?)",
+            clean,
+            re.IGNORECASE,
+        )
+        if not flow_match:
+            return None
+        try:
+            flow_musd = float(flow_match.group(1))
+        except (TypeError, ValueError):
+            return None
+        flow_date = date_match.group(1) if date_match else None
+        return flow_musd, flow_date
+
+    try:
+        html = get_with_retries(FARSIDE_BTC_ETF_URL, timeout=20, max_attempts=2).text
+        parsed = _parse_flow_blob(html)
+        if parsed:
+            flow_musd, flow_date = parsed
+            return {
+                "net_flow_musd": round(flow_musd, 2),
+                "flow_date": flow_date,
+                "flow_source": "Farside:?p=997",
+            }
+    except Exception as e:
+        logger.debug("Farside HTML flow parse failed: %s", e)
+
+    try:
+        wp = get_with_retries(
+            FARSIDE_BTC_ETF_WP_URL,
+            params={"search": "bitcoin etf", "per_page": 5},
+            timeout=20,
+            max_attempts=2,
+        ).json()
+        posts = wp if isinstance(wp, list) else []
+        for post in posts:
+            if not isinstance(post, dict):
+                continue
+            rendered = ((post.get("content") or {}).get("rendered") or "")
+            parsed = _parse_flow_blob(rendered)
+            if parsed:
+                flow_musd, flow_date = parsed
+                return {
+                    "net_flow_musd": round(flow_musd, 2),
+                    "flow_date": flow_date,
+                    "flow_source": "Farside:wp-json",
+                }
+    except Exception as e:
+        logger.debug("Farside WP JSON flow parse failed: %s", e)
+
+    return None
+
+
 def get_move_index_data(timeframe: str = "current") -> Dict:
     """ICE BofA MOVE Treasury volatility index (^MOVE)."""
     try:
@@ -1302,18 +1402,55 @@ def get_move_index_data(timeframe: str = "current") -> Dict:
                     return out
             except Exception:
                 continue
+
+        tv_value = _tradingview_scan_latest_close("INDEX:MOVE")
+        if tv_value is not None:
+            baseline = _fresh_snapshot_value("move_index_value")
+            baseline_val = baseline[0] if baseline else None
+            change = ((tv_value - baseline_val) / baseline_val) * 100 if baseline_val and baseline_val > 0 else None
+            trend = "stable"
+            if change is not None:
+                trend = "rising" if change > 0.05 else "falling" if change < -0.05 else "stable"
+            return {
+                "current_price": round(tv_value, 2),
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "data_as_of": datetime.now().strftime("%Y-%m-%d"),
+                "comparison_date": str(baseline[1])[:10] if baseline and baseline[1] else None,
+                "change": round(change, 2) if change is not None else None,
+                "change_label": _change_label(timeframe),
+                "change_unit": "percent",
+                "trend": trend,
+                "timeframe": timeframe,
+                "source": "TradingView:INDEX:MOVE",
+                "_fallback": True,
+            }
+
+        fred_proxy = _fred_series_market_fallback(
+            "BAMLH0A0HYM2",
+            timeframe,
+            response_key="current_price",
+            change_unit="points",
+            source_name="FRED:BAMLH0A0HYM2",
+            trend_up="widening",
+            trend_down="tightening",
+        )
+        if fred_proxy:
+            fred_proxy["_proxy_note"] = "HY OAS proxy for MOVE volatility stress"
+            return fred_proxy
+
         return {"error": "No MOVE index data available", "timeframe": timeframe}
     except Exception as e:
         return {"error": f"MOVE fetch error: {str(e)}", "timeframe": timeframe}
 
 
 def get_emerging_markets_data(timeframe: str = "current") -> Dict:
-    """Emerging markets equity proxy via NQEM."""
+    """Emerging markets equity proxy via EEM (fallback: VWO)."""
     try:
-        out = _yahoo_pct_change_series("NQEM", timeframe)
-        if "error" not in out:
-            return out
-        return {"error": "No NQEM data available", "timeframe": timeframe}
+        for symbol in ("EEM", "VWO"):
+            out = _yahoo_pct_change_series(symbol, timeframe)
+            if "error" not in out:
+                return out
+        return {"error": "No EEM data available", "timeframe": timeframe}
     except Exception as e:
         return {"error": f"Emerging markets fetch error: {str(e)}", "timeframe": timeframe}
 
@@ -1321,7 +1458,7 @@ def get_emerging_markets_data(timeframe: str = "current") -> Dict:
 def get_btc_etf_volume(timeframe: str = "current") -> Dict:
     """Get aggregate BTC spot ETF daily volume as a proxy for institutional flows."""
     etf_tickers = ["IBIT", "FBTC", "GBTC", "ARKB", "BITB"]
-    total_volume = 0
+    total_volume: Optional[int] = 0
     sources = []
     latest_date = None
     try:
@@ -1338,16 +1475,46 @@ def get_btc_etf_volume(timeframe: str = "current") -> Dict:
             except Exception:
                 continue
 
+        flow_info = _farside_btc_etf_flow()
+        flow_musd = flow_info.get("net_flow_musd") if flow_info else None
+        flow_date = flow_info.get("flow_date") if flow_info else None
+        flow_source = flow_info.get("flow_source") if flow_info else None
+
         if not sources:
+            total_volume = None
+
+        if total_volume is None and flow_musd is None:
             return {"error": "No BTC ETF data available", "timeframe": timeframe}
 
-        level = "high" if total_volume > 80_000_000 else "moderate" if total_volume > 30_000_000 else "low"
+        if total_volume is not None:
+            level = "high" if total_volume > 80_000_000 else "moderate" if total_volume > 30_000_000 else "low"
+        elif flow_musd is not None:
+            level = "high" if flow_musd >= 300 else "low" if flow_musd <= -150 else "moderate"
+        else:
+            level = "moderate"
+
+        if flow_musd is not None:
+            if flow_musd >= 500:
+                level = "high"
+            elif flow_musd <= -250 and level == "moderate":
+                level = "low"
+
+        source = "Yahoo Finance"
+        if flow_source and sources:
+            source = f"Yahoo Finance + {flow_source}"
+        elif flow_source:
+            source = flow_source
+
         return {
             "total_volume": total_volume,
+            "net_flow_musd": flow_musd,
+            "flow_date": flow_date,
+            "flow_source": flow_source,
             "level": level,
             "etfs_tracked": sources,
             "date": latest_date or datetime.now().strftime("%Y-%m-%d"),
             "timeframe": timeframe,
+            "source": source,
         }
     except Exception as e:
         return {"error": f"BTC ETF volume fetch error: {str(e)}", "timeframe": timeframe}

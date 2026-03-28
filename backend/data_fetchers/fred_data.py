@@ -6,6 +6,7 @@ CPI priority:
   2. FRED API (fallback — same underlying data, slightly delayed)
 """
 import os
+import re
 import requests
 import pandas as pd
 
@@ -22,6 +23,10 @@ logger = logging.getLogger("btc_macro.data_fetchers.fred")
 FRED_API_KEY = os.getenv("FRED_API_KEY")
 FRED_BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
 STRICT_LIVE_OFFICIAL_ONLY = os.getenv("STRICT_LIVE_OFFICIAL_ONLY", "1").strip().lower() not in {"0", "false", "no"}
+ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY") or os.getenv("ALPHA_VANTAGE_API_KEY")
+ALPHAVANTAGE_URL = "https://www.alphavantage.co/query"
+TRADINGVIEW_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
+ISM_PMI_URL = "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports/pmi/"
 EIA_API_KEY = os.getenv("EIA_API_KEY")
 EIA_V2_SERIES_URL = "https://api.eia.gov/v2/seriesid"
 EIA_V1_SERIES_URL = "https://api.eia.gov/series/"
@@ -1201,42 +1206,244 @@ def get_pmi_data(timeframe: str = "current") -> Dict:
     long_start = "1990-01-01"
     df = get_fred_data("NAPM", start_date=long_start, timeframe=timeframe, sort_order="asc")
 
-    if df.empty:
-        logger.warning("PMI unavailable from official FRED NAPM series; returning no data")
-        return {
-            "error": "Official ISM Manufacturing PMI (NAPM) unavailable",
-            "source": "FRED:NAPM",
-            "timeframe": timeframe,
-        }
+    if not df.empty:
+        latest = df.iloc[-1]
+        latest_value = _safe_float(latest["value"])
+        prev_value = _safe_float(df.iloc[-2]["value"]) if len(df) >= 2 else None
+        if latest_value is not None:
+            latest_date = latest["date"].strftime("%Y-%m-%d")
+            result = _pmi_result(
+                latest_value,
+                latest_date,
+                "FRED:NAPM",
+                timeframe,
+                prev_value=prev_value,
+            )
+            logger.info(
+                "PMI (NAPM): %.1f (%s, trend=%s, date=%s)",
+                result["pmi_value"],
+                result["pmi_status"],
+                result["pmi_trend"],
+                result["latest_date"],
+            )
+            return result
 
-    latest = df.iloc[-1]
-    pmi_value = round(float(latest["value"]), 1)
-    latest_date = latest["date"].strftime("%Y-%m-%d")
+    alpha = _get_pmi_from_alphavantage(timeframe)
+    if alpha:
+        return alpha
 
-    pmi_status = "expansion" if pmi_value >= 50 else "contraction"
-    pmi_trend = "stable"
-    if len(df) >= 2:
-        prev_pmi = float(df.iloc[-2]["value"])
-        diff = pmi_value - prev_pmi
-        pmi_trend = "rising" if diff > 0.5 else "falling" if diff < -0.5 else "stable"
+    tv = _get_pmi_from_tradingview(timeframe)
+    if tv:
+        return tv
 
+    ism = _get_pmi_from_ism_scrape(timeframe)
+    if ism:
+        return ism
+
+    logger.warning("PMI unavailable from FRED, Alpha Vantage, TradingView, and ISM scrape")
+    return {
+        "error": "ISM Manufacturing PMI unavailable from configured sources",
+        "source": "unavailable",
+        "timeframe": timeframe,
+    }
+
+
+def _safe_float(value) -> Optional[float]:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(out):
+        return None
+    if out == float("inf") or out == float("-inf"):
+        return None
+    return out
+
+
+def _trend_from_values(current: float, previous: Optional[float]) -> str:
+    if previous is None:
+        return "stable"
+    diff = current - previous
+    return "rising" if diff > 0.5 else "falling" if diff < -0.5 else "stable"
+
+
+def _pmi_result(
+    pmi_value: float,
+    latest_date: str,
+    source: str,
+    timeframe: str,
+    *,
+    prev_value: Optional[float] = None,
+    proxy_note: Optional[str] = None,
+) -> Dict:
     result = {
-        "pmi_value": pmi_value,
-        "pmi_trend": pmi_trend,
-        "pmi_status": pmi_status,
+        "pmi_value": round(float(pmi_value), 1),
+        "pmi_trend": _trend_from_values(float(pmi_value), prev_value),
+        "pmi_status": "expansion" if float(pmi_value) >= 50 else "contraction",
         "latest_date": latest_date,
-        "source": "FRED:NAPM",
+        "source": source,
         "data_as_of": latest_date,
         "timeframe": timeframe,
     }
-    logger.info(
-        "PMI (NAPM): %.1f (%s, trend=%s, date=%s)",
-        pmi_value,
-        pmi_status,
-        pmi_trend,
-        latest_date,
-    )
+    if proxy_note:
+        result["_proxy_note"] = proxy_note
     return result
+
+
+def _snapshot_pmi_previous() -> Optional[float]:
+    snap_val = _get_last_snapshot_field("pmi_value")
+    return _safe_float(snap_val)
+
+
+def _get_pmi_from_alphavantage(timeframe: str) -> Optional[Dict]:
+    if not ALPHAVANTAGE_API_KEY:
+        return None
+    try:
+        resp = get_with_retries(
+            ALPHAVANTAGE_URL,
+            params={"function": "ISM_MANUFACTURING", "apikey": ALPHAVANTAGE_API_KEY},
+            timeout=20,
+            max_attempts=2,
+        )
+        payload = resp.json()
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list) or not rows:
+            return None
+
+        parsed = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            value = _safe_float(
+                row.get("value")
+                if row.get("value") is not None
+                else row.get("pmi")
+                if row.get("pmi") is not None
+                else row.get("manufacturing_pmi")
+            )
+            if value is None:
+                continue
+            date_text = (
+                row.get("date")
+                or row.get("timestamp")
+                or row.get("period")
+                or row.get("month")
+            )
+            date_parsed = pd.to_datetime(date_text, errors="coerce")
+            parsed.append((date_parsed, value, date_text))
+
+        if not parsed:
+            return None
+
+        parsed.sort(key=lambda x: x[0] if pd.notna(x[0]) else pd.Timestamp("1900-01-01"))
+        latest_dt, latest_val, latest_text = parsed[-1]
+        prev_val = parsed[-2][1] if len(parsed) >= 2 else _snapshot_pmi_previous()
+        latest_date = (
+            latest_dt.strftime("%Y-%m-%d")
+            if pd.notna(latest_dt)
+            else str(latest_text or datetime.now().strftime("%Y-%m-%d"))[:10]
+        )
+
+        result = _pmi_result(
+            latest_val,
+            latest_date,
+            "AlphaVantage:ISM_MANUFACTURING",
+            timeframe,
+            prev_value=prev_val,
+        )
+        logger.info(
+            "PMI fallback (Alpha Vantage): %.1f (%s, trend=%s, date=%s)",
+            result["pmi_value"],
+            result["pmi_status"],
+            result["pmi_trend"],
+            result["latest_date"],
+        )
+        return result
+    except Exception as e:
+        logger.debug("Alpha Vantage PMI fallback failed: %s", e)
+        return None
+
+
+def _get_pmi_from_tradingview(timeframe: str) -> Optional[Dict]:
+    payload = {
+        "symbols": {
+            "tickers": ["ECONOMICS:USPMI"],
+            "query": {"types": []},
+        },
+        "columns": ["close"],
+    }
+    try:
+        resp = requests.post(TRADINGVIEW_SCANNER_URL, json=payload, timeout=15)
+        resp.raise_for_status()
+        body = resp.json()
+        rows = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(rows, list) or not rows:
+            return None
+
+        first = rows[0] if isinstance(rows[0], dict) else {}
+        vec = first.get("d") if isinstance(first, dict) else None
+        if not isinstance(vec, list) or not vec:
+            return None
+        value = _safe_float(vec[0])
+        if value is None:
+            return None
+
+        prev_val = _snapshot_pmi_previous()
+        latest_date = datetime.now().strftime("%Y-%m-%d")
+        result = _pmi_result(
+            value,
+            latest_date,
+            "TradingView:ECONOMICS:USPMI",
+            timeframe,
+            prev_value=prev_val,
+            proxy_note="Unofficial TradingView macro feed",
+        )
+        logger.info(
+            "PMI fallback (TradingView): %.1f (%s, trend=%s)",
+            result["pmi_value"],
+            result["pmi_status"],
+            result["pmi_trend"],
+        )
+        return result
+    except Exception as e:
+        logger.debug("TradingView PMI fallback failed: %s", e)
+        return None
+
+
+def _get_pmi_from_ism_scrape(timeframe: str) -> Optional[Dict]:
+    try:
+        resp = get_with_retries(ISM_PMI_URL, timeout=20, max_attempts=2)
+        html = resp.text or ""
+        match = re.search(r"PMI(?:\s*\u00ae)?[^\d]{0,30}(\d{2}\.\d)", html, re.IGNORECASE)
+        if not match:
+            match = re.search(r"Manufacturing\s+PMI[^\d]{0,30}(\d{2}\.\d)", html, re.IGNORECASE)
+        if not match:
+            return None
+
+        value = _safe_float(match.group(1))
+        if value is None:
+            return None
+
+        prev_val = _snapshot_pmi_previous()
+        latest_date = datetime.now().strftime("%Y-%m-%d")
+        result = _pmi_result(
+            value,
+            latest_date,
+            "ISM:html",
+            timeframe,
+            prev_value=prev_val,
+            proxy_note="Scraped from ISM report page",
+        )
+        logger.info(
+            "PMI fallback (ISM scrape): %.1f (%s, trend=%s)",
+            result["pmi_value"],
+            result["pmi_status"],
+            result["pmi_trend"],
+        )
+        return result
+    except Exception as e:
+        logger.debug("ISM scrape PMI fallback failed: %s", e)
+        return None
 
 
 def get_m2_money_supply(timeframe: str = "current") -> Dict:

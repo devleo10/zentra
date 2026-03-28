@@ -60,6 +60,8 @@ from scoring_engine.cross_signal_reviewer import review_cross_signals
 from scoring_engine.narrative_generator import generate_narrative
 from scoring_engine.verdict import compute_final_verdict
 from scoring_engine.freshness import validate_data_freshness
+from scoring_engine.signal_quality import detect_regime, evaluate_signal_quality, apply_weight_multipliers
+from scoring_engine.config_loader import get_scoring_config
 from headline_engine.fetcher import HeadlineFetcher, HeadlineFetchError
 from headline_engine.classifier import HeadlineClassifier
 from headline_engine.report import generate_market_report
@@ -97,7 +99,7 @@ _STRICT_METRIC_LABELS = {
     "m2": "M2 Money Supply",
     "natgas": "Natural Gas",
     "move_index": "MOVE",
-    "eem": "NQEM",
+    "eem": "EEM",
     "btc_dominance": "BTC Dominance",
     "stablecoins": "Stablecoin Dominance",
     "btc_technicals": "BTC Technicals",
@@ -107,13 +109,7 @@ _STRICT_METRIC_LABELS = {
     "breakeven_10y": "10Y Breakeven",
 }
 
-_STRICT_UNSUPPORTED_METRICS = {
-    "move_index",
-    "eem",
-    "btc_dominance",
-    "stablecoins",
-    "btc_etf",
-}
+_STRICT_UNSUPPORTED_METRICS = set()
 
 _STRICT_FRED_ONLY_METRICS = {"vix", "sp500", "natgas", "oil"}
 _STRICT_OFFICIAL_METRICS = {
@@ -244,6 +240,18 @@ def _is_source_official(metric_key: str, blob: dict) -> bool:
     if metric_key in _STRICT_UNSUPPORTED_METRICS:
         return False
     source = _source_text(blob)
+    if metric_key == "pmi":
+        return source.startswith(("FRED", "AlphaVantage:ISM_MANUFACTURING", "TradingView:ECONOMICS:USPMI", "ISM:"))
+    if metric_key == "move_index":
+        return source.startswith(("^MOVE", "MOVE", "TradingView:INDEX:MOVE", "FRED:BAMLH0A0HYM2"))
+    if metric_key == "eem":
+        return source in {"EEM", "VWO"}
+    if metric_key == "btc_dominance":
+        return source.startswith(("CoinGecko", "CoinLore"))
+    if metric_key == "stablecoins":
+        return source.startswith(("CoinGecko", "CoinLore"))
+    if metric_key == "btc_etf":
+        return source.startswith(("Yahoo Finance", "Farside")) or "Farside" in source
     if metric_key == "dxy":
         return source.startswith(("ECB:", "Federal Reserve", "FRED:DTWEXBGS"))
     if metric_key == "dxy_structure":
@@ -531,10 +539,10 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
 
     try:
         raw_data["eem"] = yahoo_data.get_emerging_markets_data(timeframe)
-        logger.info(f"  NQEM: {raw_data['eem'].get('current_price', 'ERROR')} "
+        logger.info(f"  EEM: {raw_data['eem'].get('current_price', 'ERROR')} "
                     f"(chg={raw_data['eem'].get('change', 'N/A')}%)")
     except Exception as e:
-        logger.error(f"  NQEM fetch FAILED: {e}")
+        logger.error(f"  EEM fetch FAILED: {e}")
         raw_data["eem"] = {"error": str(e)}
 
     # BTC Market Structure (dominance, stablecoins, 200d MA)
@@ -640,24 +648,21 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     # ── STEP 3: Compute numeric scores (deterministic, zero LLM) ──────
     logger.info("[3/9] Computing deterministic numeric scores...")
     
-    # CPI: raise explicit warning when data is missing instead of silently defaulting to 0
     cpi_change = raw_data["cpi"].get("mom_change", raw_data["cpi"].get("change"))
-    if cpi_change is None:
-        if raw_data["cpi"].get("_fallback"):
-            # Use the last-snapshot fallback value with a warning
-            cpi_change = raw_data["cpi"].get("mom_change", 0.0)
-            logger.warning("CPI change is missing — using last-snapshot fallback value: %s", cpi_change)
-        elif "error" in raw_data["cpi"]:
-            logger.error("CPI data fetch failed: %s — scoring as neutral (0.0 MoM)", raw_data["cpi"]["error"])
-            cpi_change = 0.0
-        else:
-            logger.warning("CPI mom_change is None in fetched data — scoring as flat (0.0 MoM)")
-            cpi_change = 0.0
-
+    cpi_yoy = raw_data["cpi"].get("yoy_rate")
+    core_cpi_yoy = raw_data["cpi"].get("core_yoy_rate")
     pce_change = raw_data["pce"].get("mom_change", raw_data["pce"].get("change", None))
     oil_change = raw_data.get("oil", {}).get("change")  # WTI crude oil % change (FRED DCOILWTICO)
+    be_10y = raw_data.get("breakeven_10y", {}).get("value")
 
-    inflation_score, inflation_reasoning = score_inflation(cpi_change, pce_change, oil_change)
+    regime, regime_reasoning, regime_multipliers = detect_regime(raw_data)
+
+    inflation_score, inflation_reasoning, inflation_details = score_inflation(
+        cpi_yoy,
+        core_cpi_yoy,
+        oil_change,
+        breakeven_10y=be_10y,
+    )
 
     dovish_kw = raw_data["fed_keywords"].get("dovish_keywords_found", 0)
     hawkish_kw = raw_data["fed_keywords"].get("hawkish_keywords_found", 0)
@@ -725,19 +730,18 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     # Economy section (Jobs, GDP, PMI)
     unemployment_rate = raw_data.get("jobs", {}).get("unemployment_rate")
     unemployment_trend = raw_data.get("jobs", {}).get("unemployment_trend", "stable")
-    if timeframe == "month":
-        t3 = raw_data.get("jobs", {}).get("unemployment_trend_3m")
-        if t3:
-            unemployment_trend = t3
+    unemployment_trend_3m = raw_data.get("jobs", {}).get("unemployment_trend_3m", unemployment_trend)
     nfp_change = raw_data.get("jobs", {}).get("nfp_change")
     gdp_growth = raw_data.get("gdp", {}).get("gdp_growth_rate")
     pmi_value = raw_data.get("pmi", {}).get("pmi_value")
-    economy_score, economy_reasoning = score_economy(
+    economy_score, economy_reasoning, economy_details = score_economy(
         unemployment_rate=unemployment_rate,
         unemployment_trend=unemployment_trend,
+        unemployment_trend_3m=unemployment_trend_3m,
         nfp_change=nfp_change,
         gdp_growth=gdp_growth,
         pmi_value=pmi_value,
+        regime=regime,
     )
 
     section_scores = {
@@ -757,11 +761,29 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "risk_sentiment": risk_reasoning,
     }
     
+    signal_quality = evaluate_signal_quality(raw_data, section_scores, regime)
+    contradiction_flags = signal_quality["contradiction_flags"]
+    sanity_flags = signal_quality["sanity_flags"]
+    quality_weight_multipliers = signal_quality["section_weight_multipliers"]
+    section_confidence_multipliers = signal_quality["section_confidence_multipliers"]
+    cfg_weights = get_scoring_config()["section_weights"]
+    dynamic_weights = apply_weight_multipliers(cfg_weights, regime_multipliers)
+    dynamic_weights = apply_weight_multipliers(dynamic_weights, quality_weight_multipliers)
+
     weighted_stale, score_breakdown = compute_weighted_total_with_freshness(
-        section_scores, freshness_report.to_dict()
+        section_scores, freshness_report.to_dict(), dynamic_weights=dynamic_weights
     )
     coh_adj, coh_reasoning = compute_coherence_adjustment(section_scores, raw_data)
-    weighted_score = int(max(0, min(100, weighted_stale + coh_adj)))
+    weighted_score = int(max(0, min(100, weighted_stale + coh_adj + signal_quality["additive_adjustment"])))
+
+    section_reasoning["inflation"] += (
+        f" | conf x{1.0 - inflation_details.get('confidence_haircut', 0.0):.2f}"
+        if inflation_details.get("confidence_haircut", 0.0)
+        else ""
+    )
+    for section_key, multiplier in section_confidence_multipliers.items():
+        if multiplier != 1.0 and section_key in section_reasoning:
+            section_reasoning[section_key] += f" | conf x{multiplier:.2f}"
 
     logger.info(f"  Inflation:      {inflation_score}/100 - {inflation_reasoning}")
     logger.info(f"  Economy:        {economy_score}/100 - {economy_reasoning}")
@@ -769,9 +791,14 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     logger.info(f"  Liquidity:      {liquidity_score}/100 - {liquidity_reasoning}")
     logger.info(f"  DXY:            {dxy_score}/100 - {dxy_reasoning}")
     logger.info(f"  Risk Sentiment: {risk_score}/100 - {risk_reasoning}")
-    logger.info(f"  Weighted (stale-aware): {weighted_stale}/100 | Coherence: {coh_adj:+d} -> {weighted_score}/100")
+    logger.info(f"  Regime:         {regime} - {regime_reasoning}")
+    logger.info(f"  Weighted (stale-aware): {weighted_stale}/100 | Coherence: {coh_adj:+d} | Quality adj: {signal_quality['additive_adjustment']:+d} -> {weighted_score}/100")
     if coh_reasoning and coh_reasoning != "none":
         logger.info(f"  Coherence: {coh_reasoning}")
+    if contradiction_flags:
+        logger.warning("  Contradictions: %s", " | ".join(contradiction_flags))
+    if sanity_flags:
+        logger.warning("  Sanity flags: %s", " | ".join(sanity_flags))
 
     # ── STEP 3b: Cross-signal LLM review ──────────────────────────────
     logger.info("[3b/9] Running cross-signal LLM review...")
@@ -903,12 +930,25 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         headline_confidence=avg_headline_conf,
         cross_signal_adjustment=cross_adj,
         data_freshness_info=freshness_report.to_dict(),
+        contradiction_flags=contradiction_flags,
+        sanity_flags=sanity_flags,
+        downweighted_sections_count=sum(1 for v in quality_weight_multipliers.values() if v != 1.0),
     )
     
     logger.info(f"  Final Score:  {verdict['final_score']}/100")
     logger.info(f"  Bias:         {verdict['bias']}")
     logger.info(f"  Action:       {verdict['action']}")
     logger.info(f"  Confidence:   {verdict['confidence_pct']}% ({verdict['confidence_label']})")
+    logger.info(
+        "[CONFIDENCE BREAKDOWN] freshness=%.1f agreement=%.1f data_quality=%.1f headline=%.1f stability=%.1f critical_penalty=%.1f contradiction_multiplier=%.2f",
+        verdict["components"].get("freshness_score", 0.0),
+        verdict["components"].get("agreement_pct", 0.0),
+        verdict["components"].get("data_quality_score", 0.0),
+        verdict["components"].get("headline_conf_score", 0.0),
+        verdict["components"].get("model_stability_score", 0.0),
+        verdict["components"].get("critical_metric_penalty", 0.0),
+        verdict["components"].get("contradiction_multiplier", 1.0),
+    )
 
     # ── STEP 7b: Generate LLM narrative ───────────────────────────────
     logger.info("[7b/9] Generating verdict narrative...")
@@ -1061,6 +1101,14 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "m2_yoy_change": raw_data.get("m2", {}).get("m2_yoy_change"),
         "section_scores": section_scores,
         "section_reasoning": section_reasoning,
+        "regime": regime,
+        "regime_reasoning": regime_reasoning,
+        "confidence_breakdown": verdict.get("components", {}),
+        "data_quality_score": freshness_payload.get("data_quality", {}).get("score"),
+        "sanity_flags": sanity_flags,
+        "contradiction_flags": contradiction_flags,
+        "section_confidence_multipliers": section_confidence_multipliers,
+        "section_weight_multipliers": quality_weight_multipliers,
         "weighted_numeric_stale_downweight": weighted_stale,
         "coherence_adjustment": coh_adj,
         "coherence_reasoning": coh_reasoning,
@@ -1118,6 +1166,12 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "financial_stress_trend": raw_data.get("financial_stress", {}).get("stress_trend"),
         "hy_oas": raw_data.get("financial_stress", {}).get("hy_oas"),
         "hy_trend": raw_data.get("financial_stress", {}).get("hy_trend"),
+        "eem_price": raw_data.get("eem", {}).get("current_price"),
+        "eem_change": raw_data.get("eem", {}).get("change"),
+        "eem_change_label": raw_data.get("eem", {}).get("change_label"),
+        "eem_change_unit": raw_data.get("eem", {}).get("change_unit"),
+        "eem_trend": raw_data.get("eem", {}).get("trend"),
+        "eem_source": raw_data.get("eem", {}).get("source"),
         "nqem_price": raw_data.get("eem", {}).get("current_price"),
         "nqem_change": raw_data.get("eem", {}).get("change"),
         "nqem_change_label": raw_data.get("eem", {}).get("change_label"),
@@ -1136,6 +1190,9 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "btc_ma200": raw_data.get("btc_technicals", {}).get("ma200"),
         "btc_realized_vol_30d": raw_data.get("btc_technicals", {}).get("realized_vol_30d"),
         "btc_etf_volume": raw_data.get("btc_etf", {}).get("total_volume"),
+        "btc_etf_net_flow_musd": raw_data.get("btc_etf", {}).get("net_flow_musd"),
+        "btc_etf_flow_date": raw_data.get("btc_etf", {}).get("flow_date"),
+        "btc_etf_source": raw_data.get("btc_etf", {}).get("source"),
         "btc_etf_flow_level": raw_data.get("btc_etf", {}).get("level"),
         "btc_market_arrow": btc_market_arrow,
         # DXY structure

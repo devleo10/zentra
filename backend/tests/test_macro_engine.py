@@ -17,6 +17,7 @@ from run_analysis import MONETARY_EXPLICIT_CONFIDENCE_BOOST_TYPES
 
 from scoring_engine.coherence import compute_coherence_adjustment
 from scoring_engine.freshness import validate_data_freshness
+from scoring_engine.headline_adjuster import compute_headline_adjustment
 from scoring_engine.narrative_generator import (
     _augment_with_event_context,
     _narrative_matches_bias,
@@ -26,16 +27,17 @@ from scoring_engine.numeric_scorer import (
     score_economy,
     score_inflation,
 )
+from scoring_engine.signal_quality import detect_regime, evaluate_signal_quality
+from scoring_engine.verdict import compute_final_verdict
 from data_fetchers import fred_data
 
 
-def test_score_inflation_pce_uses_separate_brackets():
-    """PCE MoM uses tighter bands than CPI when pce_mom_change is present."""
-    s_cpi_only, _ = score_inflation(0.08, None, None)
-    s_with_pce, reason = score_inflation(0.08, 0.08, None)
-    assert "PCE MoM: +0.08%" in reason
-    # CPI 0.08 is flat (<=0.1); PCE 0.08 exceeds pce flat (0.05) -> higher inflation score drops
-    assert s_with_pce < s_cpi_only
+def test_score_inflation_forward_divergence_reduces_confidence():
+    score, reason, details = score_inflation(2.4, 2.5, 14.0, 2.7)
+    assert score >= 0
+    assert details["divergence_flag"] is True
+    assert details["confidence_haircut"] > 0
+    assert "Divergence: yes" in reason
 
 
 def test_bls_cpi_three_month_average_prefers_published_mom_changes():
@@ -121,11 +123,14 @@ def test_fed_balance_sheet_week_uses_calendar_anchor(monkeypatch):
 
 def test_pmi_requires_official_napm_series(monkeypatch):
     monkeypatch.setattr(fred_data, "get_fred_data", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(fred_data, "_get_pmi_from_alphavantage", lambda timeframe: None)
+    monkeypatch.setattr(fred_data, "_get_pmi_from_tradingview", lambda timeframe: None)
+    monkeypatch.setattr(fred_data, "_get_pmi_from_ism_scrape", lambda timeframe: None)
 
     out = fred_data.get_pmi_data("month")
 
-    assert out["error"] == "Official ISM Manufacturing PMI (NAPM) unavailable"
-    assert out["source"] == "FRED:NAPM"
+    assert out["error"] == "ISM Manufacturing PMI unavailable from configured sources"
+    assert out["source"] == "unavailable"
     assert "pmi_value" not in out
 
 
@@ -146,6 +151,30 @@ def test_pmi_week_uses_latest_official_monthly_print(monkeypatch):
     assert out["source"] == "FRED:NAPM"
 
 
+def test_pmi_uses_tradingview_fallback_when_official_series_missing(monkeypatch):
+    monkeypatch.setattr(fred_data, "get_fred_data", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(fred_data, "_get_pmi_from_alphavantage", lambda timeframe: None)
+    monkeypatch.setattr(
+        fred_data,
+        "_get_pmi_from_tradingview",
+        lambda timeframe: {
+            "pmi_value": 50.7,
+            "pmi_trend": "rising",
+            "pmi_status": "expansion",
+            "latest_date": "2026-03-01",
+            "source": "TradingView:ECONOMICS:USPMI",
+            "data_as_of": "2026-03-01",
+            "timeframe": timeframe,
+            "_proxy_note": "Unofficial TradingView macro feed",
+        },
+    )
+
+    out = fred_data.get_pmi_data("week")
+
+    assert out["pmi_value"] == 50.7
+    assert out["source"] == "TradingView:ECONOMICS:USPMI"
+
+
 def test_strict_mode_accepts_lbma_gold_source():
     assert run_analysis._is_source_official("gold", {"source": "LBMA:today.json"}) is True
 
@@ -154,17 +183,101 @@ def test_strict_mode_accepts_ecb_dxy_structure_source():
     assert run_analysis._is_source_official("dxy_structure", {"source": "ECB:EXR_fx_basket"}) is True
 
 
+def test_strict_mode_accepts_tradingview_move_source():
+    assert run_analysis._is_source_official("move_index", {"source": "TradingView:INDEX:MOVE"}) is True
+
+
+def test_strict_mode_accepts_eem_source():
+    assert run_analysis._is_source_official("eem", {"source": "EEM"}) is True
+
+
 def test_score_economy_marks_missing_inputs_excluded_in_reasoning():
-    score, reason = score_economy(
+    score, reason, details = score_economy(
         unemployment_rate=4.4,
         unemployment_trend="falling",
+        unemployment_trend_3m="falling",
         nfp_change=-92,
         gdp_growth=0.7,
         pmi_value=None,
+        regime="neutral",
     )
 
     assert score > 0
     assert "PMI: N/A -> excluded" in reason
+    assert details["nfp_score"] == 35
+
+
+def test_score_economy_blends_short_and_medium_unemployment_trends():
+    score, reason, details = score_economy(
+        unemployment_rate=4.2,
+        unemployment_trend="rising",
+        unemployment_trend_3m="falling",
+        nfp_change=25,
+        gdp_growth=1.8,
+        pmi_value=51.0,
+        regime="neutral",
+    )
+    assert score >= 0
+    assert details["unemployment_short_trend_component"] == -15
+    assert details["unemployment_medium_trend_component"] == 5
+    assert details["unemployment_trend_blend"] == -9.0
+    assert "blend=-9.0" in reason
+
+
+def test_detect_regime_risk_off_when_vix_high():
+    regime, reasoning, multipliers = detect_regime(
+        {
+            "vix": {"current_value": 31.0},
+            "financial_stress": {"hy_oas": 3.2},
+            "balance_sheet": {"trend": "stable"},
+            "m2": {"m2_trend": "stable"},
+        }
+    )
+    assert regime == "risk_off"
+    assert multipliers["dxy"] > 1.0
+
+
+def test_evaluate_signal_quality_flags_economy_mismatch():
+    quality = evaluate_signal_quality(
+        {
+            "jobs": {"nfp_change": -92, "unemployment_rate": 3.9, "unemployment_trend": "rising"},
+            "cpi": {"yoy_rate": 2.4, "core_yoy_rate": 2.5},
+            "oil": {"change": 12.0},
+            "breakeven_10y": {"value": 2.6},
+        },
+        {"economy": 65, "inflation": 55, "fed_policy": 50, "liquidity": 50, "dxy": 50, "risk_sentiment": 50},
+        "risk_off",
+    )
+    assert quality["contradiction_flags"]
+    assert quality["sanity_flags"]
+    assert quality["section_confidence_multipliers"]["economy"] < 1.0
+
+
+def test_headline_adjustment_applies_source_weights():
+    classified = [
+        {"event_bias": "hawkish", "risk_impact": "risk_off", "confidence": 1.0, "reason": "x", "source": "Reuters"},
+        {"event_bias": "hawkish", "risk_impact": "risk_off", "confidence": 1.0, "reason": "x", "source": "Others"},
+    ]
+    adj, reasoning = compute_headline_adjustment(classified)
+    assert adj < 0
+    assert "src=Reuters" in reasoning
+
+
+def test_compute_final_verdict_includes_new_confidence_breakdown():
+    verdict = compute_final_verdict(
+        weighted_numeric_score=50,
+        headline_adjustment=0,
+        section_scores={"inflation": 50, "economy": 20, "fed_policy": 50, "liquidity": 50, "dxy": 50, "risk_sentiment": 20},
+        headline_confidence=0.8,
+        cross_signal_adjustment=0,
+        data_freshness_info={"checks": [{"name": "PMI", "status": "MISSING", "is_critical": True}], "data_quality": {"score": 50.0, "stale_ratio": 0.0}},
+        contradiction_flags=["x"],
+        sanity_flags=["y"],
+        downweighted_sections_count=2,
+    )
+    assert "data_quality_score" in verdict["components"]
+    assert verdict["components"]["critical_metric_penalty"] > 0
+    assert verdict["components"]["contradiction_multiplier"] < 1.0
 
 
 def test_compute_weighted_total_with_freshness_downweights_stale_section():

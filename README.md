@@ -13,6 +13,8 @@ Full-stack app that scores Bitcoin macro conditions using live data (FRED, Yahoo
 - **OpenAI** API key (LLM + embeddings)
 - **FRED** API key (free)
 - **NewsAPI** key (optional; improves headline coverage)
+- **Alpha Vantage** key (optional; PMI/news fallback)
+- **Finnhub** key (optional; headline fallback)
 
 ## Environment
 
@@ -22,6 +24,8 @@ Full-stack app that scores Bitcoin macro conditions using live data (FRED, Yahoo
 OPENAI_API_KEY=
 FRED_API_KEY=
 NEWS_API_KEY=
+ALPHAVANTAGE_API_KEY=
+FINNHUB_API_KEY=
 BACKEND_PORT=8000
 CORS_ORIGINS=http://localhost:3000
 ```

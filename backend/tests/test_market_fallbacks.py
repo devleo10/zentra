@@ -177,17 +177,17 @@ def test_gold_strict_mode_uses_lbma_official_feed(monkeypatch):
     assert res["current_price"] == 3012.4
 
 
-def test_emerging_markets_prefers_nqem(monkeypatch):
-    yahoo = load_module(backend_path("data_fetchers", "yahoo_data.py"), "test_yahoo_nqem")
+def test_emerging_markets_prefers_eem(monkeypatch):
+    yahoo = load_module(backend_path("data_fetchers", "yahoo_data.py"), "test_yahoo_eem")
     dates = pd.to_datetime(["2026-03-20", "2026-03-27"])
     data_map = {
-        "NQEM": pd.DataFrame({"Close": [10.0, 10.5]}, index=dates),
+        "EEM": pd.DataFrame({"Close": [10.0, 10.5]}, index=dates),
     }
     yahoo.yf = types.SimpleNamespace(Ticker=lambda sym: FakeTicker(sym, data_map))
 
     res = yahoo.get_emerging_markets_data("week")
 
-    assert res["source"] == "NQEM"
+    assert res["source"] == "EEM"
     assert res["current_price"] == 10.5
 
 
