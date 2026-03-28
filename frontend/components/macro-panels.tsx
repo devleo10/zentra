@@ -57,42 +57,112 @@ export function TrendArrow({
   return <span className={`text-gray-500${className ? ` ${className}` : ""}`}>→</span>
 }
 
+export function HistoricalBadge({
+  source,
+  title,
+}: {
+  source: string | null | undefined
+  title?: string
+}) {
+  if (source !== "last_snapshot") return null
+  return (
+    <span
+      className="ml-1 text-[10px] uppercase tracking-wide text-amber-400"
+      title={title ?? "Historical snapshot value shown because a live fetch was unavailable"}
+    >
+      hist
+    </span>
+  )
+}
+
 export function CpiPanel({ result }: { result: V2AnalysisResult }) {
-  if (result.cpi_mom_change == null && result.cpi_mom_avg_3m == null) return null
-  const avg = result.cpi_mom_avg_3m
-  const prior = result.cpi_mom_avg_3m_prior
-  const tr = result.cpi_mom_avg_3m_trend
+  if (
+    result.cpi_mom_change == null &&
+    result.cpi_mom_avg_3m == null &&
+    result.cpi_core_mom_change == null &&
+    result.core_cpi_mom_avg_3m == null &&
+    result.pce_mom_change == null &&
+    result.pce_mom_avg_3m == null
+  ) return null
 
   return (
     <div className="bg-gray-900 rounded-xl p-3 border border-gray-800 text-xs sm:text-sm text-gray-300">
-      <div className="text-[10px] sm:text-xs text-gray-500 mb-1.5">CPI (inflation)</div>
-      <div className="flex flex-wrap gap-x-4 gap-y-1 items-baseline">
-        {result.cpi_mom_change != null && (
-          <span>
-            MoM{" "}
-            <span className="text-white font-medium">
-              {result.cpi_mom_change > 0 ? "+" : ""}
-              {result.cpi_mom_change.toFixed(2)}%
-            </span>
-            <span className="ml-0.5">
-              <DeltaArrow delta={result.cpi_mom_change} eps={0.02} />
-            </span>
+      <div className="text-[10px] sm:text-xs text-gray-500 mb-1.5">Inflation indicators</div>
+      <div className="flex flex-wrap gap-2">
+        {(result.cpi_mom_change != null || result.cpi_mom_avg_3m != null) && (
+          <span className="bg-gray-950/70 px-2.5 py-1 rounded border border-gray-800">
+            CPI{" "}
+            {result.cpi_mom_change != null && (
+              <>
+                <span className="text-white font-medium">
+                  {result.cpi_mom_change > 0 ? "+" : ""}
+                  {result.cpi_mom_change.toFixed(2)}%
+                </span>
+                <span className="ml-0.5"><DeltaArrow delta={result.cpi_mom_change} eps={0.02} /></span>
+              </>
+            )}
+            {result.cpi_mom_avg_3m != null && (
+              <span
+                className="text-gray-500 ml-1"
+                title={result.cpi_mom_avg_3m_prior != null ? `Prior 3-mo avg MoM: ${result.cpi_mom_avg_3m_prior.toFixed(3)}%` : undefined}
+              >
+                · 3m avg <span className="text-gray-300">{result.cpi_mom_avg_3m > 0 ? "+" : ""}{result.cpi_mom_avg_3m.toFixed(3)}%</span>
+                <span className="ml-0.5"><TrendArrow trend={result.cpi_mom_avg_3m_trend} /></span>
+              </span>
+            )}
           </span>
         )}
-        {avg != null && (
-          <span title={prior != null ? `Prior 3-mo avg MoM: ${prior.toFixed(3)}%` : undefined}>
-            3-mo avg MoM{" "}
-            <span className="text-white font-medium">
-              {avg > 0 ? "+" : ""}
-              {avg.toFixed(3)}%
-            </span>
-            <span className="ml-0.5">
-              <TrendArrow trend={tr} />
-            </span>
+        {(result.cpi_core_mom_change != null || result.core_cpi_mom_avg_3m != null) && (
+          <span className="bg-gray-950/70 px-2.5 py-1 rounded border border-gray-800">
+            Core CPI{" "}
+            {result.cpi_core_mom_change != null && (
+              <>
+                <span className="text-white font-medium">
+                  {result.cpi_core_mom_change > 0 ? "+" : ""}
+                  {result.cpi_core_mom_change.toFixed(2)}%
+                </span>
+                <span className="ml-0.5"><DeltaArrow delta={result.cpi_core_mom_change} eps={0.02} /></span>
+              </>
+            )}
+            {result.core_cpi_mom_avg_3m != null && (
+              <span
+                className="text-gray-500 ml-1"
+                title={result.core_cpi_mom_avg_3m_prior != null ? `Prior 3-mo avg MoM: ${result.core_cpi_mom_avg_3m_prior.toFixed(3)}%` : undefined}
+              >
+                · 3m avg <span className="text-gray-300">{result.core_cpi_mom_avg_3m > 0 ? "+" : ""}{result.core_cpi_mom_avg_3m.toFixed(3)}%</span>
+                <span className="ml-0.5"><TrendArrow trend={result.core_cpi_mom_avg_3m_trend} /></span>
+              </span>
+            )}
+          </span>
+        )}
+        {(result.pce_mom_change != null || result.pce_mom_avg_3m != null) && (
+          <span className="bg-gray-950/70 px-2.5 py-1 rounded border border-gray-800">
+            PCE{" "}
+            {result.pce_mom_change != null && (
+              <>
+                <span className="text-white font-medium">
+                  {result.pce_mom_change > 0 ? "+" : ""}
+                  {result.pce_mom_change.toFixed(2)}%
+                </span>
+                <span className="ml-0.5"><DeltaArrow delta={result.pce_mom_change} eps={0.02} /></span>
+              </>
+            )}
+            {result.pce_mom_avg_3m != null && (
+              <span
+                className="text-gray-500 ml-1"
+                title={result.pce_mom_avg_3m_prior != null ? `Prior 3-mo avg MoM: ${result.pce_mom_avg_3m_prior.toFixed(3)}%` : undefined}
+              >
+                · 3m avg <span className="text-gray-300">{result.pce_mom_avg_3m > 0 ? "+" : ""}{result.pce_mom_avg_3m.toFixed(3)}%</span>
+                <span className="ml-0.5"><TrendArrow trend={result.pce_mom_avg_3m_trend} /></span>
+              </span>
+            )}
           </span>
         )}
         {result.cpi_yoy_rate != null && (
-          <span className="text-gray-500">YoY {result.cpi_yoy_rate.toFixed(1)}%</span>
+          <span className="text-gray-500 px-1 py-1">CPI YoY {result.cpi_yoy_rate.toFixed(1)}%</span>
+        )}
+        {result.cpi_core_yoy_rate != null && (
+          <span className="text-gray-500 px-1 py-1">Core YoY {result.cpi_core_yoy_rate.toFixed(1)}%</span>
         )}
       </div>
     </div>
@@ -211,13 +281,17 @@ export function BitcoinMarketPanel({ result }: { result: V2AnalysisResult }) {
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] sm:text-sm text-gray-300">
         {result.btc_dominance != null && (
-          <span>
+          <span title={result.btc_dominance_change_source === "snapshot_history" ? "Arrow compares the live reading to saved historical snapshots" : undefined}>
             BTC.D <span className="text-white font-medium">{result.btc_dominance.toFixed(1)}%</span>
+            <span className="ml-0.5"><DeltaArrow delta={result.btc_dominance_change} eps={0.02} /></span>
+            <HistoricalBadge source={result.btc_dominance_source} />
           </span>
         )}
         {result.stablecoin_dominance != null && (
-          <span>
+          <span title={result.stablecoin_dominance_change_source === "snapshot_history" ? "Arrow compares the live reading to saved historical snapshots" : undefined}>
             Stable.D <span className="text-white font-medium">{result.stablecoin_dominance.toFixed(1)}%</span>
+            <span className="ml-0.5"><DeltaArrow delta={result.stablecoin_dominance_change} eps={0.02} /></span>
+            <HistoricalBadge source={result.stablecoin_dominance_source} />
           </span>
         )}
         {result.btc_ma200 != null && result.btc_price != null && (

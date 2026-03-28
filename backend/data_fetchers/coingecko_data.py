@@ -65,6 +65,8 @@ _CG_HEADERS = {
 _COINBASE_EXCHANGE_URL = "https://api.exchange.coinbase.com"
 _KRAKEN_PUBLIC_URL = "https://api.kraken.com/0/public"
 
+_DOMINANCE_TIMEFRAME_DAYS = {"current": 1, "week": 7, "month": 30}
+
 
 def _cg_throttle() -> None:
     global _cg_last_call_monotonic
@@ -289,6 +291,44 @@ def _snapshot_stable_dom():
         logger.debug("snapshot stablecoin read failed", exc_info=True)
     return None
 
+
+def _snapshot_series_change(field_name: str, current_value: float, timeframe: str) -> Optional[float]:
+    """Compare a live dominance reading to the nearest historical snapshot for the timeframe."""
+    try:
+        from storage.db import get_latest_snapshots
+
+        rows = get_latest_snapshots(90)
+        if not rows:
+            return None
+        latest_ts = datetime.now()
+        cutoff_days = _DOMINANCE_TIMEFRAME_DAYS.get(timeframe, 1)
+        target_ts = latest_ts - timedelta(days=cutoff_days)
+
+        baseline = None
+        for row in rows:
+            raw_val = row.get(field_name)
+            if raw_val is None:
+                continue
+            try:
+                row_ts = datetime.fromisoformat(str(row.get("timestamp")))
+            except Exception:
+                continue
+            if row_ts <= target_ts:
+                baseline = float(raw_val)
+                break
+        if baseline is None:
+            for row in rows[1:]:
+                raw_val = row.get(field_name)
+                if raw_val is not None:
+                    baseline = float(raw_val)
+                    break
+        if baseline is None:
+            return None
+        return round(current_value - baseline, 2)
+    except Exception:
+        logger.debug("snapshot %s change calc failed", field_name, exc_info=True)
+        return None
+
 # Timeframe to days mapping for historical data
 TIMEFRAME_DAYS = {
     "current": 1,
@@ -469,8 +509,13 @@ def get_btc_dominance(timeframe: str = "current") -> Dict:
         market_cap_data = payload.get("market_cap_percentage") or {}
         btc_dominance = market_cap_data.get("btc")
         if btc_dominance is not None and float(btc_dominance) > 0:
+            current = round(float(btc_dominance), 2)
+            delta = _snapshot_series_change("btc_dominance", current, timeframe)
             return {
-                "btc_dominance": round(float(btc_dominance), 2),
+                "btc_dominance": current,
+                "change": delta,
+                "change_source": "snapshot_history" if delta is not None else None,
+                "trend": "rising" if delta is not None and delta > 0.05 else "falling" if delta is not None and delta < -0.05 else "stable",
                 "date": today,
                 "timeframe": timeframe,
                 "source": "CoinGecko",
@@ -479,8 +524,13 @@ def get_btc_dominance(timeframe: str = "current") -> Dict:
     if coinlore_global:
         btc_d = _safe_float(coinlore_global.get("btc_d"))
         if btc_d is not None and btc_d > 0:
+            current = round(btc_d, 2)
+            delta = _snapshot_series_change("btc_dominance", current, timeframe)
             return {
-                "btc_dominance": round(btc_d, 2),
+                "btc_dominance": current,
+                "change": delta,
+                "change_source": "snapshot_history" if delta is not None else None,
+                "trend": "rising" if delta is not None and delta > 0.05 else "falling" if delta is not None and delta < -0.05 else "stable",
                 "date": today,
                 "timeframe": timeframe,
                 "source": "CoinLore",
@@ -491,6 +541,9 @@ def get_btc_dominance(timeframe: str = "current") -> Dict:
         logger.warning("BTC dominance: using last snapshot %.2f%%", snap)
         return {
             "btc_dominance": round(snap, 2),
+            "change": None,
+            "change_source": None,
+            "trend": "stable",
             "date": today,
             "timeframe": timeframe,
             "_fallback": True,
@@ -509,10 +562,15 @@ def get_stablecoin_data(timeframe: str = "current") -> Dict:
         usdc_dom = float(market_cap_data.get("usdc") or 0)
         total_stable_dom = usdt_dom + usdc_dom
         if total_stable_dom > 0:
+            total_stable_dom = round(total_stable_dom, 2)
+            delta = _snapshot_series_change("stablecoin_dominance", total_stable_dom, timeframe)
             return {
                 "usdt_dominance": round(usdt_dom, 2),
                 "usdc_dominance": round(usdc_dom, 2),
-                "total_stablecoin_dominance": round(total_stable_dom, 2),
+                "total_stablecoin_dominance": total_stable_dom,
+                "change": delta,
+                "change_source": "snapshot_history" if delta is not None else None,
+                "trend": "rising" if delta is not None and delta > 0.05 else "falling" if delta is not None and delta < -0.05 else "stable",
                 "date": today,
                 "timeframe": timeframe,
                 "source": "CoinGecko",
@@ -534,11 +592,15 @@ def get_stablecoin_data(timeframe: str = "current") -> Dict:
         if total_stable_mcap > 0:
             usdt_dom = stable_caps.get("USDT", 0.0) / total_mcap * 100.0
             usdc_dom = stable_caps.get("USDC", 0.0) / total_mcap * 100.0
-            total_stable_dom = total_stable_mcap / total_mcap * 100.0
+            total_stable_dom = round(total_stable_mcap / total_mcap * 100.0, 2)
+            delta = _snapshot_series_change("stablecoin_dominance", total_stable_dom, timeframe)
             return {
                 "usdt_dominance": round(usdt_dom, 2),
                 "usdc_dominance": round(usdc_dom, 2),
-                "total_stablecoin_dominance": round(total_stable_dom, 2),
+                "total_stablecoin_dominance": total_stable_dom,
+                "change": delta,
+                "change_source": "snapshot_history" if delta is not None else None,
+                "trend": "rising" if delta is not None and delta > 0.05 else "falling" if delta is not None and delta < -0.05 else "stable",
                 "date": today,
                 "timeframe": timeframe,
                 "source": "CoinLore",
@@ -551,6 +613,9 @@ def get_stablecoin_data(timeframe: str = "current") -> Dict:
             "usdt_dominance": None,
             "usdc_dominance": None,
             "total_stablecoin_dominance": round(snap, 2),
+            "change": None,
+            "change_source": None,
+            "trend": "stable",
             "date": today,
             "timeframe": timeframe,
             "_fallback": True,

@@ -134,6 +134,63 @@ def test_dxy_strict_mode_prefers_ecb_basket(monkeypatch):
     assert res["current_price"] == 101.23
 
 
+def test_dxy_structure_strict_mode_uses_ecb_history(monkeypatch):
+    yahoo = load_module(backend_path("data_fetchers", "yahoo_data.py"), "test_yahoo_dxy_structure_ecb")
+    yahoo.STRICT_LIVE_OFFICIAL_ONLY = True
+    idx = pd.date_range("2026-01-01", periods=30, freq="B")
+    closes = [100, 103, 101, 105, 102, 107, 104, 109, 106, 111, 108, 113, 110, 115, 112, 117, 114, 119, 116, 121, 118, 123, 120, 125, 122, 127, 124, 129, 126, 131]
+    monkeypatch.setattr(
+        yahoo,
+        "_ecb_dxy_history",
+        lambda timeframe, lookback_days=None: pd.DataFrame({"Close": closes}, index=idx),
+    )
+
+    res = yahoo.get_dxy_structure("month")
+
+    assert res["structure"] != "unknown"
+    assert res["source"] == "ECB:EXR_fx_basket"
+
+
+def test_gold_strict_mode_uses_lbma_official_feed(monkeypatch):
+    yahoo = load_module(backend_path("data_fetchers", "yahoo_data.py"), "test_yahoo_gold_lbma")
+    yahoo.STRICT_LIVE_OFFICIAL_ONLY = True
+    monkeypatch.setattr(
+        yahoo,
+        "_lbma_gold_data",
+        lambda timeframe: {
+            "current_price": 3012.4,
+            "date": "2026-03-27",
+            "data_as_of": "2026-03-27",
+            "comparison_date": "26/3",
+            "change": 1.2,
+            "change_label": "1D",
+            "change_unit": "percent",
+            "trend": "rising",
+            "timeframe": timeframe,
+            "source": "LBMA:today.json",
+        },
+    )
+
+    res = yahoo.get_gold_data("current")
+
+    assert res["source"] == "LBMA:today.json"
+    assert res["current_price"] == 3012.4
+
+
+def test_emerging_markets_prefers_nqem(monkeypatch):
+    yahoo = load_module(backend_path("data_fetchers", "yahoo_data.py"), "test_yahoo_nqem")
+    dates = pd.to_datetime(["2026-03-20", "2026-03-27"])
+    data_map = {
+        "NQEM": pd.DataFrame({"Close": [10.0, 10.5]}, index=dates),
+    }
+    yahoo.yf = types.SimpleNamespace(Ticker=lambda sym: FakeTicker(sym, data_map))
+
+    res = yahoo.get_emerging_markets_data("week")
+
+    assert res["source"] == "NQEM"
+    assert res["current_price"] == 10.5
+
+
 def test_stablecoin_snapshot_fallback_keeps_total_only(monkeypatch):
     cg = load_module(backend_path("data_fetchers", "coingecko_data.py"), "test_coingecko_snapshot_stables")
     monkeypatch.setattr(cg, "_get_global_market_payload", lambda: None)

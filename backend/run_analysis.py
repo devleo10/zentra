@@ -97,7 +97,7 @@ _STRICT_METRIC_LABELS = {
     "m2": "M2 Money Supply",
     "natgas": "Natural Gas",
     "move_index": "MOVE",
-    "eem": "Emerging Markets",
+    "eem": "NQEM",
     "btc_dominance": "BTC Dominance",
     "stablecoins": "Stablecoin Dominance",
     "btc_technicals": "BTC Technicals",
@@ -113,10 +113,9 @@ _STRICT_UNSUPPORTED_METRICS = {
     "btc_dominance",
     "stablecoins",
     "btc_etf",
-    "dxy_structure",
 }
 
-_STRICT_FRED_ONLY_METRICS = {"vix", "sp500", "gold", "natgas", "oil"}
+_STRICT_FRED_ONLY_METRICS = {"vix", "sp500", "natgas", "oil"}
 _STRICT_OFFICIAL_METRICS = {
     "cpi",
     "pce",
@@ -247,6 +246,10 @@ def _is_source_official(metric_key: str, blob: dict) -> bool:
     source = _source_text(blob)
     if metric_key == "dxy":
         return source.startswith(("ECB:", "Federal Reserve", "FRED:DTWEXBGS"))
+    if metric_key == "dxy_structure":
+        return source.startswith("ECB:")
+    if metric_key == "gold":
+        return source.startswith(("LBMA:", "FRED:"))
     if metric_key == "btc":
         return source in {"coinbase_exchange", "kraken_public", "binance_public"}
     if metric_key == "btc_technicals":
@@ -528,10 +531,10 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
 
     try:
         raw_data["eem"] = yahoo_data.get_emerging_markets_data(timeframe)
-        logger.info(f"  EEM: {raw_data['eem'].get('current_price', 'ERROR')} "
+        logger.info(f"  NQEM: {raw_data['eem'].get('current_price', 'ERROR')} "
                     f"(chg={raw_data['eem'].get('change', 'N/A')}%)")
     except Exception as e:
-        logger.error(f"  EEM fetch FAILED: {e}")
+        logger.error(f"  NQEM fetch FAILED: {e}")
         raw_data["eem"] = {"error": str(e)}
 
     # BTC Market Structure (dominance, stablecoins, 200d MA)
@@ -975,18 +978,26 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "timeframe": timeframe,
         "cpi_mom_change": cpi_change,
         "cpi_yoy_rate": raw_data["cpi"].get("yoy_rate"),
+        "cpi_core_mom_change": raw_data["cpi"].get("core_mom_change"),
         "cpi_core_yoy_rate": raw_data["cpi"].get("core_yoy_rate"),
         "cpi_trend": raw_data["cpi"].get("trend"),
         "cpi_source": raw_data["cpi"].get("source", "FRED"),
         "cpi_mom_avg_3m": raw_data["cpi"].get("cpi_mom_avg_3m"),
         "cpi_mom_avg_3m_prior": raw_data["cpi"].get("cpi_mom_avg_3m_prior"),
         "cpi_mom_avg_3m_trend": raw_data["cpi"].get("cpi_mom_avg_3m_trend"),
+        "core_cpi_mom_avg_3m": raw_data["cpi"].get("core_cpi_mom_avg_3m"),
+        "core_cpi_mom_avg_3m_prior": raw_data["cpi"].get("core_cpi_mom_avg_3m_prior"),
+        "core_cpi_mom_avg_3m_trend": raw_data["cpi"].get("core_cpi_mom_avg_3m_trend"),
         "pce_mom_change": pce_change,
+        "pce_mom_avg_3m": raw_data["pce"].get("pce_mom_avg_3m"),
+        "pce_mom_avg_3m_prior": raw_data["pce"].get("pce_mom_avg_3m_prior"),
+        "pce_mom_avg_3m_trend": raw_data["pce"].get("pce_mom_avg_3m_trend"),
         "oil_change": oil_change,
         "oil_change_label": raw_data.get("oil", {}).get("change_label"),
         "oil_change_unit": raw_data.get("oil", {}).get("change_unit"),
         "oil_price": raw_data.get("oil", {}).get("current_price"),
         "oil_trend": raw_data.get("oil", {}).get("trend"),
+        "oil_source": raw_data.get("oil", {}).get("source"),
         "dxy_value": dxy_api_val,
         "dxy_change": dxy_api_chg,
         "dxy_change_7d": dxy_api_chg,
@@ -1002,6 +1013,7 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "vix_change_label": raw_data["vix"].get("change_label"),
         "vix_change_unit": raw_data["vix"].get("change_unit"),
         "vix_trend": raw_data["vix"].get("trend"),
+        "vix_source": raw_data["vix"].get("source"),
         "ten_year_yield": yield_10y,
         "ten_year_yield_trend": raw_data["yields"].get("yield_10y", {}).get("trend"),
         "two_year_yield": raw_data["yields"].get("yield_2y", {}).get("value"),
@@ -1018,11 +1030,13 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "sp500_change_unit": raw_data["sp500"].get("change_unit"),
         "sp500_price": raw_data["sp500"].get("current_price"),
         "sp500_trend": raw_data["sp500"].get("trend"),
+        "sp500_source": raw_data["sp500"].get("source"),
         "gold_price": raw_data["gold"].get("current_price"),
         "gold_change": gold_change_val,
         "gold_change_label": raw_data["gold"].get("change_label"),
         "gold_change_unit": raw_data["gold"].get("change_unit"),
         "gold_trend": raw_data["gold"].get("trend"),
+        "gold_source": raw_data["gold"].get("source"),
         "btc_price": raw_data["btc"].get("price_usd"),
         "fed_funds_rate": fed_rate_val,
         "fed_rate_trend": fed_rate_trend,
@@ -1093,6 +1107,7 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "natgas_change_label": raw_data.get("natgas", {}).get("change_label"),
         "natgas_change_unit": raw_data.get("natgas", {}).get("change_unit"),
         "natgas_trend": raw_data.get("natgas", {}).get("trend"),
+        "natgas_source": raw_data.get("natgas", {}).get("source"),
         "move_index_value": raw_data.get("move_index", {}).get("current_price"),
         "move_index_change": raw_data.get("move_index", {}).get("change"),
         "move_index_change_label": raw_data.get("move_index", {}).get("change_label"),
@@ -1103,14 +1118,21 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "financial_stress_trend": raw_data.get("financial_stress", {}).get("stress_trend"),
         "hy_oas": raw_data.get("financial_stress", {}).get("hy_oas"),
         "hy_trend": raw_data.get("financial_stress", {}).get("hy_trend"),
-        "eem_price": raw_data.get("eem", {}).get("current_price"),
-        "eem_change": raw_data.get("eem", {}).get("change"),
-        "eem_change_label": raw_data.get("eem", {}).get("change_label"),
-        "eem_change_unit": raw_data.get("eem", {}).get("change_unit"),
-        "eem_trend": raw_data.get("eem", {}).get("trend"),
+        "nqem_price": raw_data.get("eem", {}).get("current_price"),
+        "nqem_change": raw_data.get("eem", {}).get("change"),
+        "nqem_change_label": raw_data.get("eem", {}).get("change_label"),
+        "nqem_change_unit": raw_data.get("eem", {}).get("change_unit"),
+        "nqem_trend": raw_data.get("eem", {}).get("trend"),
+        "nqem_source": raw_data.get("eem", {}).get("source"),
         # BTC market structure
         "btc_dominance": raw_data.get("btc_dominance", {}).get("btc_dominance"),
+        "btc_dominance_change": raw_data.get("btc_dominance", {}).get("change"),
+        "btc_dominance_source": raw_data.get("btc_dominance", {}).get("source"),
+        "btc_dominance_change_source": raw_data.get("btc_dominance", {}).get("change_source"),
         "stablecoin_dominance": raw_data.get("stablecoins", {}).get("total_stablecoin_dominance"),
+        "stablecoin_dominance_change": raw_data.get("stablecoins", {}).get("change"),
+        "stablecoin_dominance_source": raw_data.get("stablecoins", {}).get("source"),
+        "stablecoin_dominance_change_source": raw_data.get("stablecoins", {}).get("change_source"),
         "btc_ma200": raw_data.get("btc_technicals", {}).get("ma200"),
         "btc_realized_vol_30d": raw_data.get("btc_technicals", {}).get("realized_vol_30d"),
         "btc_etf_volume": raw_data.get("btc_etf", {}).get("total_volume"),

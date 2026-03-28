@@ -17,6 +17,7 @@ import {
   BitcoinMarketPanel,
   CpiPanel,
   DeltaArrow,
+  HistoricalBadge,
   TrendArrow,
   UnemploymentPanel,
   YieldSpreadPanel,
@@ -115,7 +116,7 @@ function SkeletonPulse({ className = "", style }: { className?: string; style?: 
 
 const SKELETON_SECTIONS = Object.keys(SECTION_LABELS)
 const SKELETON_BAR_TARGETS = [72, 45, 58, 63, 38, 80]
-const SKELETON_METRICS = ["DXY", "WTI", "VIX", "S&P 500", "Gold", "10Y", "Fed Rate", "Fed tone", "MOVE", "EEM", "PMI", "GDP"]
+const SKELETON_METRICS = ["DXY", "WTI", "VIX", "S&P 500", "Gold", "10Y", "Fed Rate", "Fed tone", "MOVE", "NQEM", "PMI", "GDP"]
 
 function LoadingSkeleton() {
   return (
@@ -749,6 +750,7 @@ export default function BtcMacroDashboard() {
                     </span>
                   )}
                   <span className="ml-0.5"><TrendArrow trend={result.oil_trend} /></span>
+                  <HistoricalBadge source={result.oil_source} />
                 </span>
               )}
               {result.vix != null && (
@@ -762,6 +764,7 @@ export default function BtcMacroDashboard() {
                     </span>
                   )}
                   <span className="ml-0.5"><TrendArrow trend={result.vix_trend} /></span>
+                  <HistoricalBadge source={result.vix_source} />
                 </span>
               )}
               {(result.sp500_price != null || result.sp500_change != null) && (
@@ -775,6 +778,7 @@ export default function BtcMacroDashboard() {
                     </span>
                   )}
                   <span className="ml-0.5"><TrendArrow trend={result.sp500_trend} /></span>
+                  <HistoricalBadge source={result.sp500_source} />
                 </span>
               )}
               {result.gold_price != null && (
@@ -786,6 +790,7 @@ export default function BtcMacroDashboard() {
                     </span>
                   )}
                   <span className="ml-0.5"><TrendArrow trend={result.gold_trend} /></span>
+                  <HistoricalBadge source={result.gold_source} />
                 </span>
               )}
               {result.ten_year_yield != null && (
@@ -895,6 +900,7 @@ export default function BtcMacroDashboard() {
                     </span>
                   )}
                   <span className="ml-0.5"><TrendArrow trend={result.natgas_trend} /></span>
+                  <HistoricalBadge source={result.natgas_source} />
                 </span>
               )}
               {result.move_index_value != null && (
@@ -908,15 +914,16 @@ export default function BtcMacroDashboard() {
                   <span className="ml-0.5"><TrendArrow trend={result.move_index_trend} /></span>
                 </span>
               )}
-              {result.eem_price != null && (
-                <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300" title="iShares MSCI Emerging Markets (EEM)">
-                  EEM <span className="text-white font-medium">{result.eem_price.toFixed(2)}</span>
-                  {result.eem_change != null && (
-                    <span className={result.eem_change > 0.05 ? "text-green-400" : result.eem_change < -0.05 ? "text-red-400" : "text-gray-500"}>
-                      {" "}({formatMarketChange(result.eem_change, result.eem_change_unit, result.eem_change_label)})
+              {result.nqem_price != null && (
+                <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300" title="NQEM emerging markets ETF">
+                  NQEM <span className="text-white font-medium">{result.nqem_price.toFixed(2)}</span>
+                  {result.nqem_change != null && (
+                    <span className={result.nqem_change > 0.05 ? "text-green-400" : result.nqem_change < -0.05 ? "text-red-400" : "text-gray-500"}>
+                      {" "}({formatMarketChange(result.nqem_change, result.nqem_change_unit, result.nqem_change_label)})
                     </span>
                   )}
-                  <span className="ml-0.5"><TrendArrow trend={result.eem_trend} /></span>
+                  <span className="ml-0.5"><TrendArrow trend={result.nqem_trend} /></span>
+                  <HistoricalBadge source={result.nqem_source} />
                 </span>
               )}
               {result.dxy_structure != null && result.dxy_structure !== "unknown" && (

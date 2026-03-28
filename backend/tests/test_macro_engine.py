@@ -12,6 +12,7 @@ _BACKEND = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
+import run_analysis
 from run_analysis import MONETARY_EXPLICIT_CONFIDENCE_BOOST_TYPES
 
 from scoring_engine.coherence import compute_coherence_adjustment
@@ -54,6 +55,23 @@ def test_bls_cpi_three_month_average_prefers_published_mom_changes():
     assert stats["cpi_mom_avg_3m_trend"] == "rising"
 
 
+def test_bls_core_cpi_three_month_average_uses_published_mom_changes():
+    core_rows = [
+        {"value": "325.0", "calculations": {"pct_changes": {"1": "0.40"}}},
+        {"value": "323.6", "calculations": {"pct_changes": {"1": "0.30"}}},
+        {"value": "322.6", "calculations": {"pct_changes": {"1": "0.20"}}},
+        {"value": "321.9", "calculations": {"pct_changes": {"1": "0.10"}}},
+        {"value": "321.6", "calculations": {"pct_changes": {"1": "0.00"}}},
+        {"value": "321.6", "calculations": {"pct_changes": {"1": "-0.10"}}},
+    ]
+
+    stats = fred_data._three_month_mom_stats_from_bls_rows(core_rows, "core_cpi")
+
+    assert stats["core_cpi_mom_avg_3m"] == 0.3
+    assert stats["core_cpi_mom_avg_3m_prior"] == 0.0
+    assert stats["core_cpi_mom_avg_3m_trend"] == "rising"
+
+
 def test_pce_week_change_uses_latest_mom_print(monkeypatch):
     df = pd.DataFrame(
         {
@@ -69,6 +87,21 @@ def test_pce_week_change_uses_latest_mom_print(monkeypatch):
     assert out["change"] == 1.0
     assert out["comparison_date"] == "2026-02-01"
     assert "wow_change" not in out
+
+
+def test_pce_exposes_three_month_average(monkeypatch):
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2025-07-01", "2025-08-01", "2025-09-01", "2025-10-01", "2025-11-01", "2025-12-01", "2026-01-01", "2026-02-01", "2026-03-01"]),
+            "value": [116.4, 116.8, 117.1, 117.5, 118.09, 118.44, 118.80, 119.27, 119.63],
+        }
+    )
+    monkeypatch.setattr(fred_data, "get_fred_data", lambda *args, **kwargs: df)
+
+    out = fred_data.get_pce_data("month")
+
+    assert out["pce_mom_avg_3m"] is not None
+    assert out["pce_mom_avg_3m_prior"] is not None
 
 
 def test_fed_balance_sheet_week_uses_calendar_anchor(monkeypatch):
@@ -111,6 +144,14 @@ def test_pmi_week_uses_latest_official_monthly_print(monkeypatch):
     assert out["pmi_status"] == "expansion"
     assert out["pmi_trend"] == "rising"
     assert out["source"] == "FRED:NAPM"
+
+
+def test_strict_mode_accepts_lbma_gold_source():
+    assert run_analysis._is_source_official("gold", {"source": "LBMA:today.json"}) is True
+
+
+def test_strict_mode_accepts_ecb_dxy_structure_source():
+    assert run_analysis._is_source_official("dxy_structure", {"source": "ECB:EXR_fx_basket"}) is True
 
 
 def test_score_economy_marks_missing_inputs_excluded_in_reasoning():

@@ -76,11 +76,18 @@ export interface V2AnalysisResult {
   pivot_keyword_count: number
   cpi_mom_change: number | null
   cpi_yoy_rate: number | null
+  cpi_core_mom_change: number | null
   cpi_core_yoy_rate: number | null
   cpi_trend: string | null
   cpi_mom_avg_3m: number | null
   cpi_mom_avg_3m_prior: number | null
   cpi_mom_avg_3m_trend: string | null
+  core_cpi_mom_avg_3m: number | null
+  core_cpi_mom_avg_3m_prior: number | null
+  core_cpi_mom_avg_3m_trend: string | null
+  pce_mom_avg_3m: number | null
+  pce_mom_avg_3m_prior: number | null
+  pce_mom_avg_3m_trend: string | null
   dxy_value: number | null
   dxy_change?: number | null
   dxy_change_7d: number | null
@@ -101,6 +108,7 @@ export interface V2AnalysisResult {
   oil_change_label?: string | null
   oil_change_unit?: "percent" | "points" | null
   oil_trend: string | null
+  oil_source?: string | null
   cross_signal_adjustment: number
   cross_signal_reasoning: string
   narrative: string
@@ -130,15 +138,18 @@ export interface V2AnalysisResult {
   sp500_change_label?: string | null
   sp500_change_unit?: "percent" | "points" | null
   sp500_trend: string | null
+  sp500_source?: string | null
   gold_price: number | null
   gold_change: number | null
   gold_change_label?: string | null
   gold_change_unit?: "percent" | "points" | null
   gold_trend: string | null
+  gold_source?: string | null
   vix_change: number | null
   vix_change_label?: string | null
   vix_change_unit?: "percent" | "points" | null
   vix_trend: string | null
+  vix_source?: string | null
   // Bond market
   two_year_yield: number | null
   two_year_yield_trend: string | null
@@ -159,19 +170,27 @@ export interface V2AnalysisResult {
   natgas_change_label?: string | null
   natgas_change_unit?: "percent" | "points" | null
   natgas_trend: string | null
+  natgas_source?: string | null
   move_index_value: number | null
   move_index_change: number | null
   move_index_change_label?: string | null
   move_index_change_unit?: "percent" | "points" | null
   move_index_trend: string | null
-  eem_price: number | null
-  eem_change: number | null
-  eem_change_label?: string | null
-  eem_change_unit?: "percent" | "points" | null
-  eem_trend: string | null
+  nqem_price: number | null
+  nqem_change: number | null
+  nqem_change_label?: string | null
+  nqem_change_unit?: "percent" | "points" | null
+  nqem_trend: string | null
+  nqem_source?: string | null
   // BTC market structure
   btc_dominance: number | null
   stablecoin_dominance: number | null
+  btc_dominance_change?: number | null
+  stablecoin_dominance_change?: number | null
+  btc_dominance_source?: string | null
+  stablecoin_dominance_source?: string | null
+  btc_dominance_change_source?: string | null
+  stablecoin_dominance_change_source?: string | null
   btc_ma200: number | null
   btc_realized_vol_30d: number | null
   btc_etf_volume: number | null

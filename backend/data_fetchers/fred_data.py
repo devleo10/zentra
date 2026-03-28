@@ -191,6 +191,11 @@ def _yield_month_end_track(df_10: pd.DataFrame, df_2: pd.DataFrame, n: int = 3) 
 
 def _cpi_three_month_mom_stats_from_fred_df(df: pd.DataFrame) -> Dict:
     """Average of last 3 monthly MoM % changes vs prior 3 (inflation pulse)."""
+    return _three_month_mom_stats_from_fred_df(df, "cpi")
+
+
+def _three_month_mom_stats_from_fred_df(df: pd.DataFrame, prefix: str) -> Dict:
+    """Average of last 3 monthly MoM % changes vs prior 3 for any monthly series."""
     if df is None or len(df) < 4:
         return {}
     moms = []
@@ -218,18 +223,23 @@ def _cpi_three_month_mom_stats_from_fred_df(df: pd.DataFrame) -> Dict:
         else:
             tr = "flat"
     return {
-        "cpi_mom_avg_3m": round(avg3, 3),
-        "cpi_mom_avg_3m_prior": round(prior3, 3) if prior3 is not None else None,
-        "cpi_mom_avg_3m_trend": tr,
+        f"{prefix}_mom_avg_3m": round(avg3, 3),
+        f"{prefix}_mom_avg_3m_prior": round(prior3, 3) if prior3 is not None else None,
+        f"{prefix}_mom_avg_3m_trend": tr,
     }
 
 
 def _cpi_three_month_mom_stats_from_bls_headline(headline: list) -> Dict:
     """Same 3-month MoM average logic; BLS `headline` rows are newest-first."""
-    if not headline or len(headline) < 4:
+    return _three_month_mom_stats_from_bls_rows(headline, "cpi")
+
+
+def _three_month_mom_stats_from_bls_rows(rows: list, prefix: str) -> Dict:
+    """3-month average of published monthly changes; BLS rows are newest-first."""
+    if not rows or len(rows) < 4:
         return {}
     moms = []
-    for i, row in enumerate(headline[:12]):
+    for i, row in enumerate(rows[:12]):
         try:
             pct_changes = row.get("calculations", {}).get("pct_changes", {})
             if "1" in pct_changes:
@@ -239,7 +249,7 @@ def _cpi_three_month_mom_stats_from_bls_headline(headline: list) -> Dict:
             pass
         try:
             curr = float(row["value"])
-            prev = float(headline[i + 1]["value"])
+            prev = float(rows[i + 1]["value"])
         except Exception:
             break
         if prev:
@@ -263,9 +273,9 @@ def _cpi_three_month_mom_stats_from_bls_headline(headline: list) -> Dict:
         else:
             tr = "flat"
     return {
-        "cpi_mom_avg_3m": round(avg3, 3),
-        "cpi_mom_avg_3m_prior": round(prior3, 3) if prior3 is not None else None,
-        "cpi_mom_avg_3m_trend": tr,
+        f"{prefix}_mom_avg_3m": round(avg3, 3),
+        f"{prefix}_mom_avg_3m_prior": round(prior3, 3) if prior3 is not None else None,
+        f"{prefix}_mom_avg_3m_trend": tr,
     }
 
 
@@ -483,11 +493,13 @@ def _get_cpi_from_bls() -> Optional[Dict]:
         mom_change = float(pct_changes.get("1", 0))   # 1-month % change
         yoy_rate = float(pct_changes.get("12", 0))    # 12-month % change = YoY
 
-        # Core CPI YoY
+        # Core CPI MoM/YoY
+        core_mom = None
         core_yoy = None
         if core:
             core_latest = core[0]
             core_calcs = core_latest.get("calculations", {}).get("pct_changes", {})
+            core_mom = float(core_calcs.get("1", 0)) if "1" in core_calcs else None
             core_yoy = float(core_calcs.get("12", 0)) if "12" in core_calcs else None
 
         result = {
@@ -495,6 +507,7 @@ def _get_cpi_from_bls() -> Optional[Dict]:
             "latest_date": latest_date,
             "mom_change": round(mom_change, 3),
             "yoy_rate": round(yoy_rate, 2),
+            "core_mom_change": round(core_mom, 3) if core_mom is not None else None,
             "core_yoy_rate": round(core_yoy, 2) if core_yoy is not None else None,
             "change": round(mom_change, 3),
             "trend": "falling" if mom_change < 0 else "rising" if mom_change > 0 else "flat",
@@ -502,9 +515,11 @@ def _get_cpi_from_bls() -> Optional[Dict]:
             "_validation": {"validated": True, "reasons": []},
         }
         result.update(_cpi_three_month_mom_stats_from_bls_headline(headline))
+        result.update(_three_month_mom_stats_from_bls_rows(core, "core_cpi"))
         logger.info(
-            "BLS CPI: index=%.3f MoM=%+.3f%% YoY=%.2f%% Core YoY=%s%% (date=%s)",
+            "BLS CPI: index=%.3f MoM=%+.3f%% YoY=%.2f%% Core MoM=%s%% Core YoY=%s%% (date=%s)",
             latest_value, mom_change, yoy_rate,
+            f"{core_mom:.3f}" if core_mom is not None else "N/A",
             f"{core_yoy:.2f}" if core_yoy is not None else "N/A",
             latest_date,
         )
@@ -534,7 +549,9 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
 
     # ── Attempt 2: FRED API (fallback) ─────────────────────────────────────
     # Always fetch 400 days to guarantee 13+ monthly observations for YoY
-    df = get_fred_data("CPIAUCSL", start_date=(datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d"))
+    start_400d = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
+    df = get_fred_data("CPIAUCSL", start_date=start_400d)
+    core_df = get_fred_data("CPILFESL", start_date=start_400d)
     if df.empty:
         last_cpi = _get_last_snapshot_field("cpi_mom_change")
         logger.warning("No CPI data from FRED; using last snapshot fallback: %s", last_cpi)
@@ -584,12 +601,23 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
         "change": round(change, 2),
         "mom_change": round(mom_change, 2),
         "yoy_rate": yoy_rate,
-        "core_yoy_rate": None,          # Not available from FRED without separate series fetch
+        "core_mom_change": None,
+        "core_yoy_rate": None,
         "trend": "falling" if mom_change < 0 else "rising" if mom_change > 0 else "flat",
         "source": "FRED",
         "data_as_of": latest["date"].strftime("%Y-%m-%d"),
         "timeframe": timeframe
     }
+    if not core_df.empty:
+        core_latest = core_df.iloc[-1]
+        result["core_mom_change"] = 0.0
+        if len(core_df) >= 2:
+            core_prev = core_df.iloc[-2]
+            result["core_mom_change"] = round(((core_latest["value"] - core_prev["value"]) / core_prev["value"]) * 100, 2)
+        if len(core_df) >= 13:
+            core_year_ago = core_df.iloc[-13]
+            result["core_yoy_rate"] = round(((core_latest["value"] - core_year_ago["value"]) / core_year_ago["value"]) * 100, 2)
+        result.update(_three_month_mom_stats_from_fred_df(core_df, "core_cpi"))
 
     # Basic plausibility checks
     validation = {"validated": True, "reasons": []}
@@ -619,7 +647,7 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
 
 def get_pce_data(timeframe: str = "current") -> Dict:
     """Get PCE data based on timeframe"""
-    start_date, comparison_days = get_timeframe_dates(timeframe)
+    start_date = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
     df = get_fred_data("PCEPI", start_date=start_date)  # Personal Consumption Expenditures Price Index
     
     if df.empty:
@@ -672,6 +700,7 @@ def get_pce_data(timeframe: str = "current") -> Dict:
         "data_as_of": latest["date"].strftime("%Y-%m-%d"),
         "timeframe": timeframe
     }
+    result.update(_three_month_mom_stats_from_fred_df(df, "pce"))
 
     validation = {"validated": True, "reasons": []}
     if result["latest_value"] is None:

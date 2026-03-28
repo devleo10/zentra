@@ -37,6 +37,7 @@ FALLBACK_MAX_SNAPSHOT_AGE_HOURS = int(_CFG.get("fallback_max_snapshot_age_hours"
 USE_LAST_SNAPSHOT_FOR_FALLBACK = bool(_CFG.get("use_last_snapshot_for_fallback", True))
 STRICT_LIVE_OFFICIAL_ONLY = os.getenv("STRICT_LIVE_OFFICIAL_ONLY", "1").strip().lower() not in {"0", "false", "no"}
 ECB_API_BASE_URL = "https://data-api.ecb.europa.eu/service/data/EXR"
+LBMA_TODAY_URL = "https://prices.lbma.org.uk/json/today.json"
 
 
 def _safe_date_str(ts) -> str:
@@ -393,10 +394,10 @@ def _ecb_fx_series(currency: str, start_date: str) -> pd.DataFrame:
     return out
 
 
-def _dxy_from_ecb_fx_basket(timeframe: str) -> Optional[Dict]:
-    """Approximate official DXY from ECB daily FX reference rates."""
+def _ecb_dxy_history(timeframe: str, *, lookback_days: Optional[int] = None) -> pd.DataFrame:
+    """Build a DXY-like daily history from ECB reference FX rates."""
     currencies = ("USD", "JPY", "GBP", "CAD", "SEK", "CHF")
-    lookback_days = {"current": 45, "week": 60, "month": 120}.get(timeframe, 120)
+    lookback_days = lookback_days or {"current": 45, "week": 60, "month": 120, "year": 420}.get(timeframe, 120)
     start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
     joined: Optional[pd.DataFrame] = None
     base = 50.14348112
@@ -408,35 +409,40 @@ def _dxy_from_ecb_fx_basket(timeframe: str) -> Optional[Dict]:
         "usdsek": 0.042,
         "usdchf": 0.036,
     }
-    try:
-        for cur in currencies:
-            df = _ecb_fx_series(cur, start_date)
-            if df.empty:
-                return None
-            joined = df if joined is None else joined.merge(df, on="date", how="inner")
-        if joined is None or joined.empty or len(joined) < 2:
-            return None
-        joined = joined.sort_values("date").dropna().reset_index(drop=True)
-        if joined.empty:
-            return None
+    for cur in currencies:
+        df = _ecb_fx_series(cur, start_date)
+        if df.empty:
+            return pd.DataFrame()
+        joined = df if joined is None else joined.merge(df, on="date", how="inner")
+    if joined is None or joined.empty or len(joined) < 2:
+        return pd.DataFrame()
+    joined = joined.sort_values("date").dropna().reset_index(drop=True)
+    if joined.empty:
+        return pd.DataFrame()
 
-        usd_eur = joined["usd"].astype(float)
-        eurusd = usd_eur
-        usdjpy = joined["jpy"].astype(float) / usd_eur
-        gbpusd = usd_eur / joined["gbp"].astype(float)
-        usdcad = joined["cad"].astype(float) / usd_eur
-        usdsek = joined["sek"].astype(float) / usd_eur
-        usdchf = joined["chf"].astype(float) / usd_eur
-        dxy_close = (
-            base
-            * eurusd.pow(weights["eurusd"])
-            * usdjpy.pow(weights["usdjpy"])
-            * gbpusd.pow(weights["gbpusd"])
-            * usdcad.pow(weights["usdcad"])
-            * usdsek.pow(weights["usdsek"])
-            * usdchf.pow(weights["usdchf"])
-        )
-        dxy_hist = pd.DataFrame({"Close": dxy_close.values}, index=pd.to_datetime(joined["date"]))
+    usd_eur = joined["usd"].astype(float)
+    eurusd = usd_eur
+    usdjpy = joined["jpy"].astype(float) / usd_eur
+    gbpusd = usd_eur / joined["gbp"].astype(float)
+    usdcad = joined["cad"].astype(float) / usd_eur
+    usdsek = joined["sek"].astype(float) / usd_eur
+    usdchf = joined["chf"].astype(float) / usd_eur
+    dxy_close = (
+        base
+        * eurusd.pow(weights["eurusd"])
+        * usdjpy.pow(weights["usdjpy"])
+        * gbpusd.pow(weights["gbpusd"])
+        * usdcad.pow(weights["usdcad"])
+        * usdsek.pow(weights["usdsek"])
+        * usdchf.pow(weights["usdchf"])
+    )
+    return pd.DataFrame({"Close": dxy_close.values}, index=pd.to_datetime(joined["date"]))
+
+
+def _dxy_from_ecb_fx_basket(timeframe: str) -> Optional[Dict]:
+    """Approximate official DXY from ECB daily FX reference rates."""
+    try:
+        dxy_hist = _ecb_dxy_history(timeframe)
         if dxy_hist.empty:
             return None
         latest, comparison = _latest_and_comparison_for_timeframe(dxy_hist, timeframe)
@@ -462,6 +468,72 @@ def _dxy_from_ecb_fx_basket(timeframe: str) -> Optional[Dict]:
         return out
     except Exception as e:
         logger.debug("ECB DXY basket fallback failed: %s", e)
+        return None
+
+
+def _lbma_gold_data(timeframe: str) -> Optional[Dict]:
+    """LBMA official gold price feed."""
+    try:
+        resp = get_with_retries(LBMA_TODAY_URL, timeout=20)
+        payload = resp.json()
+        gold = payload.get("gold") or {}
+        gold_leg = gold.get("pm") or gold.get("am") or {}
+        current_price = float(gold_leg.get("usd"))
+        date_text = str(gold_leg.get("date") or "").strip()
+        date_value = datetime.now().strftime("%Y-%m-%d")
+        if date_text:
+            try:
+                parsed = datetime.strptime(f"{date_text}/{datetime.now().year}", "%d/%m/%Y")
+                date_value = parsed.strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+
+        comparison_price = None
+        comparison_date = None
+        week_values = gold.get("week") or []
+        week_labels = gold.get("weekLabel") or []
+        normalized_week = []
+        for item in week_values:
+            if isinstance(item, dict):
+                val = item.get("y")
+            else:
+                val = item
+            try:
+                normalized_week.append(float(val))
+            except (TypeError, ValueError):
+                continue
+
+        if timeframe == "current":
+            if normalized_week:
+                comparison_price = normalized_week[-1]
+                if week_labels:
+                    comparison_date = str(week_labels[-1])
+        elif timeframe == "week":
+            if len(normalized_week) >= 2:
+                comparison_price = normalized_week[0]
+                if week_labels:
+                    comparison_date = str(week_labels[0])
+
+        change = None
+        trend = "stable"
+        if comparison_price and comparison_price > 0:
+            change = ((current_price - comparison_price) / comparison_price) * 100.0
+            trend = "rising" if change > 0 else "falling" if change < 0 else "stable"
+
+        return {
+            "current_price": round(current_price, 2),
+            "date": date_value,
+            "data_as_of": date_value,
+            "comparison_date": comparison_date,
+            "change": round(change, 2) if change is not None else None,
+            "change_label": _change_label(timeframe),
+            "change_unit": "percent",
+            "trend": trend,
+            "timeframe": timeframe,
+            "source": "LBMA:today.json",
+        }
+    except Exception as e:
+        logger.debug("LBMA gold fetch failed: %s", e)
         return None
 
 
@@ -907,15 +979,9 @@ def get_gold_data(timeframe: str = "current") -> Dict:
     """Get Gold price data with timeframe support"""
     try:
         if STRICT_LIVE_OFFICIAL_ONLY:
-            fred_fallback = _fred_series_market_fallback(
-                "GOLDAMGBD228NLBM",
-                timeframe,
-                response_key="current_price",
-                change_unit="percent",
-                source_name="FRED:GOLDAMGBD228NLBM",
-            )
-            if fred_fallback:
-                return fred_fallback
+            lbma = _lbma_gold_data(timeframe)
+            if lbma:
+                return lbma
             return {"error": "Official gold source unavailable", "timeframe": timeframe}
 
         symbol, hist = _select_same_scale_yahoo_history(("GC=F", "XAUUSD=X"), timeframe)
@@ -1242,16 +1308,12 @@ def get_move_index_data(timeframe: str = "current") -> Dict:
 
 
 def get_emerging_markets_data(timeframe: str = "current") -> Dict:
-    """Emerging markets equity proxy (iShares EEM)."""
+    """Emerging markets equity proxy via NQEM."""
     try:
-        for symbol in ["EEM", "VWO"]:
-            try:
-                out = _yahoo_pct_change_series(symbol, timeframe)
-                if "error" not in out:
-                    return out
-            except Exception:
-                continue
-        return {"error": "No emerging markets ETF data available", "timeframe": timeframe}
+        out = _yahoo_pct_change_series("NQEM", timeframe)
+        if "error" not in out:
+            return out
+        return {"error": "No NQEM data available", "timeframe": timeframe}
     except Exception as e:
         return {"error": f"Emerging markets fetch error: {str(e)}", "timeframe": timeframe}
 
@@ -1294,21 +1356,30 @@ def get_btc_etf_volume(timeframe: str = "current") -> Dict:
 def get_dxy_structure(timeframe: str = "current") -> Dict:
     """Detect DXY swing structure (higher-highs/lower-lows) from recent daily closes."""
     try:
-        period = {"current": "3mo", "week": "3mo", "month": "6mo", "year": "2y"}.get(timeframe, "3mo")
-        hist = None
-        for symbol in ["DX-Y.NYB", "DX=F"]:
-            t = yf.Ticker(symbol)
-            hist = t.history(period=period)
-            if not hist.empty:
-                break
-        if hist is None or hist.empty or len(hist) < 20:
-            t2 = yf.Ticker("EURUSD=X")
-            h2 = t2.history(period=period)
-            if not h2.empty and len(h2) >= 20:
-                hist = h2.copy()
-                hist["Close"] = -hist["Close"]
-            else:
-                return {"structure": "unknown", "timeframe": timeframe}
+        if STRICT_LIVE_OFFICIAL_ONLY:
+            hist = _ecb_dxy_history(timeframe, lookback_days={"current": 90, "week": 120, "month": 210, "year": 420}.get(timeframe, 120))
+            if hist.empty or len(hist) < 20:
+                return {
+                    "structure": "unknown",
+                    "timeframe": timeframe,
+                    "error": "Official ECB FX basket history unavailable",
+                }
+        else:
+            period = {"current": "3mo", "week": "3mo", "month": "6mo", "year": "2y"}.get(timeframe, "3mo")
+            hist = None
+            for symbol in ["DX-Y.NYB", "DX=F"]:
+                t = yf.Ticker(symbol)
+                hist = t.history(period=period)
+                if not hist.empty:
+                    break
+            if hist is None or hist.empty or len(hist) < 20:
+                t2 = yf.Ticker("EURUSD=X")
+                h2 = t2.history(period=period)
+                if not h2.empty and len(h2) >= 20:
+                    hist = h2.copy()
+                    hist["Close"] = -hist["Close"]
+                else:
+                    return {"structure": "unknown", "timeframe": timeframe}
 
         closes = hist["Close"].dropna().values
         window = min(5, len(closes) // 4)
@@ -1345,6 +1416,7 @@ def get_dxy_structure(timeframe: str = "current") -> Dict:
             "recent_swing_high": round(swing_highs[-1][1], 2) if swing_highs else None,
             "recent_swing_low": round(swing_lows[-1][1], 2) if swing_lows else None,
             "timeframe": timeframe,
+            "source": "ECB:EXR_fx_basket" if STRICT_LIVE_OFFICIAL_ONLY else None,
         }
     except Exception as e:
         return {"structure": "unknown", "error": str(e), "timeframe": timeframe}
