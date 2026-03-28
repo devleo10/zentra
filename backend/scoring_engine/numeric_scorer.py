@@ -418,11 +418,15 @@ def score_economy(
     gdp_str = f"{gdp_growth:+.1f}%" if gdp_growth is not None else "N/A"
     pmi_str = f"{pmi_value:.1f}" if pmi_value is not None else "N/A"
     nfp_str = f"{nfp_change:+.0f}k" if nfp_change is not None else "N/A"
+    ur_score_str = str(ur_score) if unemployment_rate is not None else "excluded"
+    gdp_score_str = str(gdp_score) if gdp_growth is not None else "excluded"
+    pmi_score_str = str(pmi_score) if pmi_value is not None else "excluded"
+    nfp_score_str = str(nfp_score) if nfp_change is not None else "excluded"
     reasoning = (
-        f"Unemployment: {ur_str} -> {ur_score} | "
-        f"GDP: {gdp_str} -> {gdp_score} | "
-        f"PMI: {pmi_str} -> {pmi_score} | "
-        f"NFP: {nfp_str} -> {nfp_score} | "
+        f"Unemployment: {ur_str} -> {ur_score_str} | "
+        f"GDP: {gdp_str} -> {gdp_score_str} | "
+        f"PMI: {pmi_str} -> {pmi_score_str} | "
+        f"NFP: {nfp_str} -> {nfp_score_str} | "
         f"Weighted: {final}"
     )
 
@@ -472,11 +476,10 @@ def compute_weighted_total_with_freshness(
     for section, check_names in mapping.items():
         if section not in section_scores:
             continue
-        bad = any(
-            status_by_name.get(cn, "MISSING") in ("STALE", "MISSING")
-            for cn in check_names
-        )
-        if bad:
+        statuses = [status_by_name.get(cn, "MISSING") for cn in check_names]
+        if any(status == "MISSING" for status in statuses):
+            weights[section] = 0.0
+        elif any(status == "STALE" for status in statuses):
             weights[section] = weights.get(section, 0) * factor
 
     breakdown = {}

@@ -21,6 +21,10 @@ logger = logging.getLogger("btc_macro.data_fetchers.fred")
 
 FRED_API_KEY = os.getenv("FRED_API_KEY")
 FRED_BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
+STRICT_LIVE_OFFICIAL_ONLY = os.getenv("STRICT_LIVE_OFFICIAL_ONLY", "1").strip().lower() not in {"0", "false", "no"}
+EIA_API_KEY = os.getenv("EIA_API_KEY")
+EIA_V2_SERIES_URL = "https://api.eia.gov/v2/seriesid"
+EIA_V1_SERIES_URL = "https://api.eia.gov/series/"
 
 BLS_API_KEY = os.getenv("BLS_API_KEY")
 BLS_API_URL = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
@@ -38,6 +42,67 @@ TIMEFRAME_DAYS = {
     "month": 120,    # 4 months for month-over-month
     "year": 400      # Over a year for year-over-year
 }
+
+
+def _get_eia_series_data(series_id: str) -> pd.DataFrame:
+    """Fetch EIA time series using v2 seriesid, then legacy v1 as fallback."""
+    if not EIA_API_KEY:
+        return pd.DataFrame()
+
+    def _norm_date(value: str) -> Optional[pd.Timestamp]:
+        for fmt in ("%Y-%m-%d", "%Y%m%d", "%Y-%m", "%Y%m"):
+            try:
+                return pd.Timestamp(datetime.strptime(str(value), fmt))
+            except Exception:
+                continue
+        try:
+            return pd.to_datetime(value, errors="coerce")
+        except Exception:
+            return None
+
+    try:
+        resp = get_with_retries(
+            f"{EIA_V2_SERIES_URL}/{series_id}",
+            params={"api_key": EIA_API_KEY},
+            timeout=20,
+        )
+        body = resp.json()
+        rows = (((body or {}).get("response") or {}).get("data") or [])
+        if rows:
+            data = []
+            for row in rows:
+                dt = _norm_date(row.get("period"))
+                val = pd.to_numeric(row.get("value"), errors="coerce")
+                if pd.notna(dt) and pd.notna(val):
+                    data.append({"date": pd.Timestamp(dt), "value": float(val)})
+            if data:
+                return pd.DataFrame(data).sort_values("date").reset_index(drop=True)
+    except Exception as e:
+        logger.warning("EIA v2 fetch failed for %s: %s", series_id, e)
+
+    try:
+        resp = get_with_retries(
+            EIA_V1_SERIES_URL,
+            params={"api_key": EIA_API_KEY, "series_id": series_id},
+            timeout=20,
+        )
+        body = resp.json()
+        series = (body.get("series") or [None])[0] or {}
+        rows = series.get("data") or []
+        data = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)) or len(row) < 2:
+                continue
+            dt = _norm_date(row[0])
+            val = pd.to_numeric(row[1], errors="coerce")
+            if pd.notna(dt) and pd.notna(val):
+                data.append({"date": pd.Timestamp(dt), "value": float(val)})
+        if data:
+            return pd.DataFrame(data).sort_values("date").reset_index(drop=True)
+    except Exception as e:
+        logger.warning("EIA v1 fetch failed for %s: %s", series_id, e)
+
+    return pd.DataFrame()
 
 _CHANGE_LABELS = {
     "current": "1D",
@@ -163,19 +228,22 @@ def _cpi_three_month_mom_stats_from_bls_headline(headline: list) -> Dict:
     """Same 3-month MoM average logic; BLS `headline` rows are newest-first."""
     if not headline or len(headline) < 4:
         return {}
-    vals = []
-    for row in headline[:12]:
+    moms = []
+    for i, row in enumerate(headline[:12]):
         try:
-            vals.append(float(row["value"]))
+            pct_changes = row.get("calculations", {}).get("pct_changes", {})
+            if "1" in pct_changes:
+                moms.append(float(pct_changes["1"]))
+                continue
+        except Exception:
+            pass
+        try:
+            curr = float(row["value"])
+            prev = float(headline[i + 1]["value"])
         except Exception:
             break
-    if len(vals) < 4:
-        return {}
-    moms = []
-    for i in range(len(vals) - 1):
-        prev = vals[i + 1]
         if prev:
-            moms.append((vals[i] - prev) / prev * 100.0)
+            moms.append((curr - prev) / prev * 100.0)
     if len(moms) < 3:
         return {}
     avg3 = sum(moms[:3]) / 3.0
@@ -499,19 +567,14 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
         year_ago = df.iloc[-13]
         yoy_rate = round(((latest["value"] - year_ago["value"]) / year_ago["value"]) * 100, 2)
 
-    comparison_days = {
-        "current": 1, "week": 7, "month": 30, "year": 365
-    }.get(timeframe, 1)
-    comparison_idx = min(comparison_days, len(df) - 1)
-    prev_value = df.iloc[-comparison_idx - 1] if len(df) > comparison_idx else latest
-    change = ((latest["value"] - prev_value["value"]) / prev_value["value"]) * 100 if len(df) > 1 else 0
-
-    timeframe_label = {
-        "current": "mom",
-        "week": "wow",
-        "month": "mom",
-        "year": "yoy"
-    }.get(timeframe, "change")
+    if timeframe == "year" and yoy_rate is not None and len(df) >= 13:
+        prev_value = df.iloc[-13]
+        change = yoy_rate
+        timeframe_label = "yoy"
+    else:
+        prev_value = prev_month if len(df) >= 2 else latest
+        change = mom_change
+        timeframe_label = "mom"
 
     result = {
         "latest_value": float(latest["value"]),
@@ -586,17 +649,16 @@ def get_pce_data(timeframe: str = "current") -> Dict:
         prev_month = df.iloc[-2]
         mom_change = ((latest["value"] - prev_month["value"]) / prev_month["value"]) * 100
 
-    # Also compute timeframe-specific comparison for display
-    comparison_idx = min(comparison_days, len(df) - 1)
-    prev_value = df.iloc[-comparison_idx - 1] if len(df) > comparison_idx else latest
-    change = ((latest["value"] - prev_value["value"]) / prev_value["value"]) * 100 if len(df) > 1 else 0
-
-    timeframe_label = {
-        "current": "mom",
-        "week": "wow",
-        "month": "mom",
-        "year": "yoy"
-    }.get(timeframe, "change")
+    # Low-frequency macro print: current/week/month all display the latest MoM print.
+    if timeframe == "year" and len(df) >= 13:
+        year_ago = df.iloc[-13]
+        change = ((latest["value"] - year_ago["value"]) / year_ago["value"]) * 100 if year_ago["value"] else 0
+        prev_value = year_ago
+        timeframe_label = "yoy"
+    else:
+        prev_value = prev_month
+        change = mom_change
+        timeframe_label = "mom"
 
     result = {
         "latest_value": float(latest["value"]),
@@ -718,48 +780,72 @@ def get_oil_data(timeframe: str = "current") -> Dict:
     unavailable.
     """
     start_date, comparison_days = get_timeframe_dates(timeframe)
-    try:
-        import yfinance as yf
-        ticker = yf.Ticker("CL=F")
-        period_map = {"current": "1mo", "week": "1mo", "month": "3mo", "year": "2y"}
-        hist = ticker.history(period=period_map.get(timeframe, "1mo"))
-        if not hist.empty:
-            h = hist.copy()
-            idx = pd.to_datetime(h.index)
-            if getattr(idx, "tz", None) is not None:
-                idx = idx.tz_convert("UTC").tz_localize(None)
-            h.index = idx
-            latest_price = float(h.iloc[-1]["Close"])
-            if timeframe == "month":
-                latest_date = h.index[-1].normalize()
-                cutoff = (latest_date - pd.DateOffset(months=1)).normalize()
-                past = h[h.index.normalize() <= cutoff]
-                comparison = past.iloc[-1] if not past.empty else h.iloc[0]
-                prev_price = float(comparison["Close"])
-                comparison_date = comparison.name.strftime("%Y-%m-%d")
-            else:
-                latest_date = h.index[-1].normalize()
-                cutoff = latest_date - pd.Timedelta(days=max(1, int(comparison_days)))
-                past = h[h.index.normalize() <= cutoff]
-                comparison = past.iloc[-1] if not past.empty else h.iloc[0]
-                prev_price = float(comparison["Close"])
-                comparison_date = comparison.name.strftime("%Y-%m-%d")
-            change = ((latest_price - prev_price) / prev_price) * 100 if prev_price else 0
-            logger.info("Oil fetched from Yahoo Finance (CL=F): %.2f", latest_price)
-            return {
-                "current_price": round(latest_price, 2),
-                "latest_date": h.index[-1].strftime("%Y-%m-%d"),
-                "comparison_date": comparison_date,
-                "change": round(change, 2),
-                "change_label": _CHANGE_LABELS.get(timeframe, ""),
-                "change_unit": "percent",
-                "trend": "rising" if change > 0 else "falling" if change < 0 else "stable",
-                "source": "Yahoo Finance (CL=F)",
-                "data_as_of": h.index[-1].strftime("%Y-%m-%d"),
-                "timeframe": timeframe,
-            }
-    except Exception as e:
-        logger.warning("Oil Yahoo Finance primary source failed: %s", e)
+    if not STRICT_LIVE_OFFICIAL_ONLY:
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker("CL=F")
+            period_map = {"current": "1mo", "week": "1mo", "month": "3mo", "year": "2y"}
+            hist = ticker.history(period=period_map.get(timeframe, "1mo"))
+            if not hist.empty:
+                h = hist.copy()
+                idx = pd.to_datetime(h.index)
+                if getattr(idx, "tz", None) is not None:
+                    idx = idx.tz_convert("UTC").tz_localize(None)
+                h.index = idx
+                latest_price = float(h.iloc[-1]["Close"])
+                if timeframe == "month":
+                    latest_date = h.index[-1].normalize()
+                    cutoff = (latest_date - pd.DateOffset(months=1)).normalize()
+                    past = h[h.index.normalize() <= cutoff]
+                    comparison = past.iloc[-1] if not past.empty else h.iloc[0]
+                    prev_price = float(comparison["Close"])
+                    comparison_date = comparison.name.strftime("%Y-%m-%d")
+                else:
+                    latest_date = h.index[-1].normalize()
+                    cutoff = latest_date - pd.Timedelta(days=max(1, int(comparison_days)))
+                    past = h[h.index.normalize() <= cutoff]
+                    comparison = past.iloc[-1] if not past.empty else h.iloc[0]
+                    prev_price = float(comparison["Close"])
+                    comparison_date = comparison.name.strftime("%Y-%m-%d")
+                change = ((latest_price - prev_price) / prev_price) * 100 if prev_price else 0
+                logger.info("Oil fetched from Yahoo Finance (CL=F): %.2f", latest_price)
+                return {
+                    "current_price": round(latest_price, 2),
+                    "latest_date": h.index[-1].strftime("%Y-%m-%d"),
+                    "comparison_date": comparison_date,
+                    "change": round(change, 2),
+                    "change_label": _CHANGE_LABELS.get(timeframe, ""),
+                    "change_unit": "percent",
+                    "trend": "rising" if change > 0 else "falling" if change < 0 else "stable",
+                    "source": "Yahoo Finance (CL=F)",
+                    "data_as_of": h.index[-1].strftime("%Y-%m-%d"),
+                    "timeframe": timeframe,
+                }
+        except Exception as e:
+            logger.warning("Oil Yahoo Finance primary source failed: %s", e)
+
+    df = _get_eia_series_data("PET.RWTC.D")
+    if not df.empty:
+        latest = df.iloc[-1]
+        if timeframe == "month":
+            prev_value = _fred_observation_on_or_before_months_ago(df, 1)
+        else:
+            prev_value = _fred_observation_on_or_before_calendar_days_ago(df, comparison_days)
+        change = ((latest["value"] - prev_value["value"]) / prev_value["value"]) * 100 if len(df) > 1 else 0
+        result = {
+            "current_price": round(float(latest["value"]), 2),
+            "latest_date": latest["date"].strftime("%Y-%m-%d"),
+            "comparison_date": prev_value["date"].strftime("%Y-%m-%d"),
+            "change": round(change, 2),
+            "change_label": _CHANGE_LABELS.get(timeframe, ""),
+            "change_unit": "percent",
+            "trend": "rising" if change > 0 else "falling" if change < 0 else "stable",
+            "source": "EIA (PET.RWTC.D)",
+            "data_as_of": latest["date"].strftime("%Y-%m-%d"),
+            "timeframe": timeframe,
+        }
+        logger.info("Oil fetched from EIA: $%.2f (change=%+.2f%%, date=%s)", result["current_price"], change, result["latest_date"])
+        return result
 
     df = get_fred_data("DCOILWTICO", start_date=start_date)  # WTI Crude Oil Spot Price
     if df.empty:
@@ -1079,71 +1165,18 @@ def get_pmi_data(timeframe: str = "current") -> Dict:
     """Get ISM Manufacturing PMI from FRED (NAPM series).
 
     PMI > 50 = expansion, < 50 = contraction. A key leading indicator.
-    Tries multiple request shapes (sort order, long history, no sort) to avoid FRED 400 quirks.
-    Fallback: Chicago Fed national activity index (CFNAI) scaled to ~PMI-like
-    50-center only when NAPM is unavailable (documented proxy, not ISM).
+    Official-only mode: returns the headline PMI series when available,
+    otherwise returns an error instead of using any proxy, snapshot, or
+    neutral placeholder.
     """
-    # Prefer ISM Manufacturing PMI (NAPM). If unavailable, try ISM Manufacturing New Orders
-    # (NAPMNO) — same 50 diffusion scale. CFNAI remains last-resort proxy.
     long_start = "1990-01-01"
-    df = pd.DataFrame()
-    used_series: Optional[str] = None
-    for sid in ("NAPM", "NAPMNO"):
-        tdf = get_fred_data(sid, start_date=long_start, timeframe=timeframe, sort_order="asc")
-        if not tdf.empty:
-            df = tdf
-            used_series = sid
-            break
+    df = get_fred_data("NAPM", start_date=long_start, timeframe=timeframe, sort_order="asc")
 
     if df.empty:
-        # CFNAI 3-month moving average: negative = below trend, positive = above; map loosely to PMI scale
-        df_cf = get_fred_data("CFNAI", start_date=long_start, timeframe=timeframe, sort_order="asc")
-        if not df_cf.empty:
-            latest = df_cf.iloc[-1]
-            cfv = float(latest["value"])
-            latest_date = latest["date"].strftime("%Y-%m-%d")
-            # Map CFNAI roughly [-0.5, +0.5] -> PMI [45, 55] (center 50)
-            pmi_proxy = 50.0 + max(-5.0, min(5.0, cfv * 10.0))
-            logger.warning(
-                "PMI NAPM unavailable; using CFNAI proxy -> synthetic PMI %.1f (date=%s)",
-                pmi_proxy,
-                latest_date,
-            )
-            return {
-                "pmi_value": round(pmi_proxy, 1),
-                "pmi_trend": "stable",
-                "pmi_status": "expansion" if pmi_proxy >= 50 else "contraction",
-                "latest_date": latest_date,
-                "source": "FRED_CFNAI_proxy",
-                "data_as_of": latest_date,
-                "timeframe": timeframe,
-                "_fallback": True,
-                "_proxy_note": "CFNAI scaled to PMI-like level; not ISM Manufacturing PMI",
-            }
-
-    if df.empty:
-        last_val = _get_last_snapshot_field("pmi_value")
-        if last_val is not None:
-            logger.warning("No PMI data from FRED; using snapshot fallback: %s", last_val)
-            return {
-                "pmi_value": float(last_val),
-                "pmi_trend": "unknown",
-                "pmi_status": "expansion" if float(last_val) >= 50 else "contraction",
-                "latest_date": datetime.now().strftime("%Y-%m-%d"),
-                "_fallback": True,
-                "source": "last_snapshot",
-                "timeframe": timeframe,
-            }
-        logger.warning("PMI unavailable; using neutral placeholder (50) so pipeline continues")
-        today = datetime.now().strftime("%Y-%m-%d")
+        logger.warning("PMI unavailable from official FRED NAPM series; returning no data")
         return {
-            "pmi_value": 50.0,
-            "pmi_trend": "stable",
-            "pmi_status": "neutral",
-            "latest_date": today,
-            "data_as_of": today,
-            "_fallback": True,
-            "source": "neutral_placeholder",
+            "error": "Official ISM Manufacturing PMI (NAPM) unavailable",
+            "source": "FRED:NAPM",
             "timeframe": timeframe,
         }
 
@@ -1163,15 +1196,12 @@ def get_pmi_data(timeframe: str = "current") -> Dict:
         "pmi_trend": pmi_trend,
         "pmi_status": pmi_status,
         "latest_date": latest_date,
-        "source": f"FRED:{used_series}" if used_series else "FRED",
+        "source": "FRED:NAPM",
         "data_as_of": latest_date,
         "timeframe": timeframe,
     }
-    if used_series == "NAPMNO":
-        result["_proxy_note"] = "ISM Manufacturing New Orders (NAPMNO); headline PMI proxy when NAPM unavailable"
     logger.info(
-        "PMI (%s): %.1f (%s, trend=%s, date=%s)",
-        used_series or "?",
+        "PMI (NAPM): %.1f (%s, trend=%s, date=%s)",
         pmi_value,
         pmi_status,
         pmi_trend,
@@ -1347,8 +1377,10 @@ def get_fed_balance_sheet(timeframe: str = "current") -> Dict:
         return {"error": "No balance sheet data available", "timeframe": timeframe}
     
     latest = df.iloc[-1]
-    comparison_idx = min(comparison_days, len(df) - 1)
-    prev_value = df.iloc[-comparison_idx - 1] if len(df) > comparison_idx else latest
+    if timeframe == "month":
+        prev_value = _fred_observation_on_or_before_months_ago(df, 1)
+    else:
+        prev_value = _fred_observation_on_or_before_calendar_days_ago(df, comparison_days)
     
     change = ((latest["value"] - prev_value["value"]) / prev_value["value"]) * 100 if len(df) > 1 else 0
     
@@ -1362,5 +1394,3 @@ def get_fed_balance_sheet(timeframe: str = "current") -> Dict:
         "data_as_of": latest["date"].strftime("%Y-%m-%d"),
         "timeframe": timeframe
     }
-
-

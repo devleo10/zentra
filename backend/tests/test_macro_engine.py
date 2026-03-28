@@ -5,6 +5,7 @@ import os
 import sys
 
 import pytest
+import pandas as pd
 
 # Repo root: backend/tests -> backend
 _BACKEND = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -21,8 +22,10 @@ from scoring_engine.narrative_generator import (
 )
 from scoring_engine.numeric_scorer import (
     compute_weighted_total_with_freshness,
+    score_economy,
     score_inflation,
 )
+from data_fetchers import fred_data
 
 
 def test_score_inflation_pce_uses_separate_brackets():
@@ -32,6 +35,95 @@ def test_score_inflation_pce_uses_separate_brackets():
     assert "PCE MoM: +0.08%" in reason
     # CPI 0.08 is flat (<=0.1); PCE 0.08 exceeds pce flat (0.05) -> higher inflation score drops
     assert s_with_pce < s_cpi_only
+
+
+def test_bls_cpi_three_month_average_prefers_published_mom_changes():
+    headline = [
+        {"value": "320.0", "calculations": {"pct_changes": {"1": "0.50"}}},
+        {"value": "318.5", "calculations": {"pct_changes": {"1": "0.40"}}},
+        {"value": "317.1", "calculations": {"pct_changes": {"1": "0.30"}}},
+        {"value": "316.2", "calculations": {"pct_changes": {"1": "0.20"}}},
+        {"value": "315.5", "calculations": {"pct_changes": {"1": "0.10"}}},
+        {"value": "315.2", "calculations": {"pct_changes": {"1": "0.00"}}},
+    ]
+
+    stats = fred_data._cpi_three_month_mom_stats_from_bls_headline(headline)
+
+    assert stats["cpi_mom_avg_3m"] == 0.4
+    assert stats["cpi_mom_avg_3m_prior"] == 0.1
+    assert stats["cpi_mom_avg_3m_trend"] == "rising"
+
+
+def test_pce_week_change_uses_latest_mom_print(monkeypatch):
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2025-12-01", "2026-01-01", "2026-02-01", "2026-03-01"]),
+            "value": [118.0, 119.18, 120.37, 121.57],
+        }
+    )
+    monkeypatch.setattr(fred_data, "get_fred_data", lambda *args, **kwargs: df)
+
+    out = fred_data.get_pce_data("week")
+
+    assert out["mom_change"] == 1.0
+    assert out["change"] == 1.0
+    assert out["comparison_date"] == "2026-02-01"
+    assert "wow_change" not in out
+
+
+def test_fed_balance_sheet_week_uses_calendar_anchor(monkeypatch):
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-03-06", "2026-03-13", "2026-03-20", "2026-03-27"]),
+            "value": [6900.0, 7000.0, 7100.0, 7200.0],
+        }
+    )
+    monkeypatch.setattr(fred_data, "get_fred_data", lambda *args, **kwargs: df)
+
+    out = fred_data.get_fed_balance_sheet("week")
+
+    assert out["comparison_date"] == "2026-03-20"
+    assert out["change"] == round((7200.0 - 7100.0) / 7100.0 * 100, 2)
+
+
+def test_pmi_requires_official_napm_series(monkeypatch):
+    monkeypatch.setattr(fred_data, "get_fred_data", lambda *args, **kwargs: pd.DataFrame())
+
+    out = fred_data.get_pmi_data("month")
+
+    assert out["error"] == "Official ISM Manufacturing PMI (NAPM) unavailable"
+    assert out["source"] == "FRED:NAPM"
+    assert "pmi_value" not in out
+
+
+def test_pmi_week_uses_latest_official_monthly_print(monkeypatch):
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2025-12-01", "2026-01-01", "2026-02-01"]),
+            "value": [49.5, 50.4, 51.2],
+        }
+    )
+    monkeypatch.setattr(fred_data, "get_fred_data", lambda *args, **kwargs: df)
+
+    out = fred_data.get_pmi_data("week")
+
+    assert out["pmi_value"] == 51.2
+    assert out["pmi_status"] == "expansion"
+    assert out["pmi_trend"] == "rising"
+    assert out["source"] == "FRED:NAPM"
+
+
+def test_score_economy_marks_missing_inputs_excluded_in_reasoning():
+    score, reason = score_economy(
+        unemployment_rate=4.4,
+        unemployment_trend="falling",
+        nfp_change=-92,
+        gdp_growth=0.7,
+        pmi_value=None,
+    )
+
+    assert score > 0
+    assert "PMI: N/A -> excluded" in reason
 
 
 def test_compute_weighted_total_with_freshness_downweights_stale_section():
@@ -66,6 +158,40 @@ def test_compute_weighted_total_with_freshness_downweights_stale_section():
     # Only inflation is non-zero; weighted mean equals inflation_weight * 100 (e.g. 0.15 -> 15).
     assert s_fresh == 15
     assert s_stale < s_fresh
+
+
+def test_compute_weighted_total_with_freshness_excludes_missing_section():
+    section_scores = {
+        "inflation": 100,
+        "economy": 0,
+        "fed_policy": 0,
+        "liquidity": 0,
+        "dxy": 0,
+        "risk_sentiment": 0,
+    }
+    checks_missing_cpi = [
+        {"name": "CPI", "status": "MISSING"},
+        {"name": "PCE", "status": "FRESH"},
+        {"name": "Unemployment Rate", "status": "FRESH"},
+        {"name": "GDP", "status": "FRESH"},
+        {"name": "PMI", "status": "FRESH"},
+        {"name": "Fed Funds Rate", "status": "FRESH"},
+        {"name": "10Y Yield", "status": "FRESH"},
+        {"name": "M2 Money Supply", "status": "FRESH"},
+        {"name": "Fed Balance Sheet", "status": "FRESH"},
+        {"name": "DXY", "status": "FRESH"},
+        {"name": "VIX", "status": "FRESH"},
+        {"name": "S&P 500", "status": "FRESH"},
+        {"name": "Gold", "status": "FRESH"},
+        {"name": "HY OAS", "status": "FRESH"},
+    ]
+
+    score, breakdown = compute_weighted_total_with_freshness(
+        section_scores, {"checks": checks_missing_cpi}
+    )
+
+    assert score == 0
+    assert breakdown.get("inflation") is None
 
 
 def test_coherence_penalizes_high_vix_with_high_risk_score():

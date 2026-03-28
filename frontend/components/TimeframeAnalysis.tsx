@@ -1,12 +1,12 @@
 /**
  * TimeframeAnalysis Component
- * 
- * Displays Bitcoin macro analysis across different timeframes
- * with comparison and trend visualization
+ *
+ * Displays Bitcoin macro analysis across the supported backend timeframes.
+ * `month` is a rolling 1-month window, not month-to-date.
  */
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -52,8 +52,7 @@ interface ComparisonResult {
 const TIMEFRAMES = [
   { key: 'current', label: 'Current', description: 'Real-time snapshot' },
   { key: 'week', label: '7 Days', description: '7-day trends' },
-  { key: 'month', label: 'Month-to-Date', description: 'MTD analysis' },
-  { key: 'year', label: '1 Year', description: 'Annual perspective' }
+  { key: 'month', label: '1 Month', description: 'Rolling 1-month window' },
 ];
 
 const getBiasColor = (bias: string | null | undefined): string => {
@@ -112,7 +111,7 @@ export default function TimeframeAnalysis() {
     setError(null);
 
     try {
-      const response = await fetch('/api/v2/analyze/compare?timeframes=current,week,month,year');
+      const response = await fetch('/api/v2/analyze/compare?timeframes=current,week,month');
       if (!response.ok) {
         throw new Error(`Comparison failed: ${response.statusText}`);
       }

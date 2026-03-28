@@ -31,11 +31,7 @@ def make_hist(dates, closes):
     return pd.DataFrame({"Close": closes}, index=idx)
 
 
-def test_dxy_no_tickers_uses_snapshot(tmp_path, monkeypatch):
-    # Prepare module path
-    mod_path = tmp_path.joinpath("yahoo_data.py")
-    repo_path = (tmp_path / "repo")
-    repo_path.mkdir()
+def test_dxy_no_tickers_uses_snapshot(monkeypatch):
     # We'll load the real file from the repo
     import os
     backend_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

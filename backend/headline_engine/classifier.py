@@ -86,6 +86,21 @@ VALID_BIASES = {"hawkish", "dovish", "neutral"}
 VALID_IMPACTS = {"risk_on", "risk_off", "neutral"}
 
 
+def _attach_headline_metadata(classification: Dict[str, Any], headline: Dict[str, Any]) -> None:
+    """Carry forward fetch-time metadata for downstream scoring/reporting."""
+    classification["_headline_title"] = headline.get("title", "")
+    classification["_headline_source"] = headline.get("source", "")
+    classification["source"] = headline.get("source", "")
+    classification["_explicit_decision"] = bool(headline.get("_explicit_decision", False))
+    classification["_decision_type"] = headline.get("_decision_type")
+    try:
+        classification["_authority_score"] = int(headline.get("_authority_score", 0) or 0)
+    except (TypeError, ValueError):
+        classification["_authority_score"] = 0
+    classification["_priority"] = headline.get("_priority", "normal")
+    classification["_is_reuters"] = bool(headline.get("_is_reuters", False))
+
+
 class HeadlineClassifier:
     """Classifies macro headlines using LLM with deterministic settings."""
     
@@ -128,14 +143,12 @@ class HeadlineClassifier:
                     h.get("title", ""),
                     h.get("description", "")
                 )
-                classification["_headline_title"] = h.get("title", "")
-                classification["_headline_source"] = h.get("source", "")
+                _attach_headline_metadata(classification, h)
                 results.append(classification)
             except Exception as e:
                 logger.warning(f"Failed to classify headline: {h.get('title', '')[:60]}... Error: {e}")
                 kw = _keyword_classify(h.get("title", ""), h.get("description", ""))
-                kw["_headline_title"] = h.get("title", "")
-                kw["_headline_source"] = h.get("source", "")
+                _attach_headline_metadata(kw, h)
                 kw["_error"] = str(e)
                 kw["reason"] = f"Keyword fallback (LLM failed): {kw['reason']}"
                 results.append(kw)

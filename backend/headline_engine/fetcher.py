@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 import logging
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from dotenv import load_dotenv
 from data_fetchers.cache import get as cache_get, put as cache_put
 
@@ -65,6 +65,38 @@ HIGH_AUTH_SOURCES = [
 
 # Premium outlets: fetch explicitly via NewsAPI domains (Reuters, FT; Stratfor if indexed)
 NEWSAPI_PREMIUM_DOMAINS = "reuters.com,ft.com,stratfor.com"
+
+
+def _http_error_summary(error: Exception) -> str:
+    """Return a safe one-line summary for request failures without query strings."""
+    response = getattr(error, "response", None)
+    if response is None:
+        return error.__class__.__name__
+
+    status = getattr(response, "status_code", "unknown")
+    reason = (getattr(response, "reason", "") or "").strip()
+    safe_target = ""
+    try:
+        request_url = getattr(response, "url", "") or ""
+        if request_url:
+            parsed = urlsplit(request_url)
+            safe_target = f"{parsed.netloc}{parsed.path}"
+    except Exception:
+        safe_target = ""
+
+    parts = [f"HTTP {status}"]
+    if reason:
+        parts.append(reason)
+    if safe_target:
+        parts.append(f"({safe_target})")
+    return " ".join(parts)
+
+
+def _newsapi_error_summary(error: Exception) -> str:
+    response = getattr(error, "response", None)
+    if response is not None and getattr(response, "status_code", None) == 426:
+        return "HTTP 426 Upgrade Required (NewsAPI plan does not allow this endpoint)"
+    return _http_error_summary(error)
 
 
 class HeadlineFetcher:
@@ -124,8 +156,9 @@ class HeadlineFetcher:
                 headlines.extend(newsapi_results)
                 logger.info(f"NewsAPI returned {len(newsapi_results)} headlines")
             except Exception as e:
-                errors.append(f"NewsAPI: {e}")
-                logger.warning(f"NewsAPI failed: {e}")
+                safe_error = _newsapi_error_summary(e)
+                errors.append(f"NewsAPI: {safe_error}")
+                logger.warning("NewsAPI failed: %s", safe_error)
             # Source 1a: NewsAPI Reuters only (emphasis on Reuters, larger pageSize)
             try:
                 reuters_results = self._fetch_newsapi_reuters_only()
@@ -133,7 +166,8 @@ class HeadlineFetcher:
                     headlines.extend(reuters_results)
                     logger.info(f"NewsAPI (Reuters only) returned {len(reuters_results)} headlines")
             except Exception as e:
-                logger.warning(f"NewsAPI Reuters-only fetch failed: {e}")
+                safe_error = _newsapi_error_summary(e)
+                logger.warning("NewsAPI Reuters-only fetch failed: %s", safe_error)
             # Source 1b: NewsAPI restricted to Reuters, Financial Times, Stratfor
             try:
                 premium_results = self._fetch_newsapi_premium_sources()
@@ -141,7 +175,8 @@ class HeadlineFetcher:
                     headlines.extend(premium_results)
                     logger.info(f"NewsAPI (Reuters/FT/Stratfor) returned {len(premium_results)} headlines")
             except Exception as e:
-                logger.warning(f"NewsAPI premium sources failed: {e}")
+                safe_error = _newsapi_error_summary(e)
+                logger.warning("NewsAPI premium sources failed: %s", safe_error)
         
         # Source 2: Google News RSS (always try as fallback or supplement)
         try:
@@ -149,8 +184,9 @@ class HeadlineFetcher:
             headlines.extend(rss_results)
             logger.info(f"Google News RSS returned {len(rss_results)} headlines")
         except Exception as e:
-            errors.append(f"Google News RSS: {e}")
-            logger.warning(f"Google News RSS failed: {e}")
+            safe_error = _http_error_summary(e)
+            errors.append(f"Google News RSS: {safe_error}")
+            logger.warning("Google News RSS failed: %s", safe_error)
         
         if not headlines and errors:
             raise HeadlineFetchError(

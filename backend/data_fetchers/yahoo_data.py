@@ -10,12 +10,16 @@ analysis run.
 import logging
 import math
 import time
+import os
+from io import StringIO
 import yfinance as yf
 import pandas as pd
+import requests
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
 import json
 from pathlib import Path
+from utils.http_retry import get_with_retries
 
 logger = logging.getLogger("btc_macro.data_fetchers.yahoo")
 
@@ -31,6 +35,8 @@ except Exception:
 DXY_VALIDATION_TOLERANCE_PCT = float(_CFG.get("dxy_tolerance_pct", 0.05))
 FALLBACK_MAX_SNAPSHOT_AGE_HOURS = int(_CFG.get("fallback_max_snapshot_age_hours", 48))
 USE_LAST_SNAPSHOT_FOR_FALLBACK = bool(_CFG.get("use_last_snapshot_for_fallback", True))
+STRICT_LIVE_OFFICIAL_ONLY = os.getenv("STRICT_LIVE_OFFICIAL_ONLY", "1").strip().lower() not in {"0", "false", "no"}
+ECB_API_BASE_URL = "https://data-api.ecb.europa.eu/service/data/EXR"
 
 
 def _safe_date_str(ts) -> str:
@@ -55,6 +61,28 @@ def _get_latest_snapshot():
     return None
 
 
+def _fresh_snapshot_value(field_name: str) -> Optional[Tuple[float, Optional[str]]]:
+    """Recent snapshot scalar fallback for display-only metrics."""
+    snap = _get_latest_snapshot()
+    if not snap:
+        return None
+    value = snap.get(field_name)
+    if value is None:
+        return None
+    timestamp = snap.get("timestamp")
+    try:
+        snap_time = datetime.fromisoformat(str(timestamp))
+        age_hours = (datetime.now() - snap_time).total_seconds() / 3600.0
+    except Exception:
+        age_hours = float("inf")
+    if age_hours > FALLBACK_MAX_SNAPSHOT_AGE_HOURS:
+        return None
+    try:
+        return float(value), (str(timestamp) if timestamp else None)
+    except (TypeError, ValueError):
+        return None
+
+
 # Timeframe to period mapping for yfinance
 TIMEFRAME_PERIODS = {
     "current": "1mo",
@@ -64,7 +92,7 @@ TIMEFRAME_PERIODS = {
 }
 
 # Timeframe to comparison days (calendar days — not trading sessions).
-# "month" is handled separately via MTD (first trading day of current month).
+# "month" is handled separately as a rolling 1-calendar-month window.
 TIMEFRAME_COMPARISON = {
     "current": 1,
     "week": 7,
@@ -128,11 +156,9 @@ def _latest_and_comparison_rows(
 
 
 def _mtd_comparison_row(hist: pd.DataFrame) -> pd.Series:
-    """Return the close of the first trading session of the current month (MTD anchor).
+    """Legacy helper for month-to-date anchor selection.
 
-    MTD = (latest_close - first_trading_day_close) / first_trading_day_close * 100.
-    Falls back to the oldest available bar if the current month has no prior session
-    (e.g. the analysis runs on the first trading day of a month).
+    The active `month` timeframe uses a rolling 1-calendar-month window instead.
     """
     h = _normalize_hist_index(hist)
     if h.empty:
@@ -263,6 +289,182 @@ def _dxy_from_eurusd_proxy(timeframe: str) -> Optional[Dict]:
         return None
 
 
+def _dxy_from_fx_basket(timeframe: str) -> Optional[Dict]:
+    """Exact DXY basket from the six constituent FX pairs when direct DXY symbols fail."""
+    fx_symbols = {
+        "eurusd": "EURUSD=X",
+        "usdjpy": "JPY=X",
+        "gbpusd": "GBPUSD=X",
+        "usdcad": "CAD=X",
+        "usdsek": "SEK=X",
+        "usdchf": "CHF=X",
+    }
+    weights = {
+        "eurusd": -0.576,
+        "usdjpy": 0.136,
+        "gbpusd": -0.119,
+        "usdcad": 0.091,
+        "usdsek": 0.042,
+        "usdchf": 0.036,
+    }
+    base = 50.14348112
+
+    try:
+        joined: Optional[pd.DataFrame] = None
+        for key, symbol in fx_symbols.items():
+            ticker = yf.Ticker(symbol)
+            hist = _yf_history_with_backoff(ticker, TIMEFRAME_PERIODS.get(timeframe, "3mo"), attempts=2)
+            if hist is None or hist.empty:
+                return None
+            h = _normalize_hist_index(hist)[["Close"]].rename(columns={"Close": key})
+            joined = h if joined is None else joined.join(h, how="inner")
+
+        if joined is None or joined.empty or len(joined) < 2:
+            return None
+
+        joined = joined.dropna()
+        if joined.empty:
+            return None
+
+        dxy_close = pd.Series(base, index=joined.index, dtype="float64")
+        for key, weight in weights.items():
+            vals = joined[key].astype(float)
+            if (vals <= 0).any():
+                return None
+            dxy_close = dxy_close * vals.pow(weight)
+
+        dxy_hist = pd.DataFrame({"Close": dxy_close}).dropna()
+        if dxy_hist.empty:
+            return None
+
+        if len(dxy_hist) > 1:
+            latest, comparison = _latest_and_comparison_for_timeframe(dxy_hist, timeframe)
+        else:
+            latest = dxy_hist.iloc[-1]
+            comparison = latest
+
+        current_price = float(latest["Close"])
+        comparison_price = float(comparison["Close"])
+        if not math.isfinite(current_price) or current_price <= 0:
+            return None
+        if not math.isfinite(comparison_price) or comparison_price <= 0:
+            comparison_price = current_price
+
+        change = ((current_price - comparison_price) / comparison_price) * 100 if comparison_price else 0.0
+        out = {
+            "current_price": round(current_price, 2),
+            "date": _safe_date_str(latest.name),
+            "data_as_of": _safe_date_str(latest.name),
+            "comparison_date": _safe_date_str(comparison.name),
+            "change": round(change, 2),
+            "change_label": _change_label(timeframe),
+            "change_unit": "percent",
+            "trend": "weakening" if change < 0 else "strengthening" if change > 0 else "stable",
+            "timeframe": timeframe,
+            "source": "fx_basket_formula",
+            "_fallback": True,
+        }
+        roll = _dxy_rolling_1m_fields(dxy_hist)
+        if roll:
+            out.update(roll)
+        return out
+    except Exception as e:
+        logger.debug("FX basket DXY fallback failed: %s", e)
+        return None
+
+
+def _ecb_fx_series(currency: str, start_date: str) -> pd.DataFrame:
+    series_key = f"D.{currency}.EUR.SP00.A"
+    resp = get_with_retries(
+        f"{ECB_API_BASE_URL}/{series_key}",
+        params={"format": "csvdata", "startPeriod": start_date},
+        headers={"Accept": "text/csv"},
+        timeout=20,
+    )
+    df = pd.read_csv(StringIO(resp.text))
+    if df.empty or "TIME_PERIOD" not in df.columns or "OBS_VALUE" not in df.columns:
+        return pd.DataFrame()
+    out = pd.DataFrame(
+        {
+            "date": pd.to_datetime(df["TIME_PERIOD"], errors="coerce"),
+            currency.lower(): pd.to_numeric(df["OBS_VALUE"], errors="coerce"),
+        }
+    ).dropna()
+    return out
+
+
+def _dxy_from_ecb_fx_basket(timeframe: str) -> Optional[Dict]:
+    """Approximate official DXY from ECB daily FX reference rates."""
+    currencies = ("USD", "JPY", "GBP", "CAD", "SEK", "CHF")
+    lookback_days = {"current": 45, "week": 60, "month": 120}.get(timeframe, 120)
+    start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    joined: Optional[pd.DataFrame] = None
+    base = 50.14348112
+    weights = {
+        "eurusd": -0.576,
+        "usdjpy": 0.136,
+        "gbpusd": -0.119,
+        "usdcad": 0.091,
+        "usdsek": 0.042,
+        "usdchf": 0.036,
+    }
+    try:
+        for cur in currencies:
+            df = _ecb_fx_series(cur, start_date)
+            if df.empty:
+                return None
+            joined = df if joined is None else joined.merge(df, on="date", how="inner")
+        if joined is None or joined.empty or len(joined) < 2:
+            return None
+        joined = joined.sort_values("date").dropna().reset_index(drop=True)
+        if joined.empty:
+            return None
+
+        usd_eur = joined["usd"].astype(float)
+        eurusd = usd_eur
+        usdjpy = joined["jpy"].astype(float) / usd_eur
+        gbpusd = usd_eur / joined["gbp"].astype(float)
+        usdcad = joined["cad"].astype(float) / usd_eur
+        usdsek = joined["sek"].astype(float) / usd_eur
+        usdchf = joined["chf"].astype(float) / usd_eur
+        dxy_close = (
+            base
+            * eurusd.pow(weights["eurusd"])
+            * usdjpy.pow(weights["usdjpy"])
+            * gbpusd.pow(weights["gbpusd"])
+            * usdcad.pow(weights["usdcad"])
+            * usdsek.pow(weights["usdsek"])
+            * usdchf.pow(weights["usdchf"])
+        )
+        dxy_hist = pd.DataFrame({"Close": dxy_close.values}, index=pd.to_datetime(joined["date"]))
+        if dxy_hist.empty:
+            return None
+        latest, comparison = _latest_and_comparison_for_timeframe(dxy_hist, timeframe)
+        current_price = float(latest["Close"])
+        comparison_price = float(comparison["Close"])
+        change = ((current_price - comparison_price) / comparison_price) * 100 if comparison_price else 0.0
+        out = {
+            "current_price": round(current_price, 2),
+            "date": _safe_date_str(latest.name),
+            "data_as_of": _safe_date_str(latest.name),
+            "comparison_date": _safe_date_str(comparison.name),
+            "change": round(change, 2),
+            "change_label": _change_label(timeframe),
+            "change_unit": "percent",
+            "trend": "weakening" if change < 0 else "strengthening" if change > 0 else "stable",
+            "timeframe": timeframe,
+            "source": "ECB:EXR_fx_basket",
+            "_fallback": True,
+        }
+        roll = _dxy_rolling_1m_fields(dxy_hist)
+        if roll:
+            out.update(roll)
+        return out
+    except Exception as e:
+        logger.debug("ECB DXY basket fallback failed: %s", e)
+        return None
+
+
 def _yf_history_with_backoff(ticker: yf.Ticker, period: str, *, attempts: int = 3) -> pd.DataFrame:
     """Fetch history with retries for Yahoo Finance rate limits / transient errors."""
     last_err: Optional[Exception] = None
@@ -289,8 +491,98 @@ def _yf_history_with_backoff(ticker: yf.Ticker, period: str, *, attempts: int = 
     return pd.DataFrame()
 
 
+def _select_same_scale_yahoo_history(
+    symbols: Tuple[str, ...],
+    timeframe: str,
+    *,
+    period: str = "3mo",
+    attempts: int = 3,
+) -> Tuple[Optional[str], pd.DataFrame]:
+    """Return the first non-empty Yahoo history from same-scale symbols."""
+    hist = pd.DataFrame()
+    for symbol in symbols:
+        ticker = yf.Ticker(symbol)
+        hist = _yf_history_with_backoff(ticker, TIMEFRAME_PERIODS.get(timeframe, period), attempts=attempts)
+        if hist is not None and not hist.empty:
+            return symbol, hist
+    return None, pd.DataFrame()
+
+
+def _fred_series_market_fallback(
+    series_id: str,
+    timeframe: str,
+    *,
+    response_key: str = "current_price",
+    change_unit: str = "percent",
+    source_name: Optional[str] = None,
+    trend_up: str = "rising",
+    trend_down: str = "falling",
+) -> Optional[Dict[str, Any]]:
+    """Free-source fallback for display metrics using daily FRED series."""
+    try:
+        from data_fetchers import fred_data
+
+        lookback_days = {"current": 45, "week": 60, "month": 120, "year": 500}.get(timeframe, 120)
+        start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        df = fred_data.get_fred_data(series_id, start_date=start_date, timeframe=timeframe, sort_order="asc")
+        if df.empty:
+            return None
+
+        d = df.sort_values("date").reset_index(drop=True)
+        latest = d.iloc[-1]
+        latest_value = float(latest["value"])
+        if not math.isfinite(latest_value) or latest_value <= 0:
+            return None
+
+        if timeframe == "month" and len(d) >= 2:
+            comparison = fred_data._fred_observation_on_or_before_months_ago(d, 1)
+        elif len(d) >= 2:
+            comparison = fred_data._fred_observation_on_or_before_calendar_days_ago(
+                d, TIMEFRAME_COMPARISON.get(timeframe, 1)
+            )
+        else:
+            comparison = latest
+
+        comparison_value = float(comparison["value"])
+        if not math.isfinite(comparison_value) or comparison_value <= 0:
+            comparison = latest
+            comparison_value = latest_value
+
+        if change_unit == "points":
+            change = latest_value - comparison_value
+        else:
+            change = ((latest_value - comparison_value) / comparison_value) * 100 if comparison_value else 0.0
+
+        def _ds(row: pd.Series) -> str:
+            x = row["date"]
+            return x.strftime("%Y-%m-%d") if hasattr(x, "strftime") else str(x)[:10]
+
+        return {
+            response_key: round(latest_value, 2),
+            "date": _ds(latest),
+            "data_as_of": _ds(latest),
+            "comparison_date": _ds(comparison),
+            "change": round(change, 2),
+            "change_label": _change_label(timeframe),
+            "change_unit": change_unit,
+            "trend": trend_down if change < 0 else trend_up if change > 0 else "stable",
+            "timeframe": timeframe,
+            "source": source_name or f"FRED:{series_id}",
+            "_fallback": True,
+        }
+    except Exception:
+        logger.exception("FRED market fallback failed for %s", series_id)
+        return None
+
+
 def try_dxy_external_fallbacks(timeframe: str = "current") -> Optional[Dict]:
-    """Try EUR/USD proxy then FRED DTWEXBGS when primary DXY Yahoo path failed or is unusable."""
+    """Try exact FX-basket DXY, then EUR/USD proxy, then FRED trade-weighted USD."""
+    ecb = _dxy_from_ecb_fx_basket(timeframe)
+    if ecb:
+        return ecb
+    basket = _dxy_from_fx_basket(timeframe)
+    if basket:
+        return basket
     eu = _dxy_from_eurusd_proxy(timeframe)
     if eu:
         return eu
@@ -307,50 +599,44 @@ def try_dxy_external_fallbacks(timeframe: str = "current") -> Optional[Dict]:
 def get_dxy_data(timeframe: str = "current") -> Dict:
     """Get US Dollar Index (DXY) data with timeframe support"""
     try:
+        if STRICT_LIVE_OFFICIAL_ONLY:
+            ecb = _dxy_from_ecb_fx_basket(timeframe)
+            if ecb:
+                return ecb
+            return {"error": "Official DXY FX basket source unavailable", "timeframe": timeframe}
+
         # Try multiple DXY ticker symbols as availability varies
         # Preferred order: market DXY futures or index symbols commonly used by yfinance
-        for symbol in ["DX-Y.NYB", "DX=F", "DXY", "UUP"]:
-            ticker = yf.Ticker(symbol)
-            period = TIMEFRAME_PERIODS.get(timeframe, "3mo")
-            hist = _yf_history_with_backoff(ticker, period, attempts=3)
-            if not hist.empty:
-                break
-        else:
+        symbol, hist = _select_same_scale_yahoo_history(("DX-Y.NYB", "DX=F", "DXY"), timeframe)
+        if hist.empty:
             # No live tickers returned. Attempt last-snapshot fallback if configured.
             if USE_LAST_SNAPSHOT_FOR_FALLBACK:
                 try:
-                    from storage.db import get_latest_snapshots
-                    snaps = get_latest_snapshots(1)
-                    if snaps:
-                        snap = snaps[0]
-                        dxy_val = snap.get("dxy_value")
-                        timestamp = snap.get("timestamp")
-                        if dxy_val is not None:
-                            # Check freshness of snapshot
-                            try:
-                                snap_time = datetime.fromisoformat(timestamp)
-                                age_hours = (datetime.now() - snap_time).total_seconds() / 3600.0
-                            except Exception:
-                                age_hours = float('inf')
-                            if age_hours <= FALLBACK_MAX_SNAPSHOT_AGE_HOURS:
-                                logger.warning("Using last snapshot DXY fallback (age %.1f h)", age_hours)
-                                return {
-                                    "current_price": float(dxy_val),
-                                    "date": timestamp,
-                                    "data_as_of": timestamp,
-                                    "comparison_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
-                                    "change": 0.0,
-                                    "change_label": _change_label(timeframe),
-                                    "change_unit": "percent",
-                                    "trend": "stable",
-                                    "timeframe": timeframe,
-                                    "source": "last_snapshot",
-                                    "_fallback": True,
-                                    "_fallback_source": "last_snapshot",
-                                }
+                    snap_value = _fresh_snapshot_value("dxy_value")
+                    if snap_value is not None:
+                        dxy_val, timestamp = snap_value
+                        logger.warning("Using last snapshot DXY fallback")
+                        return {
+                            "current_price": dxy_val,
+                            "date": str(timestamp)[:10] if timestamp else datetime.now().strftime("%Y-%m-%d"),
+                            "data_as_of": timestamp,
+                            "comparison_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+                            "change": 0.0,
+                            "change_label": _change_label(timeframe),
+                            "change_unit": "percent",
+                            "trend": "stable",
+                            "timeframe": timeframe,
+                            "source": "last_snapshot",
+                            "_fallback": True,
+                            "_fallback_source": "last_snapshot",
+                        }
                 except Exception:
                     logger.exception("Error attempting last-snapshot fallback for DXY")
 
+            basket = _dxy_from_fx_basket(timeframe)
+            if basket:
+                logger.warning("DXY: Yahoo index symbols empty; using exact FX basket fallback")
+                return basket
             eu = _dxy_from_eurusd_proxy(timeframe)
             if eu:
                 logger.warning("DXY: Yahoo index symbols empty; using EURUSD=X proxy")
@@ -365,9 +651,6 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
                 logger.exception("FRED DXY fallback failed")
 
             return {"error": "No DXY tickers available and no valid snapshot fallback", "timeframe": timeframe}
-
-        if hist.empty:
-            return {"error": "No DXY data available", "timeframe": timeframe}
 
         if len(hist) > 1:
             latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe)
@@ -390,7 +673,11 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
         # Lightweight validation: only compare same-scale DXY tickers.
         # UUP is an ETF (~28) and cannot be compared to DX-Y.NYB (~104) — different scales.
         # Only cross-validate between DX-Y.NYB and DX=F which are both the DXY index.
-        SAME_SCALE_ALTS = {"DX-Y.NYB": ["DX=F"], "DX=F": ["DX-Y.NYB"]}
+        SAME_SCALE_ALTS = {
+            "DX-Y.NYB": ["DX=F", "DXY"],
+            "DX=F": ["DX-Y.NYB", "DXY"],
+            "DXY": ["DX-Y.NYB", "DX=F"],
+        }
         validation = {"validated": True, "details": []}
         try:
             alts_to_check = SAME_SCALE_ALTS.get(symbol, [])
@@ -447,6 +734,9 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
         return result
     except Exception as e:
         logger.warning("DXY primary fetch error: %s; trying proxies", e)
+        basket = _dxy_from_fx_basket(timeframe)
+        if basket:
+            return basket
         eu = _dxy_from_eurusd_proxy(timeframe)
         if eu:
             return eu
@@ -463,20 +753,39 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
 def get_vix_data(timeframe: str = "current") -> Dict:
     """Get VIX (Volatility Index) data with timeframe support"""
     try:
-        # Try multiple VIX ticker symbols
-        for symbol in ["^VIX", "VIX", "VIXY"]:
-            ticker = yf.Ticker(symbol)
-            period = TIMEFRAME_PERIODS.get(timeframe, "1mo")
-            hist = ticker.history(period=period)
-            if not hist.empty:
-                break
-        else:
-            # Avoid fabricated fallback values for volatility metrics.
-            snap = _get_latest_snapshot()
-            if snap and snap.get("vix") is not None:
-                timestamp = snap.get("timestamp")
+        if STRICT_LIVE_OFFICIAL_ONLY:
+            fred_fallback = _fred_series_market_fallback(
+                "VIXCLS",
+                timeframe,
+                response_key="current_value",
+                change_unit="points",
+                source_name="FRED:VIXCLS",
+            )
+            if fred_fallback:
+                current_vix = float(fred_fallback["current_value"])
+                fred_fallback["level"] = "high" if current_vix > 20 else "moderate" if current_vix > 15 else "low"
+                return fred_fallback
+            return {"error": "Official VIX source unavailable", "timeframe": timeframe}
+
+        symbol, hist = _select_same_scale_yahoo_history(("^VIX", "VIX"), timeframe, period="1mo", attempts=2)
+        if hist.empty:
+            fred_fallback = _fred_series_market_fallback(
+                "VIXCLS",
+                timeframe,
+                response_key="current_value",
+                change_unit="points",
+                source_name="FRED:VIXCLS",
+            )
+            if fred_fallback:
+                current_vix = float(fred_fallback["current_value"])
+                fred_fallback["level"] = "high" if current_vix > 20 else "moderate" if current_vix > 15 else "low"
+                return fred_fallback
+
+            snap_value = _fresh_snapshot_value("vix")
+            if snap_value is not None:
+                value, timestamp = snap_value
                 return {
-                    "current_value": float(snap.get("vix")),
+                    "current_value": value,
                     "date": str(timestamp)[:10] if timestamp else datetime.now().strftime("%Y-%m-%d"),
                     "data_as_of": timestamp,
                     "comparison_date": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
@@ -489,9 +798,9 @@ def get_vix_data(timeframe: str = "current") -> Dict:
                     "source": "last_snapshot",
                     "_fallback": True,
                     "_fallback_source": "last_snapshot",
-                    "_warning": "Using last snapshot VIX value; live VIX tickers unavailable",
+                    "_warning": "Using last snapshot VIX value; live sources unavailable",
                 }
-            return {"error": "No VIX tickers available and no valid snapshot fallback", "timeframe": timeframe}
+            return {"error": "No VIX tickers available and no valid fallback", "timeframe": timeframe}
 
         if len(hist) > 1:
             latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe, default_days=1)
@@ -524,15 +833,48 @@ def get_vix_data(timeframe: str = "current") -> Dict:
 def get_sp500_data(timeframe: str = "current") -> Dict:
     """Get S&P 500 data with timeframe support"""
     try:
-        # Try multiple S&P 500 ticker symbols
-        for symbol in ["^GSPC", "SPY", "VOO"]:
-            ticker = yf.Ticker(symbol)
-            period = TIMEFRAME_PERIODS.get(timeframe, "3mo")
-            hist = ticker.history(period=period)
-            if not hist.empty:
-                break
-        else:
-            return {"error": "No S&P 500 tickers available", "timeframe": timeframe}
+        if STRICT_LIVE_OFFICIAL_ONLY:
+            fred_fallback = _fred_series_market_fallback(
+                "SP500",
+                timeframe,
+                response_key="current_price",
+                change_unit="percent",
+                source_name="FRED:SP500",
+            )
+            if fred_fallback:
+                return fred_fallback
+            return {"error": "Official S&P 500 source unavailable", "timeframe": timeframe}
+
+        symbol, hist = _select_same_scale_yahoo_history(("^GSPC",), timeframe)
+        if hist.empty:
+            fred_fallback = _fred_series_market_fallback(
+                "SP500",
+                timeframe,
+                response_key="current_price",
+                change_unit="percent",
+                source_name="FRED:SP500",
+            )
+            if fred_fallback:
+                return fred_fallback
+
+            snap_value = _fresh_snapshot_value("sp500_price")
+            if snap_value is not None:
+                value, timestamp = snap_value
+                return {
+                    "current_price": value,
+                    "date": str(timestamp)[:10] if timestamp else datetime.now().strftime("%Y-%m-%d"),
+                    "data_as_of": timestamp,
+                    "comparison_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+                    "change": 0.0,
+                    "change_label": _change_label(timeframe),
+                    "change_unit": "percent",
+                    "trend": "stable",
+                    "timeframe": timeframe,
+                    "source": "last_snapshot",
+                    "_fallback": True,
+                    "_fallback_source": "last_snapshot",
+                }
+            return {"error": "No S&P 500 sources available", "timeframe": timeframe}
 
         if len(hist) > 1:
             latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe)
@@ -564,15 +906,48 @@ def get_sp500_data(timeframe: str = "current") -> Dict:
 def get_gold_data(timeframe: str = "current") -> Dict:
     """Get Gold price data with timeframe support"""
     try:
-        # Try multiple Gold ticker symbols
-        for symbol in ["GC=F", "GLD", "IAU"]:
-            ticker = yf.Ticker(symbol)
-            period = TIMEFRAME_PERIODS.get(timeframe, "3mo")
-            hist = ticker.history(period=period)
-            if not hist.empty:
-                break
-        else:
-            return {"error": "No gold tickers available", "timeframe": timeframe}
+        if STRICT_LIVE_OFFICIAL_ONLY:
+            fred_fallback = _fred_series_market_fallback(
+                "GOLDAMGBD228NLBM",
+                timeframe,
+                response_key="current_price",
+                change_unit="percent",
+                source_name="FRED:GOLDAMGBD228NLBM",
+            )
+            if fred_fallback:
+                return fred_fallback
+            return {"error": "Official gold source unavailable", "timeframe": timeframe}
+
+        symbol, hist = _select_same_scale_yahoo_history(("GC=F", "XAUUSD=X"), timeframe)
+        if hist.empty:
+            fred_fallback = _fred_series_market_fallback(
+                "GOLDAMGBD228NLBM",
+                timeframe,
+                response_key="current_price",
+                change_unit="percent",
+                source_name="FRED:GOLDAMGBD228NLBM",
+            )
+            if fred_fallback:
+                return fred_fallback
+
+            snap_value = _fresh_snapshot_value("gold_price")
+            if snap_value is not None:
+                value, timestamp = snap_value
+                return {
+                    "current_price": value,
+                    "date": str(timestamp)[:10] if timestamp else datetime.now().strftime("%Y-%m-%d"),
+                    "data_as_of": timestamp,
+                    "comparison_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+                    "change": 0.0,
+                    "change_label": _change_label(timeframe),
+                    "change_unit": "percent",
+                    "trend": "stable",
+                    "timeframe": timeframe,
+                    "source": "last_snapshot",
+                    "_fallback": True,
+                    "_fallback_source": "last_snapshot",
+                }
+            return {"error": "No gold sources available", "timeframe": timeframe}
 
         if len(hist) > 1:
             latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe)
@@ -692,14 +1067,82 @@ def get_btc_ma200_vol_from_yahoo() -> Dict:
 def get_natural_gas_data(timeframe: str = "current") -> Dict:
     """Get Henry Hub Natural Gas futures price via yfinance (NG=F)."""
     try:
-        for symbol in ["NG=F"]:
-            ticker = yf.Ticker(symbol)
-            period = TIMEFRAME_PERIODS.get(timeframe, "3mo")
-            hist = ticker.history(period=period)
-            if not hist.empty:
-                break
-        else:
-            return {"error": "No natural gas tickers available", "timeframe": timeframe}
+        if STRICT_LIVE_OFFICIAL_ONLY:
+            try:
+                from data_fetchers import fred_data
+
+                df = fred_data._get_eia_series_data("NG.RNGWHHD.D")
+                if not df.empty:
+                    d = df.sort_values("date").reset_index(drop=True)
+                    latest = d.iloc[-1]
+                    if timeframe == "month" and len(d) >= 2:
+                        comparison = fred_data._fred_observation_on_or_before_months_ago(d, 1)
+                    elif len(d) >= 2:
+                        comparison = fred_data._fred_observation_on_or_before_calendar_days_ago(
+                            d, TIMEFRAME_COMPARISON.get(timeframe, 7)
+                        )
+                    else:
+                        comparison = latest
+                    cur = float(latest["value"])
+                    prev = float(comparison["value"])
+                    change = ((cur - prev) / prev) * 100 if prev else 0.0
+                    return {
+                        "current_price": round(cur, 2),
+                        "date": _safe_date_str(latest["date"]),
+                        "data_as_of": _safe_date_str(latest["date"]),
+                        "comparison_date": _safe_date_str(comparison["date"]),
+                        "change": round(change, 2),
+                        "change_label": _change_label(timeframe),
+                        "change_unit": "percent",
+                        "trend": "rising" if change > 0.5 else "falling" if change < -0.5 else "stable",
+                        "timeframe": timeframe,
+                        "source": "EIA (NG.RNGWHHD.D)",
+                        "_fallback": True,
+                    }
+            except Exception:
+                logger.exception("EIA natgas fallback failed")
+
+            fred_fallback = _fred_series_market_fallback(
+                "DHHNGSP",
+                timeframe,
+                response_key="current_price",
+                change_unit="percent",
+                source_name="FRED:DHHNGSP",
+            )
+            if fred_fallback:
+                return fred_fallback
+            return {"error": "Official natural gas source unavailable", "timeframe": timeframe}
+
+        symbol, hist = _select_same_scale_yahoo_history(("NG=F",), timeframe)
+        if hist.empty:
+            fred_fallback = _fred_series_market_fallback(
+                "DHHNGSP",
+                timeframe,
+                response_key="current_price",
+                change_unit="percent",
+                source_name="FRED:DHHNGSP",
+            )
+            if fred_fallback:
+                return fred_fallback
+
+            snap_value = _fresh_snapshot_value("natgas_price")
+            if snap_value is not None:
+                value, timestamp = snap_value
+                return {
+                    "current_price": value,
+                    "date": str(timestamp)[:10] if timestamp else datetime.now().strftime("%Y-%m-%d"),
+                    "data_as_of": timestamp,
+                    "comparison_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+                    "change": 0.0,
+                    "change_label": _change_label(timeframe),
+                    "change_unit": "percent",
+                    "trend": "stable",
+                    "timeframe": timeframe,
+                    "source": "last_snapshot",
+                    "_fallback": True,
+                    "_fallback_source": "last_snapshot",
+                }
+            return {"error": "No natural gas sources available", "timeframe": timeframe}
 
         # For 1D/current view, use live intraday vs prior session close when possible.
         # This aligns more closely with TradingView's default daily % change semantics.

@@ -26,6 +26,7 @@ import json
 import math
 import hashlib
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -75,6 +76,60 @@ _GEO_KEYWORDS = {
 MONETARY_EXPLICIT_CONFIDENCE_BOOST_TYPES = frozenset(
     ("rate_hike", "rate_cut", "rate_hold", "fomc_doc")
 )
+
+STRICT_LIVE_OFFICIAL_ONLY = os.getenv("STRICT_LIVE_OFFICIAL_ONLY", "1").strip().lower() not in {"0", "false", "no"}
+
+_STRICT_METRIC_LABELS = {
+    "cpi": "CPI",
+    "pce": "PCE",
+    "yields": "Treasury Yields",
+    "balance_sheet": "Fed Balance Sheet",
+    "dxy": "DXY",
+    "vix": "VIX",
+    "sp500": "S&P 500",
+    "gold": "Gold",
+    "oil": "WTI Oil",
+    "btc": "BTC Price",
+    "fed_rate": "Fed Funds Rate",
+    "jobs": "Jobs",
+    "gdp": "GDP",
+    "pmi": "PMI",
+    "m2": "M2 Money Supply",
+    "natgas": "Natural Gas",
+    "move_index": "MOVE",
+    "eem": "Emerging Markets",
+    "btc_dominance": "BTC Dominance",
+    "stablecoins": "Stablecoin Dominance",
+    "btc_technicals": "BTC Technicals",
+    "btc_etf": "BTC ETF Volume",
+    "dxy_structure": "DXY Structure",
+    "financial_stress": "Financial Stress",
+    "breakeven_10y": "10Y Breakeven",
+}
+
+_STRICT_UNSUPPORTED_METRICS = {
+    "move_index",
+    "eem",
+    "btc_dominance",
+    "stablecoins",
+    "btc_etf",
+    "dxy_structure",
+}
+
+_STRICT_FRED_ONLY_METRICS = {"vix", "sp500", "gold", "natgas", "oil"}
+_STRICT_OFFICIAL_METRICS = {
+    "cpi",
+    "pce",
+    "yields",
+    "balance_sheet",
+    "fed_rate",
+    "jobs",
+    "gdp",
+    "pmi",
+    "m2",
+    "financial_stress",
+    "breakeven_10y",
+}
 
 
 def _safe_log_text(text: str) -> str:
@@ -166,6 +221,76 @@ def _dxy_api_fields(dxy_blob: dict):
     if err and val is None:
         chg = None
     return val, chg
+
+
+def _source_text(blob: dict) -> str:
+    return str((blob or {}).get("source") or (blob or {}).get("_source") or "").strip()
+
+
+def _detail_from_error(err: str) -> str:
+    text = str(err or "").strip()
+    low = text.lower()
+    if any(tok in low for tok in ("429", "rate limit", "too many requests", "upgrade required")):
+        return "live source rate-limited"
+    if any(tok in low for tok in ("proxyerror", "failed to connect", "max retries exceeded", "could not connect", "unable to connect")):
+        return "live source unreachable"
+    if "api key" in low or "missing_api_key" in low:
+        return "missing API key for live source"
+    if text:
+        return text
+    return "live source unavailable"
+
+
+def _is_source_official(metric_key: str, blob: dict) -> bool:
+    if metric_key in _STRICT_UNSUPPORTED_METRICS:
+        return False
+    source = _source_text(blob)
+    if metric_key == "dxy":
+        return source.startswith(("ECB:", "Federal Reserve", "FRED:DTWEXBGS"))
+    if metric_key == "btc":
+        return source in {"coinbase_exchange", "kraken_public", "binance_public"}
+    if metric_key == "btc_technicals":
+        return source in {"coinbase_exchange", "kraken_public", "binance_public"}
+    if metric_key in _STRICT_OFFICIAL_METRICS:
+        return not source or source.startswith(("BLS", "BEA", "FRED", "Federal Reserve")) or "FRED" in source
+    if metric_key in _STRICT_FRED_ONLY_METRICS:
+        return "FRED" in source
+    return False
+
+
+def _apply_strict_live_official_policy(raw_data: dict, timeframe: str) -> list[str]:
+    if not STRICT_LIVE_OFFICIAL_ONLY:
+        return []
+
+    warnings: list[str] = []
+    for metric_key, label in _STRICT_METRIC_LABELS.items():
+        blob = raw_data.get(metric_key)
+        if not isinstance(blob, dict):
+            continue
+
+        source = _source_text(blob)
+        if blob.get("error"):
+            detail = _detail_from_error(blob.get("error"))
+            warnings.append(f"{label}: {detail}.")
+            continue
+
+        if source == "last_snapshot" or blob.get("_fallback_source") == "last_snapshot":
+            detail = "snapshot fallback disabled in live official mode"
+        elif blob.get("_proxy_note"):
+            detail = "proxy data disabled in live official mode"
+        elif not _is_source_official(metric_key, blob):
+            detail = "no official live source configured for this metric"
+        else:
+            continue
+
+        raw_data[metric_key] = {
+            "error": detail,
+            "source": source or None,
+            "timeframe": timeframe,
+        }
+        warnings.append(f"{label}: {detail}.")
+
+    return warnings
 
 
 def run_analysis(timeframe: str = "current", fresh: bool = False):
@@ -264,7 +389,12 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         raw_data["oil"] = {"error": str(e)}
     
     try:
-        raw_data["btc"] = coingecko_data.get_btc_price(timeframe)
+        if STRICT_LIVE_OFFICIAL_ONLY:
+            raw_data["btc"] = coingecko_data.get_btc_spot_coinbase(timeframe)
+            if raw_data["btc"].get("error"):
+                raw_data["btc"] = coingecko_data.get_btc_spot_kraken(timeframe)
+        else:
+            raw_data["btc"] = coingecko_data.get_btc_price(timeframe)
         logger.info(f"  BTC: ${raw_data['btc'].get('price_usd', 'ERROR')}")
     except Exception as e:
         logger.error(f"  BTC fetch FAILED: {e}")
@@ -284,20 +414,32 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         return True
 
     if not _btc_payload_ok(raw_data.get("btc") or {}):
-        logger.warning("  BTC: CoinGecko missing or invalid; trying Yahoo BTC-USD fallback")
-        yb = yahoo_data.get_btc_spot_yahoo(timeframe)
-        if _btc_payload_ok(yb):
-            raw_data["btc"] = yb
-            logger.info(f"  BTC (Yahoo): ${raw_data['btc'].get('price_usd', 'ERROR')}")
+        logger.warning("  BTC: CoinGecko missing or invalid; trying Coinbase Exchange fallback")
+        cb = coingecko_data.get_btc_spot_coinbase(timeframe)
+        if _btc_payload_ok(cb):
+            raw_data["btc"] = cb
+            logger.info(f"  BTC (Coinbase): ${raw_data['btc'].get('price_usd', 'ERROR')}")
         elif not _btc_payload_ok(raw_data.get("btc") or {}):
-            logger.warning("  BTC: Yahoo failed; trying Binance public API")
-            bn = coingecko_data.get_btc_spot_binance(timeframe)
-            if _btc_payload_ok(bn):
-                raw_data["btc"] = bn
-                logger.info(f"  BTC (Binance): ${raw_data['btc'].get('price_usd', 'ERROR')}")
-            else:
-                logger.error(f"  BTC: Binance fallback also failed: {bn}")
-                raw_data["btc"] = raw_data.get("btc") or yb or bn or {"error": "btc_unavailable"}
+            logger.warning("  BTC: Coinbase failed; trying Kraken public API")
+            kr = coingecko_data.get_btc_spot_kraken(timeframe)
+            if _btc_payload_ok(kr):
+                raw_data["btc"] = kr
+                logger.info(f"  BTC (Kraken): ${raw_data['btc'].get('price_usd', 'ERROR')}")
+            elif not _btc_payload_ok(raw_data.get("btc") or {}):
+                logger.warning("  BTC: Kraken failed; trying Yahoo BTC-USD fallback")
+                yb = yahoo_data.get_btc_spot_yahoo(timeframe)
+                if _btc_payload_ok(yb):
+                    raw_data["btc"] = yb
+                    logger.info(f"  BTC (Yahoo): ${raw_data['btc'].get('price_usd', 'ERROR')}")
+                elif not _btc_payload_ok(raw_data.get("btc") or {}):
+                    logger.warning("  BTC: Yahoo failed; trying Binance public API")
+                    bn = coingecko_data.get_btc_spot_binance(timeframe)
+                    if _btc_payload_ok(bn):
+                        raw_data["btc"] = bn
+                        logger.info(f"  BTC (Binance): ${raw_data['btc'].get('price_usd', 'ERROR')}")
+                    else:
+                        logger.error(f"  BTC: Binance fallback also failed: {bn}")
+                        raw_data["btc"] = raw_data.get("btc") or cb or kr or yb or bn or {"error": "btc_unavailable"}
     
     # Fed tone analysis — LLM-powered with keyword fallback
     try:
@@ -328,8 +470,17 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     # Jobs data (Unemployment, NFP, Initial Claims)
     try:
         raw_data["jobs"] = fred_data.get_jobs_data(timeframe)
-        logger.info(f"  Unemployment: {raw_data['jobs'].get('unemployment_rate', 'ERROR')}% "
-                    f"(trend: {raw_data['jobs'].get('unemployment_trend', 'N/A')})")
+        unemployment_rate = raw_data["jobs"].get("unemployment_rate", "ERROR")
+        unemployment_trend = raw_data["jobs"].get("unemployment_trend", "N/A")
+        if timeframe == "month" and raw_data["jobs"].get("unemployment_trend_3m"):
+            logger.info(
+                "  Unemployment: %s%% (1m trend: %s, 3m trend: %s)",
+                unemployment_rate,
+                unemployment_trend,
+                raw_data["jobs"].get("unemployment_trend_3m"),
+            )
+        else:
+            logger.info("  Unemployment: %s%% (trend: %s)", unemployment_rate, unemployment_trend)
     except Exception as e:
         logger.error(f"  Jobs data fetch FAILED: {e}")
         raw_data["jobs"] = {"error": str(e)}
@@ -390,11 +541,9 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     except Exception as e:
         logger.error(f"  BTC dominance fetch FAILED: {e}")
         raw_data["btc_dominance"] = {
-            "btc_dominance": 52.0,
-            "date": datetime.now().strftime("%Y-%m-%d"),
             "timeframe": timeframe,
-            "_fallback": True,
-            "source": "exception_neutral",
+            "error": str(e),
+            "btc_dominance": None,
         }
 
     try:
@@ -403,13 +552,11 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     except Exception as e:
         logger.error(f"  Stablecoin data fetch FAILED: {e}")
         raw_data["stablecoins"] = {
-            "usdt_dominance": 4.25,
-            "usdc_dominance": 4.25,
-            "total_stablecoin_dominance": 8.5,
-            "date": datetime.now().strftime("%Y-%m-%d"),
             "timeframe": timeframe,
-            "_fallback": True,
-            "source": "exception_neutral",
+            "error": str(e),
+            "usdt_dominance": None,
+            "usdc_dominance": None,
+            "total_stablecoin_dominance": None,
         }
 
     try:
@@ -462,10 +609,14 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         raw_data["breakeven_10y"] = {"error": str(e)}
 
     _stamp_batch_fetched_at(raw_data)
+    strict_live_warnings = _apply_strict_live_official_policy(raw_data, timeframe)
 
     # ── STEP 2: Validate data freshness ────────────────────────────────
     logger.info("[2/9] Validating data freshness...")
     freshness_report = validate_data_freshness(raw_data)
+    for msg in strict_live_warnings:
+        if msg not in freshness_report.warnings:
+            freshness_report.warnings.append(msg)
     
     for w in freshness_report.warnings:
         logger.warning(f"  {w}")
@@ -475,12 +626,13 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     if not freshness_report.can_proceed:
         logger.error("ABORTING: Critical data is missing or stale. Cannot compute reliable verdict.")
         logger.error(f"Critical failures: {freshness_report.critical_failures}")
-        print("\nANALYSIS ABORTED - Critical data missing or stale.")
-        print("   Critical failures:")
-        for f in freshness_report.critical_failures:
-            print(f"     - {f}")
-        print("\n   Fix: Check API keys, internet connection, and data source availability.")
-        sys.exit(1)
+        raise RuntimeError(json.dumps({
+            "error": "analysis_failed",
+            "message": "Critical data missing or stale.",
+            "critical_failures": freshness_report.critical_failures,
+            "warnings": freshness_report.warnings,
+            "timeframe": timeframe,
+        }))
 
     # ── STEP 3: Compute numeric scores (deterministic, zero LLM) ──────
     logger.info("[3/9] Computing deterministic numeric scores...")
@@ -499,7 +651,7 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
             logger.warning("CPI mom_change is None in fetched data — scoring as flat (0.0 MoM)")
             cpi_change = 0.0
 
-    pce_change = raw_data["pce"].get("change", raw_data["pce"].get("mom_change", None))
+    pce_change = raw_data["pce"].get("mom_change", raw_data["pce"].get("change", None))
     oil_change = raw_data.get("oil", {}).get("change")  # WTI crude oil % change (FRED DCOILWTICO)
 
     inflation_score, inflation_reasoning = score_inflation(cpi_change, pce_change, oil_change)
@@ -665,6 +817,22 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
                     if i >= len(headlines):
                         break
                     original = headlines[i]
+                    # Keep fetch-time metadata attached even when classifier cache is reused.
+                    cl["_explicit_decision"] = bool(
+                        original.get("_explicit_decision", cl.get("_explicit_decision", False))
+                    )
+                    cl["_decision_type"] = original.get("_decision_type") or cl.get("_decision_type")
+                    cl["_priority"] = original.get("_priority", cl.get("_priority", "normal"))
+                    cl["_is_reuters"] = bool(original.get("_is_reuters", cl.get("_is_reuters", False)))
+                    if original.get("source"):
+                        cl["source"] = original.get("source")
+                        cl["_headline_source"] = original.get("source")
+                    try:
+                        cl["_authority_score"] = int(
+                            original.get("_authority_score", cl.get("_authority_score", 0)) or 0
+                        )
+                    except (TypeError, ValueError):
+                        cl["_authority_score"] = 0
                     # If fetcher or official scraper annotated explicit decision, boost
                     if original.get("_explicit_decision"):
                         dtype = original.get("_decision_type")
@@ -872,6 +1040,8 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "pmi_value": pmi_value,
         "pmi_status": raw_data.get("pmi", {}).get("pmi_status"),
         "pmi_trend": raw_data.get("pmi", {}).get("pmi_trend"),
+        "pmi_source": raw_data.get("pmi", {}).get("source"),
+        "pmi_proxy_note": raw_data.get("pmi", {}).get("_proxy_note"),
         "m2_trend": m2_trend,
         "m2_change": raw_data.get("m2", {}).get("m2_change"),
         "m2_yoy_change": raw_data.get("m2", {}).get("m2_yoy_change"),
@@ -1031,12 +1201,27 @@ if __name__ == "__main__":
         print(f"\nAnalysis completed successfully (timeframe: {timeframe})")
         print(f"Final Score: {result.get('final_score', 'N/A')}/100")
         print(f"Bias: {result.get('bias', 'N/A')}")
-    except SystemExit:
-        # Already handled in run_analysis
-        pass
+    except RuntimeError as e:
+        try:
+            payload = json.loads(str(e))
+        except Exception:
+            payload = None
+        if isinstance(payload, dict) and payload.get("error") == "analysis_failed":
+            print("\nANALYSIS ABORTED - Critical data missing or stale.")
+            print("   Critical failures:")
+            for f in payload.get("critical_failures", []):
+                print(f"     - {f}")
+            warnings = payload.get("warnings") or []
+            if warnings:
+                print("\n   Warnings:")
+                for w in warnings:
+                    print(f"     - {w}")
+            print("\n   Fix: Check API keys, internet connection, and data source availability.")
+            sys.exit(1)
+        logger.error(f"Unexpected runtime error: {e}")
+        print(f"\nAnalysis failed: {e}")
+        sys.exit(2)
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         print(f"\nAnalysis failed: {e}")
         sys.exit(2)
-
-

@@ -54,6 +54,7 @@ _analysis_state: Dict[str, Dict[str, Any]] = {
         "started_at": None,
         "last_result": None,
         "last_completed_at": None,
+        "last_error": None,
     }
     for tf in _VALID_TIMEFRAMES
 }
@@ -106,13 +107,26 @@ def _snapshot_is_fresh_enough(snapshot: Optional[Dict[str, Any]], ttl_seconds: i
 
 def _run_analysis_background(timeframe: str, fresh: bool = False) -> None:
     """Execute analysis in a background thread and cache the result."""
+    error_payload = None
     try:
         from run_analysis import run_analysis as _run
         result = _run(timeframe=timeframe, fresh=fresh)
-    except Exception:
+    except BaseException as e:
         import traceback
         traceback.print_exc()
         result = None
+        try:
+            parsed = json.loads(str(e))
+            if isinstance(parsed, dict):
+                error_payload = parsed
+        except Exception:
+            error_payload = None
+        if error_payload is None:
+            error_payload = {
+                "error": "analysis_failed",
+                "message": str(e) or "Analysis failed.",
+                "timeframe": timeframe,
+            }
     finally:
         with _analysis_lock:
             state = _analysis_state[timeframe]
@@ -121,6 +135,9 @@ def _run_analysis_background(timeframe: str, fresh: bool = False) -> None:
             if result is not None:
                 state["last_result"] = result
                 state["last_completed_at"] = time.time()
+                state["last_error"] = None
+            else:
+                state["last_error"] = error_payload
 
 
 def _analyze_with_guard(timeframe: str, fresh: bool = False) -> JSONResponse:
@@ -169,9 +186,15 @@ def _analyze_with_guard(timeframe: str, fresh: bool = False) -> JSONResponse:
                 }
                 return JSONResponse(content=persisted, status_code=200, headers=headers)
 
+        if not fresh and state.get("last_error") is not None:
+            err = dict(state["last_error"])
+            err.setdefault("timeframe", timeframe)
+            return JSONResponse(content=err, status_code=503)
+
         # Mark in-progress *before* checking for a stale snapshot to return
         state["in_progress"] = True
         state["started_at"] = now
+        state["last_error"] = None
 
     # Kick off the analysis in a background thread so we can respond quickly.
     thread = threading.Thread(
@@ -303,7 +326,7 @@ async def v2_analyze(
     Run the deterministic analysis pipeline with timeframe support.
     
     Args:
-        timeframe: Analysis timeframe - 'current', 'week', 'month', or 'year'
+        timeframe: Analysis timeframe - 'current', 'week', or 'month'
         fresh: If True, clear cached news/LLM intermediates before running.
                Live market prices are fetched fresh either way.
     
@@ -388,7 +411,7 @@ async def v2_analyze_timeframe(
     capture 'compare' as a timeframe path parameter.
 
     Args:
-        timeframe: Analysis timeframe - 'current', 'week', 'month', or 'year'
+        timeframe: Analysis timeframe - 'current', 'week', or 'month'
         fresh: If True, clear cached news/LLM intermediates before running.
     """
     if timeframe not in _VALID_TIMEFRAMES:

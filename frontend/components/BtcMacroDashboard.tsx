@@ -485,7 +485,7 @@ export default function BtcMacroDashboard() {
                   Refreshing...
                 </span>
                 <span className="px-2 py-1 rounded-full border border-amber-700/60 bg-amber-900/25 text-amber-300">
-                  Showing last snapshot while live analysis runs.
+                  Showing previous completed analysis while live analysis runs.
                 </span>
               </>
             ) : (
@@ -512,6 +512,17 @@ export default function BtcMacroDashboard() {
         {error && (
           <div className="bg-red-900/40 border border-red-700 text-red-300 text-sm px-4 py-2 rounded-lg">
             {error}
+          </div>
+        )}
+
+        {result?.data_freshness_info?.warnings?.length > 0 && (
+          <div className="bg-amber-950/40 border border-amber-700/60 text-amber-200 text-sm px-4 py-3 rounded-lg">
+            <div className="font-semibold mb-1">Live Data Warnings</div>
+            <div className="text-xs sm:text-sm space-y-1">
+              {result.data_freshness_info.warnings.map((warning, idx) => (
+                <div key={`${warning}-${idx}`}>{warning}</div>
+              ))}
+            </div>
           </div>
         )}
 
@@ -841,7 +852,13 @@ export default function BtcMacroDashboard() {
                   className={`bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 ${
                     result.pmi_value < 50 ? "text-red-400" : "text-green-400"
                   }`}
-                  title={result.pmi_value >= 50 ? "ISM Manufacturing PMI — expansion" : "ISM Manufacturing PMI — contraction"}
+                  title={
+                    result.pmi_proxy_note
+                      ? `${result.pmi_proxy_note} (${result.pmi_value >= 50 ? "expansion-like" : "contraction-like"})`
+                      : result.pmi_value >= 50
+                        ? "ISM Manufacturing PMI — expansion"
+                        : "ISM Manufacturing PMI — contraction"
+                  }
                 >
                   PMI <span className="font-medium">{result.pmi_value.toFixed(1)}</span>
                   <span className="ml-0.5"><TrendArrow trend={result.pmi_trend} /></span>
