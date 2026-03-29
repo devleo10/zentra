@@ -16,6 +16,14 @@ from typing import Dict, Optional, Literal, Tuple
 from dotenv import load_dotenv
 import logging
 
+try:
+    from . import trusted_market_apis
+except Exception:
+    try:
+        from data_fetchers import trusted_market_apis  # type: ignore
+    except Exception:
+        trusted_market_apis = None
+
 load_dotenv()
 
 logger = logging.getLogger("btc_macro.data_fetchers.fred")
@@ -27,6 +35,8 @@ ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY") or os.getenv("ALPHA_VAN
 ALPHAVANTAGE_URL = "https://www.alphavantage.co/query"
 TRADINGVIEW_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
 ISM_PMI_URL = "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports/pmi/"
+TRADINGECONOMICS_US_PMI_PAGE = "https://tradingeconomics.com/united-states/manufacturing-pmi"
+INVESTING_US_ISM_PMI_PAGE = "https://www.investing.com/economic-calendar/ism-manufacturing-pmi-173"
 EIA_API_KEY = os.getenv("EIA_API_KEY")
 EIA_V2_SERIES_URL = "https://api.eia.gov/v2/seriesid"
 EIA_V1_SERIES_URL = "https://api.eia.gov/series/"
@@ -1228,6 +1238,51 @@ def get_pmi_data(timeframe: str = "current") -> Dict:
             )
             return result
 
+    if trusted_market_apis is not None:
+        te = trusted_market_apis.get_tradingeconomics_us_manufacturing_pmi()
+        if te:
+            result = _pmi_result(
+                te["pmi_value"],
+                te.get("date") or datetime.now().strftime("%Y-%m-%d"),
+                te.get("source") or "TradingEconomics:PMI",
+                timeframe,
+                prev_value=te.get("previous_value"),
+            )
+            logger.info(
+                "PMI fallback (TradingEconomics): %.1f (%s, trend=%s, date=%s)",
+                result["pmi_value"],
+                result["pmi_status"],
+                result["pmi_trend"],
+                result["latest_date"],
+            )
+            return result
+
+        eod = trusted_market_apis.get_eodhd_us_manufacturing_pmi()
+        if eod:
+            result = _pmi_result(
+                eod["pmi_value"],
+                eod.get("date") or datetime.now().strftime("%Y-%m-%d"),
+                eod.get("source") or "EODHD:PMI",
+                timeframe,
+                prev_value=eod.get("previous_value"),
+            )
+            logger.info(
+                "PMI fallback (EODHD): %.1f (%s, trend=%s, date=%s)",
+                result["pmi_value"],
+                result["pmi_status"],
+                result["pmi_trend"],
+                result["latest_date"],
+            )
+            return result
+
+    te_web = _get_pmi_from_tradingeconomics_page(timeframe)
+    if te_web:
+        return te_web
+
+    inv = _get_pmi_from_investing_page(timeframe)
+    if inv:
+        return inv
+
     alpha = _get_pmi_from_alphavantage(timeframe)
     if alpha:
         return alpha
@@ -1240,7 +1295,9 @@ def get_pmi_data(timeframe: str = "current") -> Dict:
     if ism:
         return ism
 
-    logger.warning("PMI unavailable from FRED, Alpha Vantage, TradingView, and ISM scrape")
+    logger.warning(
+        "PMI unavailable from FRED, TradingEconomics API/page, EODHD, Investing, Alpha Vantage, TradingView, and ISM scrape"
+    )
     return {
         "error": "ISM Manufacturing PMI unavailable from configured sources",
         "source": "unavailable",
@@ -1293,6 +1350,112 @@ def _pmi_result(
 def _snapshot_pmi_previous() -> Optional[float]:
     snap_val = _get_last_snapshot_field("pmi_value")
     return _safe_float(snap_val)
+
+
+def _get_pmi_from_tradingeconomics_page(timeframe: str) -> Optional[Dict]:
+    """Free fallback from TradingEconomics public PMI page metadata."""
+    try:
+        resp = get_with_retries(
+            TRADINGECONOMICS_US_PMI_PAGE,
+            timeout=20,
+            max_attempts=2,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        text = resp.text or ""
+        match = re.search(
+            r"Manufacturing PMI in the United States .*? to ([0-9]+\.[0-9]+) points in ([A-Za-z]+) from ([0-9]+\.[0-9]+) points in ([A-Za-z]+) of ([0-9]{4})",
+            text,
+            re.IGNORECASE,
+        )
+        if not match:
+            return None
+
+        latest_val = _safe_float(match.group(1))
+        prev_val = _safe_float(match.group(3))
+        month_name = str(match.group(2) or "").strip()
+        year_text = str(match.group(5) or "").strip()
+        if latest_val is None:
+            return None
+
+        latest_date = datetime.now().strftime("%Y-%m-%d")
+        try:
+            dt = datetime.strptime(f"{month_name} {year_text}", "%B %Y")
+            latest_date = dt.strftime("%Y-%m-01")
+        except Exception:
+            pass
+
+        result = _pmi_result(
+            latest_val,
+            latest_date,
+            "TradingEconomics:web",
+            timeframe,
+            prev_value=prev_val,
+        )
+        logger.info(
+            "PMI fallback (TradingEconomics page): %.1f (%s, trend=%s, date=%s)",
+            result["pmi_value"],
+            result["pmi_status"],
+            result["pmi_trend"],
+            result["latest_date"],
+        )
+        return result
+    except Exception as e:
+        logger.debug("TradingEconomics page PMI fallback failed: %s", e)
+        return None
+
+
+def _get_pmi_from_investing_page(timeframe: str) -> Optional[Dict]:
+    """Free fallback from Investing.com economic calendar event page."""
+    try:
+        resp = get_with_retries(
+            INVESTING_US_ISM_PMI_PAGE,
+            timeout=20,
+            max_attempts=2,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        text = resp.text or ""
+
+        actual_match = re.search(r'"latest_release"\s*:\s*\{\s*"actual"\s*:\s*([0-9]+\.[0-9]+)', text)
+        if not actual_match:
+            actual_match = re.search(r'"actual"\s*:\s*([0-9]+\.[0-9]+)', text)
+        if not actual_match:
+            return None
+
+        latest_val = _safe_float(actual_match.group(1))
+        if latest_val is None:
+            return None
+
+        prev_match = re.search(r'"latest_release"\s*:\s*\{[^\}]*"previous"\s*:\s*([0-9]+\.[0-9]+)', text)
+        prev_val = _safe_float(prev_match.group(1)) if prev_match else _snapshot_pmi_previous()
+
+        time_match = re.search(r'"latest_release"\s*:\s*\{[^\}]*"occurrence_time"\s*:\s*"([^"]+)"', text)
+        latest_date = datetime.now().strftime("%Y-%m-%d")
+        if time_match:
+            dt = pd.to_datetime(time_match.group(1), errors="coerce")
+            if pd.notna(dt):
+                latest_date = pd.Timestamp(dt).strftime("%Y-%m-%d")
+
+        result = _pmi_result(
+            latest_val,
+            latest_date,
+            "Investing:ISM_PMI_event_173",
+            timeframe,
+            prev_value=prev_val,
+        )
+        logger.info(
+            "PMI fallback (Investing page): %.1f (%s, trend=%s, date=%s)",
+            result["pmi_value"],
+            result["pmi_status"],
+            result["pmi_trend"],
+            result["latest_date"],
+        )
+        return result
+    except Exception as e:
+        logger.debug("Investing page PMI fallback failed: %s", e)
+        return None
 
 
 def _get_pmi_from_alphavantage(timeframe: str) -> Optional[Dict]:

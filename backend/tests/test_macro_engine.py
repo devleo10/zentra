@@ -123,6 +123,8 @@ def test_fed_balance_sheet_week_uses_calendar_anchor(monkeypatch):
 
 def test_pmi_requires_official_napm_series(monkeypatch):
     monkeypatch.setattr(fred_data, "get_fred_data", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(fred_data, "_get_pmi_from_tradingeconomics_page", lambda timeframe: None)
+    monkeypatch.setattr(fred_data, "_get_pmi_from_investing_page", lambda timeframe: None)
     monkeypatch.setattr(fred_data, "_get_pmi_from_alphavantage", lambda timeframe: None)
     monkeypatch.setattr(fred_data, "_get_pmi_from_tradingview", lambda timeframe: None)
     monkeypatch.setattr(fred_data, "_get_pmi_from_ism_scrape", lambda timeframe: None)
@@ -153,6 +155,8 @@ def test_pmi_week_uses_latest_official_monthly_print(monkeypatch):
 
 def test_pmi_uses_tradingview_fallback_when_official_series_missing(monkeypatch):
     monkeypatch.setattr(fred_data, "get_fred_data", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(fred_data, "_get_pmi_from_tradingeconomics_page", lambda timeframe: None)
+    monkeypatch.setattr(fred_data, "_get_pmi_from_investing_page", lambda timeframe: None)
     monkeypatch.setattr(fred_data, "_get_pmi_from_alphavantage", lambda timeframe: None)
     monkeypatch.setattr(
         fred_data,
@@ -191,8 +195,20 @@ def test_strict_mode_accepts_fmp_move_source():
     assert run_analysis._is_source_official("move_index", {"source": "FMP:^MOVE"}) is True
 
 
+def test_strict_mode_accepts_tradingeconomics_pmi_source():
+    assert run_analysis._is_source_official("pmi", {"source": "TradingEconomics:US:Manufacturing PMI"}) is True
+
+
+def test_strict_mode_accepts_investing_pmi_source():
+    assert run_analysis._is_source_official("pmi", {"source": "Investing:ISM_PMI_event_173"}) is True
+
+
 def test_strict_mode_accepts_eem_source():
     assert run_analysis._is_source_official("eem", {"source": "EEM"}) is True
+
+
+def test_strict_mode_accepts_cboe_tyvix_move_proxy_source():
+    assert run_analysis._is_source_official("move_index", {"source": "CBOE:TYVIX_proxy"}) is True
 
 
 def test_strict_mode_accepts_tradingeconomics_vix_source():

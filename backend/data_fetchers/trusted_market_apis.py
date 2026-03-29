@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, Optional, Sequence
 from urllib.parse import quote
@@ -53,6 +54,30 @@ def _date_from_epoch(value: Any) -> Optional[str]:
         return datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
     except Exception:
         return None
+
+
+def _date_from_any(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    # TradingEconomics can return /Date(1714502400000)/
+    ms_match = re.search(r"/Date\((\d+)\)/", raw)
+    if ms_match:
+        try:
+            return datetime.utcfromtimestamp(int(ms_match.group(1)) / 1000.0).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%Y-%m-%d")
+    except Exception:
+        pass
+
+    # Fallback for strings that begin with YYYY-MM-DD
+    return raw[:10]
 
 
 def _request_json(url: str, *, params: Optional[Dict[str, Any]] = None, timeout: int = _DEFAULT_TIMEOUT) -> Any:
@@ -296,5 +321,105 @@ def get_eodhd_quote_from_search(query: str, *, asset_type: str = "index") -> Opt
         except Exception as e:
             logger.debug("EODHD real-time fetch failed for %s: %s", symbol, e)
             continue
+
+    return None
+
+
+def get_tradingeconomics_us_manufacturing_pmi() -> Optional[Dict[str, Any]]:
+    cred = _te_credential()
+    if not cred:
+        return None
+
+    indicators = ("manufacturing pmi", "ism manufacturing pmi")
+    for indicator in indicators:
+        try:
+            rows = _request_json(
+                f"{_TE_BASE_URL}/historical/country/united%20states/indicator/{quote(indicator)}",
+                params={"c": cred},
+            )
+            if not isinstance(rows, list) or not rows:
+                continue
+
+            points = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                value = _safe_float(row.get("Value") or row.get("LatestValue") or row.get("Last"))
+                if value is None:
+                    continue
+                date = _date_from_any(row.get("DateTime") or row.get("Date") or row.get("LastUpdate"))
+                previous = _safe_float(row.get("PreviousValue") or row.get("Previous"))
+                points.append((date or "", value, previous))
+
+            if not points:
+                continue
+
+            points.sort(key=lambda x: x[0])
+            latest_date, latest_value, previous_value = points[-1]
+            return {
+                "pmi_value": latest_value,
+                "previous_value": previous_value,
+                "date": latest_date or datetime.utcnow().strftime("%Y-%m-%d"),
+                "source": "TradingEconomics:US:Manufacturing PMI",
+            }
+        except Exception as e:
+            logger.debug("TradingEconomics PMI failed for '%s': %s", indicator, e)
+            continue
+
+    return None
+
+
+def get_eodhd_us_manufacturing_pmi() -> Optional[Dict[str, Any]]:
+    token = _eodhd_token()
+    if not token:
+        return None
+
+    countries = ("USA", "US")
+    indicators = ("manufacturing_pmi", "ism_manufacturing_pmi", "pmi")
+    for country in countries:
+        for indicator in indicators:
+            try:
+                rows = _request_json(
+                    f"{_EODHD_BASE_URL}/macro-indicator/{country}",
+                    params={
+                        "api_token": token,
+                        "fmt": "json",
+                        "indicator": indicator,
+                        "limit": 20,
+                    },
+                )
+            except Exception as e:
+                logger.debug("EODHD PMI request failed (%s/%s): %s", country, indicator, e)
+                continue
+
+            entries = rows if isinstance(rows, list) else [rows] if isinstance(rows, dict) else []
+            points = []
+            for row in entries:
+                if not isinstance(row, dict):
+                    continue
+                value = _safe_float(
+                    row.get("Value")
+                    if row.get("Value") is not None
+                    else row.get("value")
+                    if row.get("value") is not None
+                    else row.get("close")
+                )
+                if value is None:
+                    continue
+                date = _date_from_any(row.get("Date") or row.get("date") or row.get("Timestamp"))
+                previous = _safe_float(row.get("Previous") or row.get("previous") or row.get("PreviousValue"))
+                points.append((date or "", value, previous))
+
+            if not points:
+                continue
+
+            points.sort(key=lambda x: x[0])
+            latest_date, latest_value, previous_value = points[-1]
+            return {
+                "pmi_value": latest_value,
+                "previous_value": previous_value,
+                "date": latest_date or datetime.utcnow().strftime("%Y-%m-%d"),
+                "source": f"EODHD:{country}:{indicator}",
+            }
 
     return None

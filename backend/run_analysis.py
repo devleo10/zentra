@@ -256,9 +256,19 @@ def _is_source_official(metric_key: str, blob: dict) -> bool:
         return False
     source = _source_text(blob)
     if metric_key == "pmi":
-        return source.startswith(("FRED", "AlphaVantage:ISM_MANUFACTURING", "TradingView:ECONOMICS:USPMI", "ISM:"))
+        return source.startswith(
+            (
+                "FRED",
+                "AlphaVantage:ISM_MANUFACTURING",
+                "TradingView:ECONOMICS:USPMI",
+                "ISM:",
+                "TradingEconomics:",
+                "EODHD:",
+                "Investing:",
+            )
+        )
     if metric_key == "move_index":
-        return source.startswith(("^MOVE", "MOVE", "TradingView:INDEX:MOVE", "FRED:BAMLH0A0HYM2", "FMP:", "EODHD:"))
+        return source.startswith(("^MOVE", "MOVE", "TradingView:INDEX:MOVE", "FRED:BAMLH0A0HYM2", "FMP:", "EODHD:", "CBOE:TYVIX"))
     if metric_key == "vix":
         return source.startswith(("^VIX", "VIX", "FRED:VIXCLS", "FMP:", "TradingEconomics:", "EODHD:"))
     if metric_key == "sp500":

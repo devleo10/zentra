@@ -44,6 +44,7 @@ STRICT_LIVE_OFFICIAL_ONLY = os.getenv("STRICT_LIVE_OFFICIAL_ONLY", "1").strip().
 ECB_API_BASE_URL = "https://data-api.ecb.europa.eu/service/data/EXR"
 LBMA_TODAY_URL = "https://prices.lbma.org.uk/json/today.json"
 TRADINGVIEW_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
+CBOE_TYVIX_CSV_URL = "https://cdn.cboe.com/api/global/us_indices/daily_prices/TYVIX_History.csv"
 
 
 def _safe_date_str(ts) -> str:
@@ -1596,6 +1597,59 @@ def _tradingview_scan_latest_close(ticker: str) -> Optional[float]:
         return None
 
 
+def _cboe_tyvix_move_proxy(timeframe: str) -> Optional[Dict[str, Any]]:
+    """Free Treasury-volatility proxy when direct MOVE is unavailable.
+
+    TYVIX tracks implied volatility on U.S. Treasury futures and is a practical
+    substitute signal for MOVE stress direction.
+    """
+    try:
+        resp = get_with_retries(CBOE_TYVIX_CSV_URL, timeout=20, max_attempts=2)
+        df = pd.read_csv(StringIO(resp.text))
+        if df.empty or "DATE" not in df.columns or "CLOSE" not in df.columns:
+            return None
+
+        d = pd.DataFrame(
+            {
+                "Close": pd.to_numeric(df["CLOSE"], errors="coerce"),
+            },
+            index=pd.to_datetime(df["DATE"], errors="coerce"),
+        ).dropna()
+        if d.empty:
+            return None
+
+        if len(d) > 1:
+            latest, comparison = _latest_and_comparison_for_timeframe(d, timeframe, default_days=1)
+        else:
+            latest = d.iloc[-1]
+            comparison = latest
+
+        current_price = float(latest["Close"])
+        comparison_price = float(comparison["Close"])
+        if not math.isfinite(current_price):
+            return None
+
+        change = ((current_price - comparison_price) / comparison_price) * 100 if comparison_price else 0.0
+        trend = "rising" if change > 0.05 else "falling" if change < -0.05 else "stable"
+
+        return {
+            "current_price": round(current_price, 2),
+            "date": _safe_date_str(latest.name),
+            "data_as_of": _safe_date_str(latest.name),
+            "comparison_date": _safe_date_str(comparison.name),
+            "change": round(change, 2),
+            "change_label": _change_label(timeframe),
+            "change_unit": "percent",
+            "trend": trend,
+            "timeframe": timeframe,
+            "source": "CBOE:TYVIX_proxy",
+            "_fallback": True,
+        }
+    except Exception as e:
+        logger.debug("CBOE TYVIX proxy fallback failed: %s", e)
+        return None
+
+
 def get_move_index_data(timeframe: str = "current") -> Dict:
     """ICE BofA MOVE Treasury volatility index (^MOVE)."""
     try:
@@ -1632,6 +1686,10 @@ def get_move_index_data(timeframe: str = "current") -> Dict:
                 "source": "TradingView:INDEX:MOVE",
                 "_fallback": True,
             }
+
+        tyvix_proxy = _cboe_tyvix_move_proxy(timeframe)
+        if tyvix_proxy:
+            return tyvix_proxy
 
         fred_proxy = _fred_series_market_fallback(
             "BAMLH0A0HYM2",
