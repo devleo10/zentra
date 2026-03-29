@@ -9,7 +9,7 @@ This is a full-stack AI agentic system that analyzes Bitcoin through macroeconom
 - **Backend**: Python FastAPI + LangChain + OpenAI GPT-4o
 - **Frontend**: Next.js 14 + TypeScript + Tailwind CSS
 - **Knowledge Base**: 3 ChatGPT conversations stored in ChromaDB
-- **Data Sources**: FRED API, Yahoo Finance, CoinGecko, NewsAPI
+- **Data Sources**: FRED API, Yahoo Finance, CoinGecko, NewsAPI, and optional trusted market APIs (FMP, EODHD, TradingEconomics)
 
 ## Prerequisites
 
@@ -19,6 +19,9 @@ This is a full-stack AI agentic system that analyzes Bitcoin through macroeconom
   - OpenAI API key (required)
   - FRED API key (free)
   - NewsAPI key (free tier)
+  - FMP API key (optional trusted market fallback)
+  - EODHD API token (optional trusted market fallback)
+  - TradingEconomics credential (optional trusted market fallback; usually `user:password`)
 
 ## Quick Start
 

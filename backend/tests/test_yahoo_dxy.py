@@ -55,6 +55,7 @@ def test_dxy_no_tickers_uses_snapshot(monkeypatch):
     sys.modules["storage.db"] = types.SimpleNamespace(get_latest_snapshots=fake_get_latest_snapshots)
 
     # Ensure fallback is enabled and age threshold generous
+    yahoo.STRICT_LIVE_OFFICIAL_ONLY = False
     yahoo.USE_LAST_SNAPSHOT_FOR_FALLBACK = True
     yahoo.FALLBACK_MAX_SNAPSHOT_AGE_HOURS = 48
 
@@ -88,6 +89,7 @@ def test_dxy_validation_marks_suspect_keeps_primary():
         return FakeTicker(sym, data_map)
 
     yahoo.yf = types.SimpleNamespace(Ticker=fake_ticker_ctor)
+    yahoo.STRICT_LIVE_OFFICIAL_ONLY = False
 
     # Ensure tolerance is small so validation fails
     yahoo.DXY_VALIDATION_TOLERANCE_PCT = 0.05

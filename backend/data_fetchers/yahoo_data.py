@@ -11,7 +11,6 @@ import logging
 import math
 import time
 import os
-import re
 from io import StringIO
 import yfinance as yf
 import pandas as pd
@@ -21,6 +20,11 @@ from typing import Any, Dict, Optional, Tuple
 import json
 from pathlib import Path
 from utils.http_retry import get_with_retries
+
+try:
+    from . import trusted_market_apis
+except Exception:
+    trusted_market_apis = None
 
 logger = logging.getLogger("btc_macro.data_fetchers.yahoo")
 
@@ -40,8 +44,6 @@ STRICT_LIVE_OFFICIAL_ONLY = os.getenv("STRICT_LIVE_OFFICIAL_ONLY", "1").strip().
 ECB_API_BASE_URL = "https://data-api.ecb.europa.eu/service/data/EXR"
 LBMA_TODAY_URL = "https://prices.lbma.org.uk/json/today.json"
 TRADINGVIEW_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
-FARSIDE_BTC_ETF_URL = "https://farside.co.uk/?p=997"
-FARSIDE_BTC_ETF_WP_URL = "https://farside.co.uk/wp-json/wp/v2/posts"
 
 
 def _safe_date_str(ts) -> str:
@@ -830,6 +832,10 @@ def get_vix_data(timeframe: str = "current") -> Dict:
     """Get VIX (Volatility Index) data with timeframe support"""
     try:
         if STRICT_LIVE_OFFICIAL_ONLY:
+            trusted = _trusted_vix_fallback(timeframe)
+            if trusted:
+                return trusted
+
             fred_fallback = _fred_series_market_fallback(
                 "VIXCLS",
                 timeframe,
@@ -845,6 +851,10 @@ def get_vix_data(timeframe: str = "current") -> Dict:
 
         symbol, hist = _select_same_scale_yahoo_history(("^VIX", "VIX"), timeframe, period="1mo", attempts=2)
         if hist.empty:
+            trusted = _trusted_vix_fallback(timeframe)
+            if trusted:
+                return trusted
+
             fred_fallback = _fred_series_market_fallback(
                 "VIXCLS",
                 timeframe,
@@ -910,6 +920,10 @@ def get_sp500_data(timeframe: str = "current") -> Dict:
     """Get S&P 500 data with timeframe support"""
     try:
         if STRICT_LIVE_OFFICIAL_ONLY:
+            trusted = _trusted_sp500_fallback(timeframe)
+            if trusted:
+                return trusted
+
             fred_fallback = _fred_series_market_fallback(
                 "SP500",
                 timeframe,
@@ -923,6 +937,10 @@ def get_sp500_data(timeframe: str = "current") -> Dict:
 
         symbol, hist = _select_same_scale_yahoo_history(("^GSPC",), timeframe)
         if hist.empty:
+            trusted = _trusted_sp500_fallback(timeframe)
+            if trusted:
+                return trusted
+
             fred_fallback = _fred_series_market_fallback(
                 "SP500",
                 timeframe,
@@ -1296,6 +1314,258 @@ def _yahoo_pct_change_series(symbol: str, timeframe: str) -> Dict:
     }
 
 
+def _trusted_quote_metric_payload(
+    quote: Dict[str, Any],
+    *,
+    timeframe: str,
+    response_key: str = "current_price",
+    change_unit: str = "percent",
+    baseline_snapshot_field: Optional[str] = None,
+    trend_up: str = "rising",
+    trend_down: str = "falling",
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(quote, dict):
+        return None
+
+    value = quote.get("price")
+    try:
+        current_value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(current_value):
+        return None
+
+    comparison_date = None
+    change = None
+    if baseline_snapshot_field:
+        baseline = _fresh_snapshot_value(baseline_snapshot_field)
+        if baseline and baseline[0] not in (None, 0):
+            try:
+                baseline_val = float(baseline[0])
+                if baseline_val != 0:
+                    if change_unit == "points":
+                        change = current_value - baseline_val
+                    else:
+                        change = ((current_value - baseline_val) / baseline_val) * 100.0
+                    comparison_date = str(baseline[1])[:10] if baseline[1] else None
+            except (TypeError, ValueError):
+                change = None
+
+    if change is None:
+        raw_change = quote.get("change_points") if change_unit == "points" else quote.get("change_percent")
+        try:
+            change = float(raw_change) if raw_change is not None else 0.0
+        except (TypeError, ValueError):
+            change = 0.0
+
+    threshold = 0.1 if change_unit == "points" else 0.05
+    trend = trend_up if change > threshold else trend_down if change < -threshold else "stable"
+
+    as_of = str(quote.get("date") or datetime.now().strftime("%Y-%m-%d"))[:10]
+    return {
+        response_key: round(current_value, 2),
+        "date": as_of,
+        "data_as_of": as_of,
+        "comparison_date": comparison_date,
+        "change": round(change, 2),
+        "change_label": _change_label(timeframe),
+        "change_unit": change_unit,
+        "trend": trend,
+        "timeframe": timeframe,
+        "source": str(quote.get("source") or "trusted_provider"),
+        "_fallback": True,
+    }
+
+
+def _trusted_move_fallback(timeframe: str) -> Optional[Dict[str, Any]]:
+    if trusted_market_apis is None:
+        return None
+
+    for symbol in ("^MOVE", "MOVE"):
+        quote = trusted_market_apis.get_fmp_quote(symbol)
+        out = _trusted_quote_metric_payload(
+            quote or {},
+            timeframe=timeframe,
+            response_key="current_price",
+            change_unit="percent",
+            baseline_snapshot_field="move_index_value",
+        )
+        if out:
+            return out
+
+    eod_quote = trusted_market_apis.get_eodhd_quote_from_search("MOVE", asset_type="index")
+    out = _trusted_quote_metric_payload(
+        eod_quote or {},
+        timeframe=timeframe,
+        response_key="current_price",
+        change_unit="percent",
+        baseline_snapshot_field="move_index_value",
+    )
+    return out
+
+
+def _trusted_vix_fallback(timeframe: str) -> Optional[Dict[str, Any]]:
+    if trusted_market_apis is None:
+        return None
+
+    for symbol in ("^VIX", "VIX"):
+        quote = trusted_market_apis.get_fmp_quote(symbol)
+        out = _trusted_quote_metric_payload(
+            quote or {},
+            timeframe=timeframe,
+            response_key="current_value",
+            change_unit="points",
+            baseline_snapshot_field="vix",
+        )
+        if out:
+            current_vix = float(out["current_value"])
+            out["level"] = "high" if current_vix > 20 else "moderate" if current_vix > 15 else "low"
+            return out
+
+    te_quote = trusted_market_apis.get_tradingeconomics_quote_from_search(
+        "vix",
+        preferred_symbol="VIX:IND",
+        preferred_ticker="VIX",
+    )
+    out = _trusted_quote_metric_payload(
+        te_quote or {},
+        timeframe=timeframe,
+        response_key="current_value",
+        change_unit="points",
+        baseline_snapshot_field="vix",
+    )
+    if out:
+        current_vix = float(out["current_value"])
+        out["level"] = "high" if current_vix > 20 else "moderate" if current_vix > 15 else "low"
+        return out
+
+    eod_quote = trusted_market_apis.get_eodhd_quote_from_search("VIX", asset_type="index")
+    out = _trusted_quote_metric_payload(
+        eod_quote or {},
+        timeframe=timeframe,
+        response_key="current_value",
+        change_unit="points",
+        baseline_snapshot_field="vix",
+    )
+    if out:
+        current_vix = float(out["current_value"])
+        out["level"] = "high" if current_vix > 20 else "moderate" if current_vix > 15 else "low"
+    return out
+
+
+def _trusted_sp500_fallback(timeframe: str) -> Optional[Dict[str, Any]]:
+    if trusted_market_apis is None:
+        return None
+
+    quote = trusted_market_apis.get_fmp_quote("^GSPC")
+    out = _trusted_quote_metric_payload(
+        quote or {},
+        timeframe=timeframe,
+        response_key="current_price",
+        change_unit="percent",
+        baseline_snapshot_field="sp500_price",
+    )
+    if out:
+        return out
+
+    te_quote = trusted_market_apis.get_tradingeconomics_quote_from_search(
+        "s&p 500",
+        preferred_symbol="SPX:IND",
+    )
+    out = _trusted_quote_metric_payload(
+        te_quote or {},
+        timeframe=timeframe,
+        response_key="current_price",
+        change_unit="percent",
+        baseline_snapshot_field="sp500_price",
+    )
+    if out:
+        return out
+
+    eod_quote = trusted_market_apis.get_eodhd_quote_from_search("SPX", asset_type="index")
+    out = _trusted_quote_metric_payload(
+        eod_quote or {},
+        timeframe=timeframe,
+        response_key="current_price",
+        change_unit="percent",
+        baseline_snapshot_field="sp500_price",
+    )
+    return out
+
+
+def _trusted_emerging_markets_fallback(timeframe: str) -> Optional[Dict[str, Any]]:
+    if trusted_market_apis is None:
+        return None
+
+    for symbol in ("EEM", "VWO"):
+        quote = trusted_market_apis.get_fmp_quote(symbol)
+        out = _trusted_quote_metric_payload(
+            quote or {},
+            timeframe=timeframe,
+            response_key="current_price",
+            change_unit="percent",
+            baseline_snapshot_field="eem_price",
+        )
+        if out:
+            return out
+
+    for query in ("EEM", "VWO"):
+        eod_quote = trusted_market_apis.get_eodhd_quote_from_search(query, asset_type="etf")
+        out = _trusted_quote_metric_payload(
+            eod_quote or {},
+            timeframe=timeframe,
+            response_key="current_price",
+            change_unit="percent",
+            baseline_snapshot_field="eem_price",
+        )
+        if out:
+            return out
+
+    return None
+
+
+def _trusted_btc_etf_volume(etf_tickers: Tuple[str, ...], timeframe: str) -> Optional[Dict[str, Any]]:
+    if trusted_market_apis is None:
+        return None
+
+    quotes = trusted_market_apis.get_fmp_batch_quotes(etf_tickers)
+    if not quotes:
+        return None
+
+    total_volume = 0
+    sources = []
+    latest_date = None
+    for sym in etf_tickers:
+        row = quotes.get(sym.upper())
+        if not isinstance(row, dict):
+            continue
+        volume = row.get("volume")
+        if volume is None:
+            continue
+        try:
+            total_volume += int(volume)
+        except (TypeError, ValueError):
+            continue
+        sources.append(sym)
+        if latest_date is None:
+            date_val = row.get("date")
+            latest_date = str(date_val)[:10] if date_val else None
+
+    if not sources:
+        return None
+
+    level = "high" if total_volume > 80_000_000 else "moderate" if total_volume > 30_000_000 else "low"
+    return {
+        "total_volume": total_volume,
+        "level": level,
+        "etfs_tracked": sources,
+        "date": latest_date or datetime.now().strftime("%Y-%m-%d"),
+        "timeframe": timeframe,
+        "source": "FMP:batch-quote",
+        "_fallback": True,
+    }
+
+
 def _tradingview_scan_latest_close(ticker: str) -> Optional[float]:
     payload = {
         "symbols": {
@@ -1326,75 +1596,13 @@ def _tradingview_scan_latest_close(ticker: str) -> Optional[float]:
         return None
 
 
-def _strip_html(text: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text or "")).strip()
-
-
-def _farside_btc_etf_flow() -> Optional[Dict[str, Any]]:
-    def _parse_flow_blob(blob: str) -> Optional[Tuple[float, Optional[str]]]:
-        clean = _strip_html(blob)
-        if not clean:
-            return None
-        date_match = re.search(
-            r"(\b\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}\b|\b[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}\b)",
-            clean,
-        )
-        flow_match = re.search(
-            r"(?:Net\s*flow|Netflow|Total)\D{0,20}([+-]?\d+(?:\.\d+)?)",
-            clean,
-            re.IGNORECASE,
-        )
-        if not flow_match:
-            return None
-        try:
-            flow_musd = float(flow_match.group(1))
-        except (TypeError, ValueError):
-            return None
-        flow_date = date_match.group(1) if date_match else None
-        return flow_musd, flow_date
-
-    try:
-        html = get_with_retries(FARSIDE_BTC_ETF_URL, timeout=20, max_attempts=2).text
-        parsed = _parse_flow_blob(html)
-        if parsed:
-            flow_musd, flow_date = parsed
-            return {
-                "net_flow_musd": round(flow_musd, 2),
-                "flow_date": flow_date,
-                "flow_source": "Farside:?p=997",
-            }
-    except Exception as e:
-        logger.debug("Farside HTML flow parse failed: %s", e)
-
-    try:
-        wp = get_with_retries(
-            FARSIDE_BTC_ETF_WP_URL,
-            params={"search": "bitcoin etf", "per_page": 5},
-            timeout=20,
-            max_attempts=2,
-        ).json()
-        posts = wp if isinstance(wp, list) else []
-        for post in posts:
-            if not isinstance(post, dict):
-                continue
-            rendered = ((post.get("content") or {}).get("rendered") or "")
-            parsed = _parse_flow_blob(rendered)
-            if parsed:
-                flow_musd, flow_date = parsed
-                return {
-                    "net_flow_musd": round(flow_musd, 2),
-                    "flow_date": flow_date,
-                    "flow_source": "Farside:wp-json",
-                }
-    except Exception as e:
-        logger.debug("Farside WP JSON flow parse failed: %s", e)
-
-    return None
-
-
 def get_move_index_data(timeframe: str = "current") -> Dict:
     """ICE BofA MOVE Treasury volatility index (^MOVE)."""
     try:
+        trusted = _trusted_move_fallback(timeframe)
+        if trusted:
+            return trusted
+
         for symbol in ["^MOVE", "MOVE"]:
             try:
                 out = _yahoo_pct_change_series(symbol, timeframe)
@@ -1450,18 +1658,27 @@ def get_emerging_markets_data(timeframe: str = "current") -> Dict:
             out = _yahoo_pct_change_series(symbol, timeframe)
             if "error" not in out:
                 return out
+
+        trusted = _trusted_emerging_markets_fallback(timeframe)
+        if trusted:
+            return trusted
+
         return {"error": "No EEM data available", "timeframe": timeframe}
     except Exception as e:
         return {"error": f"Emerging markets fetch error: {str(e)}", "timeframe": timeframe}
 
 
 def get_btc_etf_volume(timeframe: str = "current") -> Dict:
-    """Get aggregate BTC spot ETF daily volume as a proxy for institutional flows."""
-    etf_tickers = ["IBIT", "FBTC", "GBTC", "ARKB", "BITB"]
+    """Get aggregate BTC spot ETF daily volume."""
+    etf_tickers = ("IBIT", "FBTC", "GBTC", "ARKB", "BITB")
     total_volume: Optional[int] = 0
     sources = []
     latest_date = None
     try:
+        trusted = _trusted_btc_etf_volume(etf_tickers, timeframe)
+        if trusted:
+            return trusted
+
         period = TIMEFRAME_PERIODS.get(timeframe, "1mo")
         for sym in etf_tickers:
             try:
@@ -1475,46 +1692,21 @@ def get_btc_etf_volume(timeframe: str = "current") -> Dict:
             except Exception:
                 continue
 
-        flow_info = _farside_btc_etf_flow()
-        flow_musd = flow_info.get("net_flow_musd") if flow_info else None
-        flow_date = flow_info.get("flow_date") if flow_info else None
-        flow_source = flow_info.get("flow_source") if flow_info else None
-
         if not sources:
             total_volume = None
 
-        if total_volume is None and flow_musd is None:
+        if total_volume is None:
             return {"error": "No BTC ETF data available", "timeframe": timeframe}
 
-        if total_volume is not None:
-            level = "high" if total_volume > 80_000_000 else "moderate" if total_volume > 30_000_000 else "low"
-        elif flow_musd is not None:
-            level = "high" if flow_musd >= 300 else "low" if flow_musd <= -150 else "moderate"
-        else:
-            level = "moderate"
-
-        if flow_musd is not None:
-            if flow_musd >= 500:
-                level = "high"
-            elif flow_musd <= -250 and level == "moderate":
-                level = "low"
-
-        source = "Yahoo Finance"
-        if flow_source and sources:
-            source = f"Yahoo Finance + {flow_source}"
-        elif flow_source:
-            source = flow_source
+        level = "high" if total_volume > 80_000_000 else "moderate" if total_volume > 30_000_000 else "low"
 
         return {
             "total_volume": total_volume,
-            "net_flow_musd": flow_musd,
-            "flow_date": flow_date,
-            "flow_source": flow_source,
             "level": level,
             "etfs_tracked": sources,
             "date": latest_date or datetime.now().strftime("%Y-%m-%d"),
             "timeframe": timeframe,
-            "source": source,
+            "source": "Yahoo Finance",
         }
     except Exception as e:
         return {"error": f"BTC ETF volume fetch error: {str(e)}", "timeframe": timeframe}

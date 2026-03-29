@@ -21,6 +21,9 @@ FRED_API_KEY=your_fred_api_key_here
 NEWS_API_KEY=your_newsapi_key_here
 ALPHAVANTAGE_API_KEY=your_alphavantage_api_key_here
 FINNHUB_API_KEY=your_finnhub_api_key_here
+FMP_API_KEY=your_fmp_api_key_here
+EODHD_API_TOKEN=your_eodhd_api_token_here
+TRADINGECONOMICS_API_KEY=your_te_user_colon_password
 BACKEND_PORT=8000
 CORS_ORIGINS=http://localhost:3000
 ```
@@ -31,6 +34,9 @@ CORS_ORIGINS=http://localhost:3000
 - **NewsAPI**: Free tier available. Get from https://newsapi.org. When set, headlines are also fetched from **Reuters**, **Financial Times**, and **Stratfor** (via the `domains` parameter). Stratfor may return no results if not indexed by NewsAPI.
 - **Alpha Vantage** (`ALPHAVANTAGE_API_KEY`): Optional. Used for ISM/PMI fallback and NEWS_SENTIMENT fallback.
 - **Finnhub** (`FINNHUB_API_KEY`): Optional. Used for macro headline fallback.
+- **FMP** (`FMP_API_KEY`): Optional. Trusted market fallback for MOVE, VIX, S&P 500, EEM, BTC ETF volume.
+- **EODHD** (`EODHD_API_TOKEN`): Optional. Trusted market fallback for MOVE, VIX, S&P 500, EEM.
+- **TradingEconomics** (`TRADINGECONOMICS_API_KEY`): Optional. Trusted market fallback for VIX and S&P 500. Format is usually `user:password`; if omitted the app uses guest mode where available.
 
 **Optional env (OpenAI):**
 - `OPENAI_BASE_URL` — override API base URL (e.g. for proxies).

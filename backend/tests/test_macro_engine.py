@@ -187,8 +187,20 @@ def test_strict_mode_accepts_tradingview_move_source():
     assert run_analysis._is_source_official("move_index", {"source": "TradingView:INDEX:MOVE"}) is True
 
 
+def test_strict_mode_accepts_fmp_move_source():
+    assert run_analysis._is_source_official("move_index", {"source": "FMP:^MOVE"}) is True
+
+
 def test_strict_mode_accepts_eem_source():
     assert run_analysis._is_source_official("eem", {"source": "EEM"}) is True
+
+
+def test_strict_mode_accepts_tradingeconomics_vix_source():
+    assert run_analysis._is_source_official("vix", {"source": "TradingEconomics:VIX:IND"}) is True
+
+
+def test_strict_mode_accepts_fmp_btc_etf_source():
+    assert run_analysis._is_source_official("btc_etf", {"source": "FMP:batch-quote"}) is True
 
 
 def test_score_economy_marks_missing_inputs_excluded_in_reasoning():

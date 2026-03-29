@@ -135,6 +135,21 @@ def _safe_log_text(text: str) -> str:
     return str(text).encode("ascii", errors="replace").decode("ascii")
 
 
+def _log_trusted_provider_key_status() -> None:
+    """Log trusted market provider credential availability without leaking values."""
+    fmp_set = bool((os.getenv("FMP_API_KEY") or "").strip())
+    eodhd_set = bool((os.getenv("EODHD_API_TOKEN") or "").strip())
+    te_raw = (os.getenv("TRADINGECONOMICS_API_KEY") or "").strip()
+    te_mode = "set" if te_raw else "guest"
+
+    logger.info(
+        "Trusted API credentials: FMP=%s EODHD=%s TradingEconomics=%s",
+        "set" if fmp_set else "missing",
+        "set" if eodhd_set else "missing",
+        te_mode,
+    )
+
+
 def _compute_geopolitics_risk(classified_headlines: list) -> str:
     """Derive geopolitics risk level from classified headlines."""
     geo_count = 0
@@ -243,15 +258,19 @@ def _is_source_official(metric_key: str, blob: dict) -> bool:
     if metric_key == "pmi":
         return source.startswith(("FRED", "AlphaVantage:ISM_MANUFACTURING", "TradingView:ECONOMICS:USPMI", "ISM:"))
     if metric_key == "move_index":
-        return source.startswith(("^MOVE", "MOVE", "TradingView:INDEX:MOVE", "FRED:BAMLH0A0HYM2"))
+        return source.startswith(("^MOVE", "MOVE", "TradingView:INDEX:MOVE", "FRED:BAMLH0A0HYM2", "FMP:", "EODHD:"))
+    if metric_key == "vix":
+        return source.startswith(("^VIX", "VIX", "FRED:VIXCLS", "FMP:", "TradingEconomics:", "EODHD:"))
+    if metric_key == "sp500":
+        return source.startswith(("^GSPC", "FRED:SP500", "FMP:", "TradingEconomics:", "EODHD:"))
     if metric_key == "eem":
-        return source in {"EEM", "VWO"}
+        return source in {"EEM", "VWO"} or source.startswith(("FMP:", "EODHD:"))
     if metric_key == "btc_dominance":
         return source.startswith(("CoinGecko", "CoinLore"))
     if metric_key == "stablecoins":
         return source.startswith(("CoinGecko", "CoinLore"))
     if metric_key == "btc_etf":
-        return source.startswith(("Yahoo Finance", "Farside")) or "Farside" in source
+        return source.startswith(("Yahoo Finance", "FMP:"))
     if metric_key == "dxy":
         return source.startswith(("ECB:", "Federal Reserve", "FRED:DTWEXBGS"))
     if metric_key == "dxy_structure":
@@ -325,6 +344,7 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     logger.info("=" * 70)
     logger.info(f"BTC MACRO ANALYSIS - {timestamp} (timeframe: {timeframe})")
     logger.info("=" * 70)
+    _log_trusted_provider_key_status()
 
     # ── STEP 1: Fetch all numeric data ─────────────────────────────────
     logger.info("[1/9] Fetching numeric macro data...")
@@ -1190,8 +1210,6 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "btc_ma200": raw_data.get("btc_technicals", {}).get("ma200"),
         "btc_realized_vol_30d": raw_data.get("btc_technicals", {}).get("realized_vol_30d"),
         "btc_etf_volume": raw_data.get("btc_etf", {}).get("total_volume"),
-        "btc_etf_net_flow_musd": raw_data.get("btc_etf", {}).get("net_flow_musd"),
-        "btc_etf_flow_date": raw_data.get("btc_etf", {}).get("flow_date"),
         "btc_etf_source": raw_data.get("btc_etf", {}).get("source"),
         "btc_etf_flow_level": raw_data.get("btc_etf", {}).get("level"),
         "btc_market_arrow": btc_market_arrow,

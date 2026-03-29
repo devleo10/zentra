@@ -26,11 +26,18 @@ FRED_API_KEY=
 NEWS_API_KEY=
 ALPHAVANTAGE_API_KEY=
 FINNHUB_API_KEY=
+FMP_API_KEY=
+EODHD_API_TOKEN=
+TRADINGECONOMICS_API_KEY=
 BACKEND_PORT=8000
 CORS_ORIGINS=http://localhost:3000
 ```
 
 Optional: `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_EMBEDDING_MODEL`.
+
+Trusted market-provider keys are optional. When set, the backend can use
+Financial Modeling Prep, EODHD, and TradingEconomics as additional fallbacks
+for MOVE/VIX/S&P 500/EEM/BTC ETF volume paths.
 
 **`frontend/.env.local`** (optional):
 
