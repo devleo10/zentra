@@ -1,7 +1,6 @@
 "use client"
 
 import { ReactNode, useEffect, useMemo, useState } from "react"
-import Link from "next/link"
 import {
   ApiError,
   pingKeepAlive,
@@ -11,7 +10,6 @@ import {
   V2AnalysisProgress,
   V2AnalysisResult,
 } from "@/lib/api"
-import { clearAuthToken } from "@/lib/auth"
 
 const TIMEFRAMES: Array<{ value: TimeFrame; label: string }> = [
   { value: "current", label: "Now" },
@@ -446,23 +444,6 @@ export default function BtcMacroDashboardNew() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight">BTC Macro Dashboard - New Format</h1>
-            <p className="text-xs sm:text-sm text-gray-400">Built from your PDF format draft</p>
-            <p className="mt-1 text-[10px] text-gray-600 sm:text-xs">
-              <Link href="/" className="text-blue-400 hover:text-blue-300">
-                Marketing
-              </Link>
-              {" | "}
-              <button
-                type="button"
-                className="text-gray-400 underline-offset-2 hover:text-white hover:underline"
-                onClick={() => {
-                  clearAuthToken()
-                  window.location.href = "/login"
-                }}
-              >
-                Sign out
-              </button>
-            </p>
           </div>
 
           <div className="flex items-center gap-2">
