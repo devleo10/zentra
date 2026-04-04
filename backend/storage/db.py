@@ -174,6 +174,9 @@ def _ensure_schema(conn: sqlite3.Connection):
         ("coherence_reasoning",     "TEXT"),
         ("ten_year_breakeven",      "REAL"),
         ("real_yield_10y",          "REAL"),
+        ("btc_change",              "REAL"),
+        ("btc_change_24h",          "REAL"),
+        ("btc_change_7d",           "REAL"),
     ]
     for col_name, col_type in migrations:
         if col_name not in existing_columns:
@@ -206,7 +209,7 @@ def save_snapshot(snapshot: Dict[str, Any]) -> int:
                 fed_funds_rate, fed_rate_trend,
                 dxy_value, dxy_change_7d,
                 vix, ten_year_yield, yield_curve_spread, fed_balance_sheet_trend,
-                sp500_change, gold_change, btc_price,
+                sp500_change, gold_change, btc_price, btc_change, btc_change_24h, btc_change_7d,
                 section_scores, section_reasoning,
                 weighted_numeric_score, score_breakdown,
                 weighted_numeric_stale_downweight, coherence_adjustment, coherence_reasoning,
@@ -237,7 +240,7 @@ def save_snapshot(snapshot: Dict[str, Any]) -> int:
                 ?, ?,
                 ?, ?,
                 ?, ?, ?, ?,
-                ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
                 ?, ?,
                 ?, ?,
                 ?, ?, ?, ?, ?,
@@ -288,6 +291,9 @@ def save_snapshot(snapshot: Dict[str, Any]) -> int:
             snapshot.get("sp500_change"),
             snapshot.get("gold_change"),
             snapshot.get("btc_price"),
+            snapshot.get("btc_change"),
+            snapshot.get("btc_change_24h"),
+            snapshot.get("btc_change_7d"),
             json.dumps(snapshot.get("section_scores", {})),
             json.dumps(snapshot.get("section_reasoning", {})),
             snapshot.get("weighted_numeric_score", 50),

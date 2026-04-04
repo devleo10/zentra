@@ -602,6 +602,50 @@ def _lbma_gold_data(timeframe: str) -> Optional[Dict]:
         return None
 
 
+def _yahoo_gold_pct_change_overlay(timeframe: str) -> Optional[Dict[str, Any]]:
+    """Use Yahoo spot/futures history for % change when LBMA (or other) left change unset."""
+    try:
+        symbol, hist = _select_same_scale_yahoo_history(("XAUUSD=X", "GC=F"), timeframe)
+        if hist.empty or len(hist) < 2:
+            return None
+        latest, comparison = _latest_and_comparison_for_timeframe(hist, timeframe)
+        c0 = float(latest["Close"])
+        c1 = float(comparison["Close"])
+        if not c1:
+            return None
+        ch = ((c0 - c1) / c1) * 100.0
+        return {
+            "change": round(ch, 2),
+            "comparison_date": _safe_date_str(comparison.name),
+            "change_label": _change_label(timeframe),
+            "trend": "rising" if ch > 0.05 else "falling" if ch < -0.05 else "stable",
+            "symbol": symbol,
+        }
+    except Exception:
+        logger.debug("Yahoo gold % overlay failed", exc_info=True)
+        return None
+
+
+def _fred_gold_month_percent_lbma_augment() -> Optional[Dict[str, Any]]:
+    """1M % from FRED LBMA series when Yahoo overlay is unavailable (LBMA spot + official history)."""
+    fb = _fred_series_market_fallback(
+        "GOLDAMGBD228NLBM",
+        "month",
+        response_key="current_price",
+        change_unit="percent",
+        source_name="FRED:GOLDAMGBD228NLBM",
+    )
+    if not fb:
+        return None
+    return {
+        "symbol": "FRED:GOLDAMGBD228NLBM",
+        "change": fb.get("change"),
+        "comparison_date": fb.get("comparison_date"),
+        "change_label": fb.get("change_label"),
+        "trend": fb.get("trend", "stable"),
+    }
+
+
 def _yf_history_with_backoff(ticker: yf.Ticker, period: str, *, attempts: int = 3) -> pd.DataFrame:
     """Fetch history with retries for Yahoo Finance rate limits / transient errors."""
     last_err: Optional[Exception] = None
@@ -1062,10 +1106,24 @@ def get_gold_data(timeframe: str = "current") -> Dict:
         if STRICT_LIVE_OFFICIAL_ONLY:
             lbma = _lbma_gold_data(timeframe)
             if lbma:
+                if lbma.get("change") is None:
+                    aug = _yahoo_gold_pct_change_overlay(timeframe)
+                    if aug is None:
+                        aug = _fred_gold_month_percent_lbma_augment()
+                    if aug:
+                        sym = aug.get("symbol") or "XAUUSD=X"
+                        lbma = {
+                            **lbma,
+                            "change": aug["change"],
+                            "comparison_date": aug.get("comparison_date"),
+                            "change_label": aug.get("change_label") or _change_label(timeframe),
+                            "trend": aug.get("trend", lbma.get("trend", "stable")),
+                            "source": f"{lbma.get('source', 'LBMA:today.json')}; % from {sym}",
+                        }
                 return lbma
             return {"error": "Official gold source unavailable", "timeframe": timeframe}
 
-        symbol, hist = _select_same_scale_yahoo_history(("GC=F", "XAUUSD=X"), timeframe)
+        symbol, hist = _select_same_scale_yahoo_history(("XAUUSD=X", "GC=F"), timeframe)
         if hist.empty:
             fred_fallback = _fred_series_market_fallback(
                 "GOLDAMGBD228NLBM",

@@ -425,7 +425,13 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
             ", ".join(sorted(month_cache_hits.keys())),
         )
     
-    if "cpi" in raw_data:
+    _cpi_from_cache = "cpi" in raw_data
+    if _cpi_from_cache:
+        if raw_data["cpi"].get("cpi_mom_avg_3m_prior") is None or raw_data["cpi"].get("core_cpi_mom_avg_3m_prior") is None:
+            logger.info("  CPI cache missing prior averages — re-fetching fresh")
+            _cpi_from_cache = False
+            raw_data.pop("cpi", None)
+    if _cpi_from_cache:
         logger.info(f"  CPI (cache): {raw_data['cpi'].get('latest_value', 'ERROR')}")
     else:
         try:
@@ -1238,6 +1244,9 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "gold_trend": raw_data["gold"].get("trend"),
         "gold_source": raw_data["gold"].get("source"),
         "btc_price": raw_data["btc"].get("price_usd"),
+        "btc_change": raw_data["btc"].get("change"),
+        "btc_change_24h": raw_data["btc"].get("change_24h"),
+        "btc_change_7d": raw_data["btc"].get("change_7d"),
         "fed_funds_rate": fed_rate_val,
         "fed_rate_trend": fed_rate_trend,
         "fed_rate_stance": fed_rate_stance,

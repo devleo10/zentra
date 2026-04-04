@@ -38,6 +38,10 @@ export interface V2HeadlineClassification {
 export interface V2AnalysisResult {
   timestamp: string
   btc_price: number | null
+  /** Window % change aligned with selected analysis timeframe */
+  btc_change?: number | null
+  btc_change_24h?: number | null
+  btc_change_7d?: number | null
   section_scores: V2SectionScores
   section_reasoning: Record<string, string>
   weighted_numeric_score: number

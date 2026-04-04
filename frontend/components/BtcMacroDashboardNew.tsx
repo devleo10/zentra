@@ -126,6 +126,22 @@ function directionFromArrow(value: "up" | "down" | null | undefined): Direction 
   return "flat"
 }
 
+function btcPercentChangeForTimeframe(
+  r: V2AnalysisResult,
+  tf: TimeFrame,
+): number | null {
+  if (tf === "current") {
+    const v = r.btc_change_24h ?? r.btc_change
+    return v != null && Number.isFinite(v) ? v : null
+  }
+  if (tf === "week") {
+    const v = r.btc_change_7d ?? r.btc_change
+    return v != null && Number.isFinite(v) ? v : null
+  }
+  const v = r.btc_change
+  return v != null && Number.isFinite(v) ? v : null
+}
+
 function directionLabel(direction: Direction): string {
   if (direction === "up") return "up"
   if (direction === "down") return "down"
@@ -420,6 +436,7 @@ export default function BtcMacroDashboardNew() {
 
   const monthlyYieldRows = nonChangeableResult?.yield_monthly_track?.slice(-3) ?? []
   const spreadAverage3m = average(monthlyYieldRows.map((row) => row.spread))
+  const btcTfPct = result ? btcPercentChangeForTimeframe(result, timeframe) : null
 
   const showActionButton = !result || loading || retryInSec > 0 || clickCooldownSec > 0
 
@@ -818,7 +835,11 @@ export default function BtcMacroDashboardNew() {
                   label="Gold"
                   value={formatPrice(result.gold_price, 2)}
                   direction={directionFromNumber(result.gold_change)}
-                  detail={`Change: ${formatPercent(result.gold_change, 2)}`}
+                  detail={
+                    result.gold_change != null && Number.isFinite(result.gold_change)
+                      ? `Change: ${formatPercent(result.gold_change, 2)}`
+                      : `Change: N/A (${result.gold_source ? result.gold_source : "no overlay"})`
+                  }
                 />
                 <MetricRow
                   label="VIX"
@@ -838,14 +859,18 @@ export default function BtcMacroDashboardNew() {
                 <MetricRow
                   label="BTC"
                   value={formatPrice(result.btc_price, 0)}
-                  direction={directionFromArrow(result.btc_market_arrow)}
-                  detail="BTC percent-change field is not in payload yet; showing live price and direction."
+                  direction={btcTfPct != null ? directionFromNumber(btcTfPct) : directionFromArrow(result.btc_market_arrow)}
+                  detail={`Change (${timeframe === "current" ? "~24h" : timeframe === "week" ? "~7d" : "~1M"}): ${formatPercent(btcTfPct, 2)}`}
                 />
                 <MetricRow
                   label="BTC.D"
                   value={formatPercent(result.btc_dominance, 2, false)}
                   direction={directionFromNumber(result.btc_dominance_change)}
-                  detail={`Change: ${formatPercent(result.btc_dominance_change, 2)}`}
+                  detail={
+                    result.btc_dominance_change != null && Number.isFinite(result.btc_dominance_change)
+                      ? `Change (vs prior saved snapshot): ${formatPercent(result.btc_dominance_change, 2)}`
+                      : "Change: N/A — needs a second stored analysis, or dominance came from a snapshot without history."
+                  }
                 />
               </div>
             </SectionCard>

@@ -218,7 +218,7 @@ def _three_month_mom_stats_from_fred_df(df: pd.DataFrame, prefix: str) -> Dict:
     if df is None or len(df) < 4:
         return {}
     moms = []
-    for i in range(1, min(8, len(df))):
+    for i in range(1, min(20, len(df))):
         curr = float(df.iloc[-i]["value"])
         prev = float(df.iloc[-i - 1]["value"])
         if prev:
@@ -226,7 +226,12 @@ def _three_month_mom_stats_from_fred_df(df: pd.DataFrame, prefix: str) -> Dict:
     if len(moms) < 3:
         return {}
     avg3 = sum(moms[:3]) / 3.0
-    prior3 = sum(moms[3:6]) / 3.0 if len(moms) >= 6 else None
+    prior3 = None
+    if len(moms) >= 6:
+        prior3 = sum(moms[3:6]) / 3.0
+    elif len(moms) >= 4:
+        prior_tail = moms[3:]
+        prior3 = sum(prior_tail) / len(prior_tail)
     if prior3 is not None:
         if avg3 > prior3 + 0.02:
             tr = "rising"
@@ -258,7 +263,7 @@ def _three_month_mom_stats_from_bls_rows(rows: list, prefix: str) -> Dict:
     if not rows or len(rows) < 4:
         return {}
     moms = []
-    for i, row in enumerate(rows[:12]):
+    for i, row in enumerate(rows[:24]):
         try:
             pct_changes = row.get("calculations", {}).get("pct_changes", {})
             if "1" in pct_changes:
@@ -276,7 +281,12 @@ def _three_month_mom_stats_from_bls_rows(rows: list, prefix: str) -> Dict:
     if len(moms) < 3:
         return {}
     avg3 = sum(moms[:3]) / 3.0
-    prior3 = sum(moms[3:6]) / 3.0 if len(moms) >= 6 else None
+    prior3 = None
+    if len(moms) >= 6:
+        prior3 = sum(moms[3:6]) / 3.0
+    elif len(moms) >= 4:
+        prior_tail = moms[3:]
+        prior3 = sum(prior_tail) / len(prior_tail)
     if prior3 is not None:
         if avg3 > prior3 + 0.02:
             tr = "rising"
@@ -573,10 +583,10 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
     logger.info("BLS CPI unavailable; falling back to FRED CPIAUCSL")
 
     # ── Attempt 2: FRED API (fallback) ─────────────────────────────────────
-    # Always fetch 400 days to guarantee 13+ monthly observations for YoY
-    start_400d = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
-    df = get_fred_data("CPIAUCSL", start_date=start_400d)
-    core_df = get_fred_data("CPILFESL", start_date=start_400d)
+    # Fetch 540 days to guarantee 13+ monthly observations for YoY + 6 for 3m prior avg
+    start_lookback = (datetime.now() - timedelta(days=540)).strftime("%Y-%m-%d")
+    df = get_fred_data("CPIAUCSL", start_date=start_lookback)
+    core_df = get_fred_data("CPILFESL", start_date=start_lookback)
     if df.empty:
         last_cpi = _get_last_snapshot_field("cpi_mom_change")
         logger.warning("No CPI data from FRED; using last snapshot fallback: %s", last_cpi)
@@ -675,7 +685,7 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
 
 def get_pce_data(timeframe: str = "current") -> Dict:
     """Get PCE data based on timeframe"""
-    start_date = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=540)).strftime("%Y-%m-%d")
     df = get_fred_data("PCEPI", start_date=start_date)  # Personal Consumption Expenditures Price Index
     
     if df.empty:

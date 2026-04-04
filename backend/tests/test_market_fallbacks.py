@@ -199,7 +199,7 @@ def test_gold_strict_month_augmented_with_yahoo_when_lbma_has_no_1m_change(monke
     )
     monkeypatch.setattr(
         yahoo,
-        "_yahoo_gold_futures_rolling_change",
+        "_yahoo_gold_pct_change_overlay",
         lambda tf: {
             "symbol": "GC=F",
             "change": 1.4,
@@ -237,7 +237,7 @@ def test_gold_strict_month_fred_when_yahoo_augment_fails(monkeypatch):
             "source": "LBMA:today.json",
         },
     )
-    monkeypatch.setattr(yahoo, "_yahoo_gold_futures_rolling_change", lambda tf: None)
+    monkeypatch.setattr(yahoo, "_yahoo_gold_pct_change_overlay", lambda tf: None)
     monkeypatch.setattr(
         yahoo,
         "_fred_gold_month_percent_lbma_augment",
