@@ -35,6 +35,10 @@ CORS_ORIGINS=http://localhost:3000
 
 Optional: `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_EMBEDDING_MODEL`.
 
+Optional monthly performance:
+- `ENABLE_MONTHLY_METRIC_CACHE=1`
+- `MONTHLY_SLOW_METRIC_CACHE_TTL_SECONDS=43200`
+
 Trusted market-provider keys are optional. When set, the backend can use
 Financial Modeling Prep, EODHD, and TradingEconomics as additional fallbacks
 for MOVE/VIX/S&P 500/EEM/BTC ETF volume paths.
@@ -70,6 +74,22 @@ npm run dev
 ```
 
 App: `http://localhost:3000`
+
+### TradingView Cross-Check
+
+After backend changes, run:
+
+```bash
+cd backend
+python scripts/tradingview_crosscheck_report.py --timeframe month --fresh
+```
+
+It saves `.json` and `.md` comparison reports to `backend/logs/`.
+
+### Render Keep-Warm
+
+Use `.github/workflows/render-keepalive.yml` with repository secret `KEEPALIVE_URL`
+pointing to your deployed `/api/keepalive` endpoint.
 
 ### Windows
 

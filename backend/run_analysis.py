@@ -66,6 +66,7 @@ from headline_engine.fetcher import HeadlineFetcher, HeadlineFetchError
 from headline_engine.classifier import HeadlineClassifier
 from headline_engine.report import generate_market_report
 from storage.db import save_snapshot
+from storage.metric_cache import clear_cached_metric, get_cached_metric, put_cached_metric
 
 
 _GEO_KEYWORDS = {
@@ -113,6 +114,33 @@ _STRICT_UNSUPPORTED_METRICS = set()
 
 _STRICT_FRED_ONLY_METRICS = {"vix", "sp500", "natgas", "oil"}
 _STRICT_OFFICIAL_METRICS = {
+    "cpi",
+    "pce",
+    "yields",
+    "balance_sheet",
+    "fed_rate",
+    "jobs",
+    "gdp",
+    "pmi",
+    "m2",
+    "financial_stress",
+    "breakeven_10y",
+}
+
+_MONTHLY_METRIC_CACHE_ENABLED = os.getenv("ENABLE_MONTHLY_METRIC_CACHE", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
+try:
+    _MONTHLY_SLOW_METRIC_CACHE_TTL_SECONDS = max(
+        60,
+        int((os.getenv("MONTHLY_SLOW_METRIC_CACHE_TTL_SECONDS") or str(12 * 3600)).strip()),
+    )
+except ValueError:
+    _MONTHLY_SLOW_METRIC_CACHE_TTL_SECONDS = 12 * 3600
+
+_MONTHLY_SLOW_METRIC_KEYS = {
     "cpi",
     "pce",
     "yields",
@@ -333,6 +361,31 @@ def _apply_strict_live_official_policy(raw_data: dict, timeframe: str) -> list[s
     return warnings
 
 
+def _load_monthly_slow_metric_cache(timeframe: str, fresh: bool) -> dict:
+    if timeframe != "month" or fresh or not _MONTHLY_METRIC_CACHE_ENABLED:
+        return {}
+    cached: dict = {}
+    for metric_key in sorted(_MONTHLY_SLOW_METRIC_KEYS):
+        payload = get_cached_metric(
+            metric_key,
+            timeframe,
+            max_age_seconds=_MONTHLY_SLOW_METRIC_CACHE_TTL_SECONDS,
+        )
+        if isinstance(payload, dict):
+            cached[metric_key] = payload
+    return cached
+
+
+def _store_monthly_slow_metric(metric_key: str, timeframe: str, payload: dict) -> None:
+    if timeframe != "month" or not _MONTHLY_METRIC_CACHE_ENABLED:
+        return
+    if metric_key not in _MONTHLY_SLOW_METRIC_KEYS:
+        return
+    if not isinstance(payload, dict) or payload.get("error"):
+        return
+    put_cached_metric(metric_key, timeframe, payload)
+
+
 def run_analysis(timeframe: str = "current", fresh: bool = False):
     """
     Execute the full analysis pipeline with timeframe support.
@@ -349,6 +402,9 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         from data_fetchers.cache import clear as cache_clear
         cache_clear()
         logger.info("Cache cleared (--fresh mode)")
+        if timeframe == "month" and _MONTHLY_METRIC_CACHE_ENABLED:
+            clear_cached_metric(timeframe="month")
+            logger.info("Persistent monthly cache cleared (--fresh mode)")
 
     timestamp = datetime.now().isoformat()
     logger.info("=" * 70)
@@ -359,34 +415,59 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     # ── STEP 1: Fetch all numeric data ─────────────────────────────────
     logger.info("[1/9] Fetching numeric macro data...")
     raw_data = {}
+
+    month_cache_hits = _load_monthly_slow_metric_cache(timeframe, fresh)
+    if month_cache_hits:
+        raw_data.update(month_cache_hits)
+        logger.info(
+            "  Monthly macro cache HIT (ttl=%ss): %s",
+            _MONTHLY_SLOW_METRIC_CACHE_TTL_SECONDS,
+            ", ".join(sorted(month_cache_hits.keys())),
+        )
     
-    try:
-        raw_data["cpi"] = fred_data.get_cpi_data(timeframe)
-        logger.info(f"  CPI: {raw_data['cpi'].get('latest_value', 'ERROR')}")
-    except Exception as e:
-        logger.error(f"  CPI fetch FAILED: {e}")
-        raw_data["cpi"] = {"error": str(e)}
+    if "cpi" in raw_data:
+        logger.info(f"  CPI (cache): {raw_data['cpi'].get('latest_value', 'ERROR')}")
+    else:
+        try:
+            raw_data["cpi"] = fred_data.get_cpi_data(timeframe)
+            _store_monthly_slow_metric("cpi", timeframe, raw_data["cpi"])
+            logger.info(f"  CPI: {raw_data['cpi'].get('latest_value', 'ERROR')}")
+        except Exception as e:
+            logger.error(f"  CPI fetch FAILED: {e}")
+            raw_data["cpi"] = {"error": str(e)}
     
-    try:
-        raw_data["pce"] = fred_data.get_pce_data(timeframe)
-        logger.info(f"  PCE: {raw_data['pce'].get('latest_value', 'ERROR')}")
-    except Exception as e:
-        logger.error(f"  PCE fetch FAILED: {e}")
-        raw_data["pce"] = {"error": str(e)}
+    if "pce" in raw_data:
+        logger.info(f"  PCE (cache): {raw_data['pce'].get('latest_value', 'ERROR')}")
+    else:
+        try:
+            raw_data["pce"] = fred_data.get_pce_data(timeframe)
+            _store_monthly_slow_metric("pce", timeframe, raw_data["pce"])
+            logger.info(f"  PCE: {raw_data['pce'].get('latest_value', 'ERROR')}")
+        except Exception as e:
+            logger.error(f"  PCE fetch FAILED: {e}")
+            raw_data["pce"] = {"error": str(e)}
     
-    try:
-        raw_data["yields"] = fred_data.get_treasury_yields(timeframe)
-        logger.info(f"  10Y Yield: {raw_data['yields'].get('yield_10y', {}).get('value', 'ERROR')}")
-    except Exception as e:
-        logger.error(f"  Yields fetch FAILED: {e}")
-        raw_data["yields"] = {"error": str(e)}
+    if "yields" in raw_data:
+        logger.info(f"  10Y Yield (cache): {raw_data['yields'].get('yield_10y', {}).get('value', 'ERROR')}")
+    else:
+        try:
+            raw_data["yields"] = fred_data.get_treasury_yields(timeframe)
+            _store_monthly_slow_metric("yields", timeframe, raw_data["yields"])
+            logger.info(f"  10Y Yield: {raw_data['yields'].get('yield_10y', {}).get('value', 'ERROR')}")
+        except Exception as e:
+            logger.error(f"  Yields fetch FAILED: {e}")
+            raw_data["yields"] = {"error": str(e)}
     
-    try:
-        raw_data["balance_sheet"] = fred_data.get_fed_balance_sheet(timeframe)
-        logger.info(f"  Fed BS trend: {raw_data['balance_sheet'].get('trend', 'ERROR')}")
-    except Exception as e:
-        logger.error(f"  Balance sheet fetch FAILED: {e}")
-        raw_data["balance_sheet"] = {"error": str(e)}
+    if "balance_sheet" in raw_data:
+        logger.info(f"  Fed BS trend (cache): {raw_data['balance_sheet'].get('trend', 'ERROR')}")
+    else:
+        try:
+            raw_data["balance_sheet"] = fred_data.get_fed_balance_sheet(timeframe)
+            _store_monthly_slow_metric("balance_sheet", timeframe, raw_data["balance_sheet"])
+            logger.info(f"  Fed BS trend: {raw_data['balance_sheet'].get('trend', 'ERROR')}")
+        except Exception as e:
+            logger.error(f"  Balance sheet fetch FAILED: {e}")
+            raw_data["balance_sheet"] = {"error": str(e)}
     
     try:
         raw_data["dxy"] = yahoo_data.get_dxy_data(timeframe)
@@ -500,55 +581,86 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         }
 
     # Actual Fed Funds Rate (FEDFUNDS) — essential for accurate fed_policy scoring
-    try:
-        raw_data["fed_rate"] = fred_data.get_fed_funds_rate(timeframe)
-        logger.info(f"  Fed Funds Rate: {raw_data['fed_rate'].get('current_rate', 'ERROR')}% "
+    if "fed_rate" in raw_data:
+        logger.info(f"  Fed Funds Rate (cache): {raw_data['fed_rate'].get('current_rate', 'ERROR')}% "
                     f"(trend: {raw_data['fed_rate'].get('trend', 'N/A')})")
-    except Exception as e:
-        logger.error(f"  Fed Funds Rate fetch FAILED: {e}")
-        raw_data["fed_rate"] = {"error": str(e)}
+    else:
+        try:
+            raw_data["fed_rate"] = fred_data.get_fed_funds_rate(timeframe)
+            _store_monthly_slow_metric("fed_rate", timeframe, raw_data["fed_rate"])
+            logger.info(f"  Fed Funds Rate: {raw_data['fed_rate'].get('current_rate', 'ERROR')}% "
+                        f"(trend: {raw_data['fed_rate'].get('trend', 'N/A')})")
+        except Exception as e:
+            logger.error(f"  Fed Funds Rate fetch FAILED: {e}")
+            raw_data["fed_rate"] = {"error": str(e)}
 
     # Jobs data (Unemployment, NFP, Initial Claims)
-    try:
-        raw_data["jobs"] = fred_data.get_jobs_data(timeframe)
+    if "jobs" in raw_data:
         unemployment_rate = raw_data["jobs"].get("unemployment_rate", "ERROR")
         unemployment_trend = raw_data["jobs"].get("unemployment_trend", "N/A")
         if timeframe == "month" and raw_data["jobs"].get("unemployment_trend_3m"):
             logger.info(
-                "  Unemployment: %s%% (1m trend: %s, 3m trend: %s)",
+                "  Unemployment (cache): %s%% (1m trend: %s, 3m trend: %s)",
                 unemployment_rate,
                 unemployment_trend,
                 raw_data["jobs"].get("unemployment_trend_3m"),
             )
         else:
-            logger.info("  Unemployment: %s%% (trend: %s)", unemployment_rate, unemployment_trend)
-    except Exception as e:
-        logger.error(f"  Jobs data fetch FAILED: {e}")
-        raw_data["jobs"] = {"error": str(e)}
+            logger.info("  Unemployment (cache): %s%% (trend: %s)", unemployment_rate, unemployment_trend)
+    else:
+        try:
+            raw_data["jobs"] = fred_data.get_jobs_data(timeframe)
+            _store_monthly_slow_metric("jobs", timeframe, raw_data["jobs"])
+            unemployment_rate = raw_data["jobs"].get("unemployment_rate", "ERROR")
+            unemployment_trend = raw_data["jobs"].get("unemployment_trend", "N/A")
+            if timeframe == "month" and raw_data["jobs"].get("unemployment_trend_3m"):
+                logger.info(
+                    "  Unemployment: %s%% (1m trend: %s, 3m trend: %s)",
+                    unemployment_rate,
+                    unemployment_trend,
+                    raw_data["jobs"].get("unemployment_trend_3m"),
+                )
+            else:
+                logger.info("  Unemployment: %s%% (trend: %s)", unemployment_rate, unemployment_trend)
+        except Exception as e:
+            logger.error(f"  Jobs data fetch FAILED: {e}")
+            raw_data["jobs"] = {"error": str(e)}
 
     # GDP growth rate
-    try:
-        raw_data["gdp"] = fred_data.get_gdp_data(timeframe)
-        logger.info(f"  GDP growth: {raw_data['gdp'].get('gdp_growth_rate', 'ERROR')}%")
-    except Exception as e:
-        logger.error(f"  GDP fetch FAILED: {e}")
-        raw_data["gdp"] = {"error": str(e)}
+    if "gdp" in raw_data:
+        logger.info(f"  GDP growth (cache): {raw_data['gdp'].get('gdp_growth_rate', 'ERROR')}%")
+    else:
+        try:
+            raw_data["gdp"] = fred_data.get_gdp_data(timeframe)
+            _store_monthly_slow_metric("gdp", timeframe, raw_data["gdp"])
+            logger.info(f"  GDP growth: {raw_data['gdp'].get('gdp_growth_rate', 'ERROR')}%")
+        except Exception as e:
+            logger.error(f"  GDP fetch FAILED: {e}")
+            raw_data["gdp"] = {"error": str(e)}
 
     # PMI (ISM Manufacturing)
-    try:
-        raw_data["pmi"] = fred_data.get_pmi_data(timeframe)
-        logger.info(f"  PMI: {raw_data['pmi'].get('pmi_value', 'ERROR')} ({raw_data['pmi'].get('pmi_status', 'N/A')})")
-    except Exception as e:
-        logger.error(f"  PMI fetch FAILED: {e}")
-        raw_data["pmi"] = {"error": str(e)}
+    if "pmi" in raw_data:
+        logger.info(f"  PMI (cache): {raw_data['pmi'].get('pmi_value', 'ERROR')} ({raw_data['pmi'].get('pmi_status', 'N/A')})")
+    else:
+        try:
+            raw_data["pmi"] = fred_data.get_pmi_data(timeframe)
+            _store_monthly_slow_metric("pmi", timeframe, raw_data["pmi"])
+            logger.info(f"  PMI: {raw_data['pmi'].get('pmi_value', 'ERROR')} ({raw_data['pmi'].get('pmi_status', 'N/A')})")
+        except Exception as e:
+            logger.error(f"  PMI fetch FAILED: {e}")
+            raw_data["pmi"] = {"error": str(e)}
 
     # M2 Money Supply
-    try:
-        raw_data["m2"] = fred_data.get_m2_money_supply(timeframe)
-        logger.info(f"  M2: ${raw_data['m2'].get('m2_value', 'ERROR')}T (trend: {raw_data['m2'].get('m2_trend', 'N/A')})")
-    except Exception as e:
-        logger.error(f"  M2 fetch FAILED: {e}")
-        raw_data["m2"] = {"error": str(e)}
+    if "m2" in raw_data:
+        logger.info(f"  M2 (cache): ${raw_data['m2'].get('m2_value', 'ERROR')}T (trend: {raw_data['m2'].get('m2_trend', 'N/A')})")
+    else:
+        try:
+            raw_data["m2"] = fred_data.get_m2_money_supply(timeframe)
+            _store_monthly_slow_metric("m2", timeframe, raw_data["m2"])
+            logger.info(f"  M2: ${raw_data['m2'].get('m2_value', 'ERROR')}T (trend: {raw_data['m2'].get('m2_trend', 'N/A')})")
+        except Exception as e:
+            logger.error(f"  M2 fetch FAILED: {e}")
+            raw_data["m2"] = {"error": str(e)}
 
     # Natural Gas (Henry Hub futures)
     try:
@@ -631,23 +743,35 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         logger.error(f"  DXY structure fetch FAILED: {e}")
         raw_data["dxy_structure"] = {"error": str(e)}
 
-    try:
-        raw_data["financial_stress"] = fred_data.get_financial_stress(timeframe)
+    if "financial_stress" in raw_data:
         logger.info(
-            "  Financial stress: HY OAS=%s STLFSI=%s",
+            "  Financial stress (cache): HY OAS=%s STLFSI=%s",
             raw_data["financial_stress"].get("hy_oas", "N/A"),
             raw_data["financial_stress"].get("stress_index", "N/A"),
         )
-    except Exception as e:
-        logger.error(f"  Financial stress fetch FAILED: {e}")
-        raw_data["financial_stress"] = {"error": str(e)}
+    else:
+        try:
+            raw_data["financial_stress"] = fred_data.get_financial_stress(timeframe)
+            _store_monthly_slow_metric("financial_stress", timeframe, raw_data["financial_stress"])
+            logger.info(
+                "  Financial stress: HY OAS=%s STLFSI=%s",
+                raw_data["financial_stress"].get("hy_oas", "N/A"),
+                raw_data["financial_stress"].get("stress_index", "N/A"),
+            )
+        except Exception as e:
+            logger.error(f"  Financial stress fetch FAILED: {e}")
+            raw_data["financial_stress"] = {"error": str(e)}
 
-    try:
-        raw_data["breakeven_10y"] = fred_data.get_10y_breakeven_expectation(timeframe)
-        logger.info(f"  10Y breakeven: {raw_data['breakeven_10y'].get('value', 'ERROR')}%")
-    except Exception as e:
-        logger.error(f"  10Y breakeven fetch FAILED: {e}")
-        raw_data["breakeven_10y"] = {"error": str(e)}
+    if "breakeven_10y" in raw_data:
+        logger.info(f"  10Y breakeven (cache): {raw_data['breakeven_10y'].get('value', 'ERROR')}%")
+    else:
+        try:
+            raw_data["breakeven_10y"] = fred_data.get_10y_breakeven_expectation(timeframe)
+            _store_monthly_slow_metric("breakeven_10y", timeframe, raw_data["breakeven_10y"])
+            logger.info(f"  10Y breakeven: {raw_data['breakeven_10y'].get('value', 'ERROR')}%")
+        except Exception as e:
+            logger.error(f"  10Y breakeven fetch FAILED: {e}")
+            raw_data["breakeven_10y"] = {"error": str(e)}
 
     _stamp_batch_fetched_at(raw_data)
     strict_live_warnings = _apply_strict_live_official_policy(raw_data, timeframe)
@@ -729,6 +853,8 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     
     dxy_blob = raw_data["dxy"]
     _dc = dxy_blob.get("change")
+    if _dc is None and timeframe == "month":
+        _dc = dxy_blob.get("change_rolling_1m")
     try:
         dxy_change = float(_dc) if _dc is not None else 0.0
         if not math.isfinite(dxy_change):
@@ -1046,8 +1172,10 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     snapshot = {
         "timestamp": timestamp,
         "timeframe": timeframe,
+        "cpi_value": raw_data["cpi"].get("latest_value"),
         "cpi_mom_change": cpi_change,
         "cpi_yoy_rate": raw_data["cpi"].get("yoy_rate"),
+        "core_cpi_value": raw_data["cpi"].get("core_latest_value"),
         "cpi_core_mom_change": raw_data["cpi"].get("core_mom_change"),
         "cpi_core_yoy_rate": raw_data["cpi"].get("core_yoy_rate"),
         "cpi_trend": raw_data["cpi"].get("trend"),
@@ -1058,6 +1186,8 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "core_cpi_mom_avg_3m": raw_data["cpi"].get("core_cpi_mom_avg_3m"),
         "core_cpi_mom_avg_3m_prior": raw_data["cpi"].get("core_cpi_mom_avg_3m_prior"),
         "core_cpi_mom_avg_3m_trend": raw_data["cpi"].get("core_cpi_mom_avg_3m_trend"),
+        "pce_value": raw_data["pce"].get("latest_value"),
+        "pce_latest_date": raw_data["pce"].get("latest_date"),
         "pce_mom_change": pce_change,
         "pce_mom_avg_3m": raw_data["pce"].get("pce_mom_avg_3m"),
         "pce_mom_avg_3m_prior": raw_data["pce"].get("pce_mom_avg_3m_prior"),
@@ -1121,7 +1251,11 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "nfp_change": nfp_change,
         "gdp_growth_rate": gdp_growth,
         "gdp_trend": raw_data.get("gdp", {}).get("gdp_trend"),
+        "gdp_latest_date": raw_data.get("gdp", {}).get("latest_date"),
         "pmi_value": pmi_value,
+        "pmi_previous_value": raw_data.get("pmi", {}).get("previous_value"),
+        "pmi_delta_value": raw_data.get("pmi", {}).get("delta_value"),
+        "pmi_latest_date": raw_data.get("pmi", {}).get("latest_date"),
         "pmi_status": raw_data.get("pmi", {}).get("pmi_status"),
         "pmi_trend": raw_data.get("pmi", {}).get("pmi_trend"),
         "pmi_source": raw_data.get("pmi", {}).get("source"),
@@ -1202,12 +1336,6 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "eem_change_unit": raw_data.get("eem", {}).get("change_unit"),
         "eem_trend": raw_data.get("eem", {}).get("trend"),
         "eem_source": raw_data.get("eem", {}).get("source"),
-        "nqem_price": raw_data.get("eem", {}).get("current_price"),
-        "nqem_change": raw_data.get("eem", {}).get("change"),
-        "nqem_change_label": raw_data.get("eem", {}).get("change_label"),
-        "nqem_change_unit": raw_data.get("eem", {}).get("change_unit"),
-        "nqem_trend": raw_data.get("eem", {}).get("trend"),
-        "nqem_source": raw_data.get("eem", {}).get("source"),
         # BTC market structure
         "btc_dominance": raw_data.get("btc_dominance", {}).get("btc_dominance"),
         "btc_dominance_change": raw_data.get("btc_dominance", {}).get("change"),

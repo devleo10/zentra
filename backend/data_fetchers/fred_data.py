@@ -37,6 +37,10 @@ TRADINGVIEW_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
 ISM_PMI_URL = "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports/pmi/"
 TRADINGECONOMICS_US_PMI_PAGE = "https://tradingeconomics.com/united-states/manufacturing-pmi"
 INVESTING_US_ISM_PMI_PAGE = "https://www.investing.com/economic-calendar/ism-manufacturing-pmi-173"
+try:
+    PMI_RELEASE_MAX_AGE_DAYS = int((os.getenv("PMI_RELEASE_MAX_AGE_DAYS") or "45").strip() or "45")
+except ValueError:
+    PMI_RELEASE_MAX_AGE_DAYS = 45
 EIA_API_KEY = os.getenv("EIA_API_KEY")
 EIA_V2_SERIES_URL = "https://api.eia.gov/v2/seriesid"
 EIA_V1_SERIES_URL = "https://api.eia.gov/series/"
@@ -509,10 +513,15 @@ def _get_cpi_from_bls() -> Optional[Dict]:
         yoy_rate = float(pct_changes.get("12", 0))    # 12-month % change = YoY
 
         # Core CPI MoM/YoY
+        core_latest_value = None
         core_mom = None
         core_yoy = None
         if core:
             core_latest = core[0]
+            try:
+                core_latest_value = float(core_latest.get("value"))
+            except (TypeError, ValueError):
+                core_latest_value = None
             core_calcs = core_latest.get("calculations", {}).get("pct_changes", {})
             core_mom = float(core_calcs.get("1", 0)) if "1" in core_calcs else None
             core_yoy = float(core_calcs.get("12", 0)) if "12" in core_calcs else None
@@ -522,6 +531,7 @@ def _get_cpi_from_bls() -> Optional[Dict]:
             "latest_date": latest_date,
             "mom_change": round(mom_change, 3),
             "yoy_rate": round(yoy_rate, 2),
+            "core_latest_value": round(core_latest_value, 3) if core_latest_value is not None else None,
             "core_mom_change": round(core_mom, 3) if core_mom is not None else None,
             "core_yoy_rate": round(core_yoy, 2) if core_yoy is not None else None,
             "change": round(mom_change, 3),
@@ -577,6 +587,7 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
                 "latest_date": None,
                 "comparison_date": None,
                 "mom_change": last_cpi,
+                "core_latest_value": None,
                 "_fallback": True,
                 "_fallback_source": "last_snapshot",
                 "source": "last_snapshot",
@@ -616,6 +627,7 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
         "change": round(change, 2),
         "mom_change": round(mom_change, 2),
         "yoy_rate": yoy_rate,
+        "core_latest_value": None,
         "core_mom_change": None,
         "core_yoy_rate": None,
         "trend": "falling" if mom_change < 0 else "rising" if mom_change > 0 else "flat",
@@ -625,6 +637,7 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
     }
     if not core_df.empty:
         core_latest = core_df.iloc[-1]
+        result["core_latest_value"] = round(float(core_latest["value"]), 3)
         result["core_mom_change"] = 0.0
         if len(core_df) >= 2:
             core_prev = core_df.iloc[-2]
@@ -763,7 +776,10 @@ def get_treasury_yields(timeframe: str = "current") -> Dict:
     if not df_2y.empty:
         latest_2y = df_2y.iloc[-1]
         try:
-            prev_2y = _fred_observation_on_or_before_calendar_days_ago(df_2y, comparison_days)
+            if timeframe == "month":
+                prev_2y = _fred_observation_on_or_before_months_ago(df_2y, 1)
+            else:
+                prev_2y = _fred_observation_on_or_before_calendar_days_ago(df_2y, comparison_days)
         except Exception:
             prev_2y = latest_2y
         change_2y = latest_2y["value"] - prev_2y["value"]
@@ -780,7 +796,10 @@ def get_treasury_yields(timeframe: str = "current") -> Dict:
     if not df_10y.empty:
         latest_10y = df_10y.iloc[-1]
         try:
-            prev_10y = _fred_observation_on_or_before_calendar_days_ago(df_10y, comparison_days)
+            if timeframe == "month":
+                prev_10y = _fred_observation_on_or_before_months_ago(df_10y, 1)
+            else:
+                prev_10y = _fred_observation_on_or_before_calendar_days_ago(df_10y, comparison_days)
         except Exception:
             prev_10y = latest_10y
         change_10y = latest_10y["value"] - prev_10y["value"]
@@ -1206,16 +1225,49 @@ def get_dxy_from_fred_trade_weighted(timeframe: str = "current") -> Dict:
 
 
 def get_pmi_data(timeframe: str = "current") -> Dict:
-    """Get ISM Manufacturing PMI from FRED (NAPM series).
+    """Get US manufacturing PMI with release-time priority and resilient fallback.
 
-    PMI > 50 = expansion, < 50 = contraction. A key leading indicator.
-    Official-only mode: returns the headline PMI series when available,
-    otherwise returns an error instead of using any proxy, snapshot, or
-    neutral placeholder.
+    Architecture:
+    1) Primary: release-source path (economic calendar trigger + ISM scrape)
+    2) Secondary: TradingEconomics API/page
+    3) Delayed official/history fallback: FRED NAPM
+    4) Final backups: EODHD / Investing / Alpha Vantage / TradingView
     """
+    release_triggered = _get_pmi_from_calendar_trigger(timeframe)
+    if release_triggered:
+        return release_triggered
+
+    ism = _get_pmi_from_ism_scrape(timeframe)
+    if ism:
+        logger.info("PMI primary source: ISM release page")
+        return ism
+
+    if trusted_market_apis is not None:
+        te = trusted_market_apis.get_tradingeconomics_us_manufacturing_pmi()
+        if te:
+            result = _pmi_result(
+                te["pmi_value"],
+                te.get("date") or datetime.now().strftime("%Y-%m-%d"),
+                te.get("source") or "TradingEconomics:PMI",
+                timeframe,
+                prev_value=te.get("previous_value"),
+            )
+            logger.info(
+                "PMI secondary (TradingEconomics API): %.1f (%s, trend=%s, date=%s)",
+                result["pmi_value"],
+                result["pmi_status"],
+                result["pmi_trend"],
+                result["latest_date"],
+            )
+            return result
+
+    te_web = _get_pmi_from_tradingeconomics_page(timeframe)
+    if te_web:
+        return te_web
+
+    # FRED is still valuable, but can lag release-time updates.
     long_start = "1990-01-01"
     df = get_fred_data("NAPM", start_date=long_start, timeframe=timeframe, sort_order="asc")
-
     if not df.empty:
         latest = df.iloc[-1]
         latest_value = _safe_float(latest["value"])
@@ -1230,7 +1282,7 @@ def get_pmi_data(timeframe: str = "current") -> Dict:
                 prev_value=prev_value,
             )
             logger.info(
-                "PMI (NAPM): %.1f (%s, trend=%s, date=%s)",
+                "PMI delayed-series fallback (FRED NAPM): %.1f (%s, trend=%s, date=%s)",
                 result["pmi_value"],
                 result["pmi_status"],
                 result["pmi_trend"],
@@ -1239,24 +1291,6 @@ def get_pmi_data(timeframe: str = "current") -> Dict:
             return result
 
     if trusted_market_apis is not None:
-        te = trusted_market_apis.get_tradingeconomics_us_manufacturing_pmi()
-        if te:
-            result = _pmi_result(
-                te["pmi_value"],
-                te.get("date") or datetime.now().strftime("%Y-%m-%d"),
-                te.get("source") or "TradingEconomics:PMI",
-                timeframe,
-                prev_value=te.get("previous_value"),
-            )
-            logger.info(
-                "PMI fallback (TradingEconomics): %.1f (%s, trend=%s, date=%s)",
-                result["pmi_value"],
-                result["pmi_status"],
-                result["pmi_trend"],
-                result["latest_date"],
-            )
-            return result
-
         eod = trusted_market_apis.get_eodhd_us_manufacturing_pmi()
         if eod:
             result = _pmi_result(
@@ -1275,10 +1309,6 @@ def get_pmi_data(timeframe: str = "current") -> Dict:
             )
             return result
 
-    te_web = _get_pmi_from_tradingeconomics_page(timeframe)
-    if te_web:
-        return te_web
-
     inv = _get_pmi_from_investing_page(timeframe)
     if inv:
         return inv
@@ -1291,12 +1321,8 @@ def get_pmi_data(timeframe: str = "current") -> Dict:
     if tv:
         return tv
 
-    ism = _get_pmi_from_ism_scrape(timeframe)
-    if ism:
-        return ism
-
     logger.warning(
-        "PMI unavailable from FRED, TradingEconomics API/page, EODHD, Investing, Alpha Vantage, TradingView, and ISM scrape"
+        "PMI unavailable from ISM/calendar, TradingEconomics API/page, FRED NAPM, EODHD, Investing, Alpha Vantage, and TradingView"
     )
     return {
         "error": "ISM Manufacturing PMI unavailable from configured sources",
@@ -1342,9 +1368,102 @@ def _pmi_result(
         "data_as_of": latest_date,
         "timeframe": timeframe,
     }
+    if prev_value is not None:
+        pv = float(prev_value)
+        result["previous_value"] = round(pv, 1)
+        result["delta_value"] = round(float(pmi_value) - pv, 1)
     if proxy_note:
         result["_proxy_note"] = proxy_note
     return result
+
+
+def _pmi_release_is_recent(date_text: Optional[str], max_age_days: int = PMI_RELEASE_MAX_AGE_DAYS) -> bool:
+    if not date_text:
+        return False
+    dt = pd.to_datetime(date_text, errors="coerce")
+    if pd.isna(dt):
+        return False
+    today = pd.Timestamp.utcnow().tz_localize(None).normalize()
+    release_day = pd.Timestamp(dt)
+    if release_day.tzinfo is not None:
+        release_day = release_day.tz_convert(None)
+    release_day = release_day.normalize()
+    age_days = int((today - release_day).days)
+    if age_days < -2:
+        return False
+    return age_days <= max(1, int(max_age_days))
+
+
+def _tag_pmi_release_trigger(result: Dict, *, trigger_source: str, event_date: Optional[str], event_name: Optional[str]) -> Dict:
+    tagged = dict(result)
+    tagged["release_trigger"] = "economic_calendar"
+    tagged["trigger_source"] = trigger_source
+    if event_date:
+        tagged["trigger_event_date"] = str(event_date)[:10]
+    if event_name:
+        tagged["trigger_event_name"] = event_name
+    return tagged
+
+
+def _get_pmi_from_calendar_trigger(timeframe: str) -> Optional[Dict]:
+    """Calendar-first PMI trigger: detect release, then pull the latest print."""
+    if trusted_market_apis is not None:
+        try:
+            calendar = trusted_market_apis.get_tradingeconomics_us_pmi_calendar_event()
+        except Exception:
+            calendar = None
+
+        if isinstance(calendar, dict):
+            event_date = str(calendar.get("date") or "")[:10] or None
+            event_name = str(calendar.get("event_name") or "US Manufacturing PMI")
+            trigger_source = str(calendar.get("source") or "TradingEconomics:calendar:US:Manufacturing PMI")
+            actual = _safe_float(calendar.get("actual_value"))
+            previous = _safe_float(calendar.get("previous_value"))
+
+            if _pmi_release_is_recent(event_date):
+                ism = _get_pmi_from_ism_scrape(timeframe)
+                if ism:
+                    ism_value = _safe_float(ism.get("pmi_value"))
+                    if actual is None or (ism_value is not None and abs(ism_value - actual) <= 1.0):
+                        logger.info("PMI release trigger: ISM scrape confirmed by calendar (%s)", event_date)
+                        return _tag_pmi_release_trigger(
+                            ism,
+                            trigger_source=trigger_source,
+                            event_date=event_date,
+                            event_name=event_name,
+                        )
+
+                if actual is not None:
+                    result = _pmi_result(
+                        actual,
+                        event_date or datetime.now().strftime("%Y-%m-%d"),
+                        trigger_source,
+                        timeframe,
+                        prev_value=previous,
+                    )
+                    logger.info(
+                        "PMI release trigger: using calendar actual %.1f (%s)",
+                        result["pmi_value"],
+                        result["latest_date"],
+                    )
+                    return _tag_pmi_release_trigger(
+                        result,
+                        trigger_source=trigger_source,
+                        event_date=event_date,
+                        event_name=event_name,
+                    )
+
+    investing = _get_pmi_from_investing_page(timeframe)
+    if investing and _pmi_release_is_recent(investing.get("latest_date")):
+        latest_date = str(investing.get("latest_date") or "")[:10] or None
+        logger.info("PMI release trigger: Investing calendar latest release (%s)", latest_date)
+        return _tag_pmi_release_trigger(
+            investing,
+            trigger_source="Investing:economic_calendar",
+            event_date=latest_date,
+            event_name="ISM Manufacturing PMI",
+        )
+    return None
 
 
 def _snapshot_pmi_previous() -> Optional[float]:

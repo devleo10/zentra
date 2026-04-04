@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import BtcMacroDashboard from "@/components/BtcMacroDashboard"
+import BtcMacroDashboardNew from "@/components/BtcMacroDashboardNew"
 import { getAuthStatus } from "@/lib/api"
 import { getAuthToken } from "@/lib/auth"
 
@@ -39,5 +39,5 @@ export default function DashboardPage() {
     )
   }
 
-  return <BtcMacroDashboard />
+  return <BtcMacroDashboardNew />
 }

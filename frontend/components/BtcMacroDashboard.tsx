@@ -915,12 +915,12 @@ export default function BtcMacroDashboard() {
                 </span>
               )}
               {(() => {
-                const eemPrice = result.eem_price ?? result.nqem_price
-                const eemChange = result.eem_change ?? result.nqem_change
-                const eemChangeUnit = result.eem_change_unit ?? result.nqem_change_unit
-                const eemChangeLabel = result.eem_change_label ?? result.nqem_change_label
-                const eemTrend = result.eem_trend ?? result.nqem_trend
-                const eemSource = result.eem_source ?? result.nqem_source
+                const eemPrice = result.eem_price
+                const eemChange = result.eem_change
+                const eemChangeUnit = result.eem_change_unit
+                const eemChangeLabel = result.eem_change_label
+                const eemTrend = result.eem_trend
+                const eemSource = result.eem_source
                 if (eemPrice == null) return null
                 return (
                   <span className="bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-800 text-gray-300" title="EEM emerging markets ETF">

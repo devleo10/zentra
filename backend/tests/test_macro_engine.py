@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timedelta
 
 import pytest
 import pandas as pd
@@ -29,7 +30,7 @@ from scoring_engine.numeric_scorer import (
 )
 from scoring_engine.signal_quality import detect_regime, evaluate_signal_quality
 from scoring_engine.verdict import compute_final_verdict
-from data_fetchers import fred_data
+from data_fetchers import fred_data, yahoo_data
 
 
 def test_score_inflation_forward_divergence_reduces_confidence():
@@ -121,8 +122,68 @@ def test_fed_balance_sheet_week_uses_calendar_anchor(monkeypatch):
     assert out["change"] == round((7200.0 - 7100.0) / 7100.0 * 100, 2)
 
 
+def test_treasury_month_uses_calendar_month_anchor(monkeypatch):
+    df_2y = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-01-31", "2026-02-28", "2026-03-31"]),
+            "value": [4.05, 4.15, 4.30],
+        }
+    )
+    df_10y = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-01-31", "2026-02-28", "2026-03-31"]),
+            "value": [4.20, 4.28, 4.40],
+        }
+    )
+
+    def _mock_get_fred_data(series_id, *args, **kwargs):
+        if series_id == "DGS2":
+            return df_2y
+        if series_id == "DGS10":
+            return df_10y
+        return pd.DataFrame()
+
+    monkeypatch.setattr(fred_data, "get_fred_data", _mock_get_fred_data)
+
+    out = fred_data.get_treasury_yields("month")
+
+    assert out["yield_2y"]["date"] == "2026-03-31"
+    assert out["yield_2y"]["change"] == round(4.30 - 4.15, 2)
+    assert out["yield_10y"]["date"] == "2026-03-31"
+    assert out["yield_10y"]["change"] == round(4.40 - 4.28, 2)
+
+
+def test_trusted_quote_payload_uses_timeframe_snapshot_baseline(monkeypatch):
+    now = datetime.now()
+    rows = [
+        {"timestamp": now.isoformat(), "sp500_price": 5000.0},
+        {"timestamp": (now - timedelta(days=7)).isoformat(), "sp500_price": 4950.0},
+        {"timestamp": (now - timedelta(days=35)).isoformat(), "sp500_price": 4700.0},
+    ]
+
+    monkeypatch.setattr("storage.db.get_latest_snapshots", lambda limit=10: rows)
+
+    out = yahoo_data._trusted_quote_metric_payload(
+        {
+            "price": 4800.0,
+            "source": "FMP:^GSPC",
+            "date": now.strftime("%Y-%m-%d"),
+        },
+        timeframe="month",
+        response_key="current_price",
+        change_unit="percent",
+        baseline_snapshot_field="sp500_price",
+    )
+
+    assert out is not None
+    assert out["comparison_date"] is not None
+    assert out["change"] == round(((4800.0 - 4700.0) / 4700.0) * 100.0, 2)
+
+
 def test_pmi_requires_official_napm_series(monkeypatch):
+    monkeypatch.setattr(fred_data, "trusted_market_apis", None)
     monkeypatch.setattr(fred_data, "get_fred_data", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(fred_data, "_get_pmi_from_calendar_trigger", lambda timeframe: None)
     monkeypatch.setattr(fred_data, "_get_pmi_from_tradingeconomics_page", lambda timeframe: None)
     monkeypatch.setattr(fred_data, "_get_pmi_from_investing_page", lambda timeframe: None)
     monkeypatch.setattr(fred_data, "_get_pmi_from_alphavantage", lambda timeframe: None)
@@ -137,6 +198,7 @@ def test_pmi_requires_official_napm_series(monkeypatch):
 
 
 def test_pmi_week_uses_latest_official_monthly_print(monkeypatch):
+    monkeypatch.setattr(fred_data, "trusted_market_apis", None)
     df = pd.DataFrame(
         {
             "date": pd.to_datetime(["2025-12-01", "2026-01-01", "2026-02-01"]),
@@ -144,6 +206,9 @@ def test_pmi_week_uses_latest_official_monthly_print(monkeypatch):
         }
     )
     monkeypatch.setattr(fred_data, "get_fred_data", lambda *args, **kwargs: df)
+    monkeypatch.setattr(fred_data, "_get_pmi_from_calendar_trigger", lambda timeframe: None)
+    monkeypatch.setattr(fred_data, "_get_pmi_from_ism_scrape", lambda timeframe: None)
+    monkeypatch.setattr(fred_data, "_get_pmi_from_tradingeconomics_page", lambda timeframe: None)
 
     out = fred_data.get_pmi_data("week")
 
@@ -154,10 +219,13 @@ def test_pmi_week_uses_latest_official_monthly_print(monkeypatch):
 
 
 def test_pmi_uses_tradingview_fallback_when_official_series_missing(monkeypatch):
+    monkeypatch.setattr(fred_data, "trusted_market_apis", None)
     monkeypatch.setattr(fred_data, "get_fred_data", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(fred_data, "_get_pmi_from_calendar_trigger", lambda timeframe: None)
     monkeypatch.setattr(fred_data, "_get_pmi_from_tradingeconomics_page", lambda timeframe: None)
     monkeypatch.setattr(fred_data, "_get_pmi_from_investing_page", lambda timeframe: None)
     monkeypatch.setattr(fred_data, "_get_pmi_from_alphavantage", lambda timeframe: None)
+    monkeypatch.setattr(fred_data, "_get_pmi_from_ism_scrape", lambda timeframe: None)
     monkeypatch.setattr(
         fred_data,
         "_get_pmi_from_tradingview",
@@ -177,6 +245,74 @@ def test_pmi_uses_tradingview_fallback_when_official_series_missing(monkeypatch)
 
     assert out["pmi_value"] == 50.7
     assert out["source"] == "TradingView:ECONOMICS:USPMI"
+
+
+def test_pmi_prefers_calendar_trigger_over_delayed_series(monkeypatch):
+    monkeypatch.setattr(fred_data, "trusted_market_apis", None)
+    monkeypatch.setattr(
+        fred_data,
+        "_get_pmi_from_calendar_trigger",
+        lambda timeframe: {
+            "pmi_value": 52.4,
+            "pmi_trend": "rising",
+            "pmi_status": "expansion",
+            "latest_date": "2026-03-01",
+            "source": "TradingEconomics:calendar:US:Manufacturing PMI",
+            "data_as_of": "2026-03-01",
+            "timeframe": timeframe,
+            "release_trigger": "economic_calendar",
+        },
+    )
+    monkeypatch.setattr(
+        fred_data,
+        "get_fred_data",
+        lambda *args, **kwargs: pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-01-01", "2026-02-01"]),
+                "value": [49.8, 50.2],
+            }
+        ),
+    )
+
+    out = fred_data.get_pmi_data("current")
+
+    assert out["source"] == "TradingEconomics:calendar:US:Manufacturing PMI"
+    assert out["pmi_value"] == 52.4
+
+
+def test_move_prefers_yahoo_before_trusted_fallback(monkeypatch):
+    calls = {"trusted": 0}
+
+    monkeypatch.setattr(
+        yahoo_data,
+        "_yahoo_pct_change_series",
+        lambda symbol, timeframe: {
+            "current_price": 121.2,
+            "change": 0.8,
+            "trend": "rising",
+            "source": symbol,
+            "timeframe": timeframe,
+        }
+        if symbol == "^MOVE"
+        else {"error": "missing"},
+    )
+
+    def _trusted(timeframe):
+        calls["trusted"] += 1
+        return {
+            "current_price": 119.8,
+            "change": -0.2,
+            "trend": "falling",
+            "source": "FMP:^MOVE",
+            "timeframe": timeframe,
+        }
+
+    monkeypatch.setattr(yahoo_data, "_trusted_move_fallback", _trusted)
+
+    out = yahoo_data.get_move_index_data("current")
+
+    assert out["source"] == "^MOVE"
+    assert calls["trusted"] == 0
 
 
 def test_strict_mode_accepts_lbma_gold_source():

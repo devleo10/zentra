@@ -369,6 +369,67 @@ def get_tradingeconomics_us_manufacturing_pmi() -> Optional[Dict[str, Any]]:
     return None
 
 
+def get_tradingeconomics_us_pmi_calendar_event() -> Optional[Dict[str, Any]]:
+    """Get the latest US manufacturing PMI calendar print from TradingEconomics.
+
+    This endpoint is useful as an economic-calendar trigger for near-release
+    PMI refresh workflows where historical series can lag.
+    """
+    cred = _te_credential()
+    if not cred:
+        return None
+
+    try:
+        rows = _request_json(
+            f"{_TE_BASE_URL}/calendar/country/united%20states",
+            params={"c": cred},
+        )
+        if not isinstance(rows, list) or not rows:
+            return None
+
+        points = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            event_name = str(row.get("Event") or row.get("Category") or "").strip()
+            event_low = event_name.lower()
+            if "pmi" not in event_low:
+                continue
+            if "manufacturing" not in event_low and "ism" not in event_low:
+                continue
+
+            actual = _safe_float(row.get("Actual") or row.get("ActualValue") or row.get("Value"))
+            previous = _safe_float(row.get("Previous") or row.get("PreviousValue"))
+            date = _date_from_any(
+                row.get("Date")
+                or row.get("DateTime")
+                or row.get("ReferenceDate")
+                or row.get("LastUpdate")
+            )
+
+            # Keep rows even when actual is missing so we can still identify
+            # release timing; caller can decide whether to use the value.
+            points.append((date or "", actual, previous, event_name, row))
+
+        if not points:
+            return None
+
+        points.sort(key=lambda x: x[0])
+        latest_date, actual_value, previous_value, event_name, raw_row = points[-1]
+        return {
+            "actual_value": actual_value,
+            "previous_value": previous_value,
+            "date": latest_date or datetime.utcnow().strftime("%Y-%m-%d"),
+            "event_name": event_name or "Manufacturing PMI",
+            "importance": raw_row.get("Importance") if isinstance(raw_row, dict) else None,
+            "source": "TradingEconomics:calendar:US:Manufacturing PMI",
+        }
+    except Exception as e:
+        logger.debug("TradingEconomics PMI calendar fetch failed: %s", e)
+        return None
+
+
 def get_eodhd_us_manufacturing_pmi() -> Optional[Dict[str, Any]]:
     token = _eodhd_token()
     if not token:

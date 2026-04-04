@@ -177,6 +177,86 @@ def test_gold_strict_mode_uses_lbma_official_feed(monkeypatch):
     assert res["current_price"] == 3012.4
 
 
+def test_gold_strict_month_augmented_with_yahoo_when_lbma_has_no_1m_change(monkeypatch):
+    """LBMA today.json only has ~1 week of history; 1M % must come from futures."""
+    yahoo = load_module(backend_path("data_fetchers", "yahoo_data.py"), "test_yahoo_gold_lbma_month")
+    yahoo.STRICT_LIVE_OFFICIAL_ONLY = True
+    monkeypatch.setattr(
+        yahoo,
+        "_lbma_gold_data",
+        lambda timeframe: {
+            "current_price": 4529.15,
+            "date": "2026-03-30",
+            "data_as_of": "2026-03-30",
+            "comparison_date": None,
+            "change": None,
+            "change_label": "1M",
+            "change_unit": "percent",
+            "trend": "stable",
+            "timeframe": timeframe,
+            "source": "LBMA:today.json",
+        },
+    )
+    monkeypatch.setattr(
+        yahoo,
+        "_yahoo_gold_futures_rolling_change",
+        lambda tf: {
+            "symbol": "GC=F",
+            "change": 1.4,
+            "comparison_date": "2026-02-27",
+            "change_label": "1M",
+            "trend": "rising",
+        },
+    )
+
+    res = yahoo.get_gold_data("month")
+
+    assert res["current_price"] == 4529.15
+    assert res["change"] == 1.4
+    assert res["comparison_date"] == "2026-02-27"
+    assert "LBMA" in res["source"]
+    assert "GC=F" in res["source"]
+
+
+def test_gold_strict_month_fred_when_yahoo_augment_fails(monkeypatch):
+    yahoo = load_module(backend_path("data_fetchers", "yahoo_data.py"), "test_yahoo_gold_lbma_fred")
+    yahoo.STRICT_LIVE_OFFICIAL_ONLY = True
+    monkeypatch.setattr(
+        yahoo,
+        "_lbma_gold_data",
+        lambda timeframe: {
+            "current_price": 4529.15,
+            "date": "2026-03-30",
+            "data_as_of": "2026-03-30",
+            "comparison_date": None,
+            "change": None,
+            "change_label": "1M",
+            "change_unit": "percent",
+            "trend": "stable",
+            "timeframe": timeframe,
+            "source": "LBMA:today.json",
+        },
+    )
+    monkeypatch.setattr(yahoo, "_yahoo_gold_futures_rolling_change", lambda tf: None)
+    monkeypatch.setattr(
+        yahoo,
+        "_fred_gold_month_percent_lbma_augment",
+        lambda: {
+            "symbol": "FRED:GOLDAMGBD228NLBM",
+            "change": 3.3,
+            "comparison_date": "2026-02-27",
+            "change_label": "1M",
+            "trend": "rising",
+        },
+    )
+
+    res = yahoo.get_gold_data("month")
+
+    assert res["change"] == 3.3
+    assert "FRED:GOLDAMGBD228NLBM" in res["source"]
+    assert res["current_price"] == 4529.15
+
+
 def test_emerging_markets_prefers_eem(monkeypatch):
     yahoo = load_module(backend_path("data_fetchers", "yahoo_data.py"), "test_yahoo_eem")
     dates = pd.to_datetime(["2026-03-20", "2026-03-27"])

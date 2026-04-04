@@ -43,6 +43,10 @@ CORS_ORIGINS=http://localhost:3000
 - `OPENAI_MODEL` — default chat model (default: `gpt-4o`).
 - `OPENAI_EMBEDDING_MODEL` — default `text-embedding-3-small` for RAG embeddings.
 
+**Optional env (monthly performance):**
+- `ENABLE_MONTHLY_METRIC_CACHE` — default `1`. When enabled, `timeframe=month` runs reuse persisted slow macro metrics.
+- `MONTHLY_SLOW_METRIC_CACHE_TTL_SECONDS` — default `43200` (12h). Controls cache freshness window for those slow monthly metrics.
+
 ### 3. Ingest Knowledge Base
 
 Before running the server, you need to ingest the knowledge base into ChromaDB:
@@ -78,6 +82,24 @@ python -m main
 ```
 
 The API will be available at `http://localhost:8000`
+
+## Accuracy Audit / TradingView Cross-Check
+
+Run a full analysis and compare key metrics to TradingView references:
+
+```bash
+python scripts/tradingview_crosscheck_report.py --timeframe month --fresh
+```
+
+Reports are written to `backend/logs/` as both `.json` and `.md` files.
+
+## Render Keep-Warm
+
+The repository includes `.github/workflows/render-keepalive.yml`.
+
+1. Add GitHub Actions secret `KEEPALIVE_URL` with your deployed backend keepalive endpoint, for example:
+	`https://<your-service>.onrender.com/api/keepalive`
+2. The workflow pings every 10 minutes to reduce free-plan cold starts.
 
 ## API Endpoints
 

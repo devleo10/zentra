@@ -91,6 +91,64 @@ def _fresh_snapshot_value(field_name: str) -> Optional[Tuple[float, Optional[str
         return None
 
 
+def _snapshot_baseline_for_timeframe(field_name: str, timeframe: str) -> Optional[Tuple[float, Optional[str]]]:
+    """Return snapshot baseline nearest to the requested timeframe window.
+
+    This keeps fallback %/point changes aligned with current/week/month/year
+    semantics instead of reusing a same-day delta for all timeframes.
+    """
+    days_by_timeframe = {
+        "current": 1,
+        "week": 7,
+        "month": 30,
+        "year": 365,
+    }
+    target_days = days_by_timeframe.get(timeframe, 1)
+    try:
+        from storage.db import get_latest_snapshots
+
+        rows = get_latest_snapshots(limit=420)
+    except Exception:
+        logger.exception("Failed to read snapshot baseline for %s", field_name)
+        return None
+
+    if not rows:
+        return None
+
+    now = datetime.now()
+    target_dt = now - timedelta(days=target_days)
+    fallback_latest: Optional[Tuple[float, Optional[str]]] = None
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw_value = row.get(field_name)
+        raw_ts = row.get("timestamp")
+        if raw_value is None or raw_ts is None:
+            continue
+
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(value):
+            continue
+
+        ts_text = str(raw_ts)
+        try:
+            ts = datetime.fromisoformat(ts_text)
+        except Exception:
+            continue
+
+        if fallback_latest is None:
+            fallback_latest = (value, ts_text)
+
+        if ts <= target_dt:
+            return value, ts_text
+
+    return fallback_latest
+
+
 # Timeframe to period mapping for yfinance
 TIMEFRAME_PERIODS = {
     "current": "1mo",
@@ -1237,6 +1295,7 @@ def get_natural_gas_data(timeframe: str = "current") -> Dict:
         # This aligns more closely with TradingView's default daily % change semantics.
         if timeframe == "current":
             try:
+                ticker = yf.Ticker(symbol or "NG=F")
                 intraday = ticker.history(period="2d", interval="60m")
                 if intraday is not None and not intraday.empty:
                     h = _normalize_hist_index(intraday)
@@ -1339,7 +1398,7 @@ def _trusted_quote_metric_payload(
     comparison_date = None
     change = None
     if baseline_snapshot_field:
-        baseline = _fresh_snapshot_value(baseline_snapshot_field)
+        baseline = _snapshot_baseline_for_timeframe(baseline_snapshot_field, timeframe)
         if baseline and baseline[0] not in (None, 0):
             try:
                 baseline_val = float(baseline[0])
@@ -1653,10 +1712,6 @@ def _cboe_tyvix_move_proxy(timeframe: str) -> Optional[Dict[str, Any]]:
 def get_move_index_data(timeframe: str = "current") -> Dict:
     """ICE BofA MOVE Treasury volatility index (^MOVE)."""
     try:
-        trusted = _trusted_move_fallback(timeframe)
-        if trusted:
-            return trusted
-
         for symbol in ["^MOVE", "MOVE"]:
             try:
                 out = _yahoo_pct_change_series(symbol, timeframe)
@@ -1664,6 +1719,10 @@ def get_move_index_data(timeframe: str = "current") -> Dict:
                     return out
             except Exception:
                 continue
+
+        trusted = _trusted_move_fallback(timeframe)
+        if trusted:
+            return trusted
 
         tv_value = _tradingview_scan_latest_close("INDEX:MOVE")
         if tv_value is not None:

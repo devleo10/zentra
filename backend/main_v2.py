@@ -44,6 +44,13 @@ class LoginRequest(BaseModel):
 
 
 _VALID_TIMEFRAMES = ("current", "week", "month")
+_TIMEFRAME_UI_LABEL = {"current": "Now", "week": "7D", "month": "1M"}
+
+
+def _timeframe_ui_label(timeframe: str) -> str:
+    return _TIMEFRAME_UI_LABEL.get(timeframe, timeframe)
+
+
 _ANALYSIS_CACHE_TTL_SECONDS = int(os.getenv("ANALYSIS_CACHE_TTL_SECONDS", "120"))
 _ANALYSIS_RUNNING_RETRY_AFTER_SECONDS = int(os.getenv("ANALYSIS_RUNNING_RETRY_AFTER_SECONDS", "15"))
 _ANALYSIS_SNAPSHOT_TTL_SECONDS = int(os.getenv("ANALYSIS_SNAPSHOT_TTL_SECONDS", "1800"))
@@ -149,10 +156,14 @@ def _analyze_with_guard(timeframe: str, fresh: bool = False) -> JSONResponse:
         # Complete-only mode: while analysis is running, never emit stale/partial data.
         if already_running:
             retry_after = _ANALYSIS_RUNNING_RETRY_AFTER_SECONDS
+            label = _timeframe_ui_label(timeframe)
             detail = {
                 "status": "in_progress",
                 "error": "analysis_already_running",
-                "message": f"Analysis for timeframe={timeframe} is already in progress.",
+                "message": (
+                    f"Still computing the {label} analysis on the server. "
+                    "The dashboard polls every few seconds until it is done—this is normal, not a conflict."
+                ),
                 "retry_after_seconds": retry_after,
                 "timeframe": timeframe,
             }
@@ -206,10 +217,14 @@ def _analyze_with_guard(timeframe: str, fresh: bool = False) -> JSONResponse:
 
     # Return in-progress while background run proceeds (complete-only: no stale snapshot response).
     retry_after = _ANALYSIS_RUNNING_RETRY_AFTER_SECONDS
+    label = _timeframe_ui_label(timeframe)
     return JSONResponse(
         content={
             "status": "in_progress",
-            "message": f"Analysis for timeframe={timeframe} started. Poll again shortly.",
+            "message": (
+                f"{label} analysis started on the server. "
+                "Keep this page open; results will appear when the run finishes."
+            ),
             "retry_after_seconds": retry_after,
             "timeframe": timeframe,
         },

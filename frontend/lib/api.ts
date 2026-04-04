@@ -131,9 +131,17 @@ export interface V2AnalysisResult {
   unemployment_3m_avg: number | null
   unemployment_history_3: Array<{ date: string; rate: number }> | null
   nfp_change: number | null
+  cpi_value?: number | null
+  core_cpi_value?: number | null
   gdp_growth_rate: number | null
   gdp_trend: string | null
+  gdp_latest_date?: string | null
+  pce_value?: number | null
+  pce_latest_date?: string | null
   pmi_value: number | null
+  pmi_previous_value?: number | null
+  pmi_delta_value?: number | null
+  pmi_latest_date?: string | null
   pmi_status: string | null
   pmi_trend: string | null
   pmi_source?: string | null
@@ -173,6 +181,7 @@ export interface V2AnalysisResult {
   fed_rate_trend: string | null
   fed_rate_stance: string | null
   fed_rate_type?: string | null
+  fed_balance_sheet_trend?: string | null
   // Natural gas
   natgas_price: number | null
   natgas_change: number | null
@@ -191,13 +200,6 @@ export interface V2AnalysisResult {
   eem_change_unit?: "percent" | "points" | null
   eem_trend?: string | null
   eem_source?: string | null
-  // Backward-compat alias during migration from NQEM to EEM
-  nqem_price: number | null
-  nqem_change: number | null
-  nqem_change_label?: string | null
-  nqem_change_unit?: "percent" | "points" | null
-  nqem_trend: string | null
-  nqem_source?: string | null
   // BTC market structure
   btc_dominance: number | null
   stablecoin_dominance: number | null

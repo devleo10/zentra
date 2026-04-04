@@ -18,3 +18,6 @@ openspecs/
 *.md
 !README.md
 
+# Runtime metric cache payloads (generated after analysis runs)
+backend/storage/metric_cache/*.json
+
