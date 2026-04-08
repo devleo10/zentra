@@ -12,9 +12,23 @@ import pandas as pd
 
 from utils.http_retry import get_with_retries
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Literal, Tuple
+from typing import Any, Dict, Optional, Literal, Tuple
 from dotenv import load_dotenv
 import logging
+
+
+def _with_obs_fetch(payload: Dict[str, Any], observation_ts) -> Dict[str, Any]:
+    """Attach observation and fetch timestamps for auditing."""
+    result = dict(payload)
+    try:
+        if hasattr(observation_ts, "isoformat"):
+            result["observed_at"] = observation_ts.isoformat()
+        else:
+            result["observed_at"] = str(observation_ts) if observation_ts is not None else None
+    except Exception:
+        result["observed_at"] = None
+    result["fetched_at"] = datetime.utcnow().isoformat()
+    return result
 
 try:
     from . import trusted_market_apis
@@ -30,7 +44,7 @@ logger = logging.getLogger("btc_macro.data_fetchers.fred")
 
 FRED_API_KEY = os.getenv("FRED_API_KEY")
 FRED_BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
-STRICT_LIVE_OFFICIAL_ONLY = os.getenv("STRICT_LIVE_OFFICIAL_ONLY", "1").strip().lower() not in {"0", "false", "no"}
+STRICT_LIVE_OFFICIAL_ONLY = os.getenv("STRICT_LIVE_OFFICIAL_ONLY", "0").strip().lower() not in {"0", "false", "no"}
 ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY") or os.getenv("ALPHA_VANTAGE_API_KEY")
 ALPHAVANTAGE_URL = "https://www.alphavantage.co/query"
 TRADINGVIEW_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
@@ -882,18 +896,21 @@ def get_oil_data(timeframe: str = "current") -> Dict:
                     comparison_date = comparison.name.strftime("%Y-%m-%d")
                 change = ((latest_price - prev_price) / prev_price) * 100 if prev_price else 0
                 logger.info("Oil fetched from Yahoo Finance (CL=F): %.2f", latest_price)
-                return {
-                    "current_price": round(latest_price, 2),
-                    "latest_date": h.index[-1].strftime("%Y-%m-%d"),
-                    "comparison_date": comparison_date,
-                    "change": round(change, 2),
-                    "change_label": _CHANGE_LABELS.get(timeframe, ""),
-                    "change_unit": "percent",
-                    "trend": "rising" if change > 0 else "falling" if change < 0 else "stable",
-                    "source": "Yahoo Finance (CL=F)",
-                    "data_as_of": h.index[-1].strftime("%Y-%m-%d"),
-                    "timeframe": timeframe,
-                }
+                return _with_obs_fetch(
+                    {
+                        "current_price": round(latest_price, 2),
+                        "latest_date": h.index[-1].strftime("%Y-%m-%d"),
+                        "comparison_date": comparison_date,
+                        "change": round(change, 2),
+                        "change_label": _CHANGE_LABELS.get(timeframe, ""),
+                        "change_unit": "percent",
+                        "trend": "rising" if change > 0 else "falling" if change < 0 else "stable",
+                        "source": "Yahoo Finance (CL=F)",
+                        "data_as_of": h.index[-1].strftime("%Y-%m-%d"),
+                        "timeframe": timeframe,
+                    },
+                    h.index[-1],
+                )
         except Exception as e:
             logger.warning("Oil Yahoo Finance primary source failed: %s", e)
 
@@ -918,7 +935,7 @@ def get_oil_data(timeframe: str = "current") -> Dict:
             "timeframe": timeframe,
         }
         logger.info("Oil fetched from EIA: $%.2f (change=%+.2f%%, date=%s)", result["current_price"], change, result["latest_date"])
-        return result
+        return _with_obs_fetch(result, latest["date"])
 
     df = get_fred_data("DCOILWTICO", start_date=start_date)  # WTI Crude Oil Spot Price
     if df.empty:
@@ -945,7 +962,7 @@ def get_oil_data(timeframe: str = "current") -> Dict:
         "timeframe": timeframe,
     }
     logger.info("Oil fetched: $%.2f (change=%+.2f%%, date=%s)", result["current_price"], change, result["latest_date"])
-    return result
+    return _with_obs_fetch(result, latest["date"])
 
 
 def get_fed_funds_rate(timeframe: str = "current") -> Dict:

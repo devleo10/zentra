@@ -215,6 +215,30 @@ def _stamp_batch_fetched_at(raw_data: dict) -> None:
             val.setdefault("fetched_at", ts)
 
 
+def _warn_if_delayed(name: str, blob: dict, tolerance_minutes: int = 60) -> None:
+    """Warn when observation time lags fetch time beyond tolerance."""
+    if not isinstance(blob, dict):
+        return
+    obs = blob.get("observed_at") or blob.get("data_as_of")
+    fetched = blob.get("fetched_at")
+    if not obs or not fetched:
+        return
+    try:
+        obs_dt = datetime.fromisoformat(str(obs).replace("Z", "+00:00"))
+        fetched_dt = datetime.fromisoformat(str(fetched).replace("Z", "+00:00"))
+        delay = fetched_dt - obs_dt
+        if delay.total_seconds() > tolerance_minutes * 60:
+            logger.warning(
+                "  %s observation delayed: obs=%s fetched=%s delay=%s",
+                name,
+                obs_dt.isoformat(),
+                fetched_dt.isoformat(),
+                delay,
+            )
+    except Exception:
+        return
+
+
 def _dxy_needs_repair(dxy: dict) -> bool:
     """True when primary DXY payload is missing a usable level (UI/API hide the metric)."""
     if not dxy:
@@ -477,7 +501,13 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     
     try:
         raw_data["dxy"] = yahoo_data.get_dxy_data(timeframe)
-        logger.info(f"  DXY: {raw_data['dxy'].get('current_price', 'ERROR')}")
+        logger.info(
+            "  DXY: %s (obs=%s fetched=%s)",
+            raw_data["dxy"].get("current_price", "ERROR"),
+            raw_data["dxy"].get("observed_at") or raw_data["dxy"].get("data_as_of"),
+            raw_data["dxy"].get("fetched_at"),
+        )
+        _warn_if_delayed("DXY", raw_data["dxy"])
     except Exception as e:
         logger.error(f"  DXY fetch FAILED: {e}")
         raw_data["dxy"] = {"error": str(e), "timeframe": timeframe}
@@ -490,28 +520,52 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
     
     try:
         raw_data["vix"] = yahoo_data.get_vix_data(timeframe)
-        logger.info(f"  VIX: {raw_data['vix'].get('current_value', 'ERROR')}")
+        logger.info(
+            "  VIX: %s (obs=%s fetched=%s)",
+            raw_data["vix"].get("current_value", "ERROR"),
+            raw_data["vix"].get("observed_at") or raw_data["vix"].get("data_as_of"),
+            raw_data["vix"].get("fetched_at"),
+        )
+        _warn_if_delayed("VIX", raw_data["vix"])
     except Exception as e:
         logger.error(f"  VIX fetch FAILED: {e}")
         raw_data["vix"] = {"error": str(e)}
     
     try:
         raw_data["sp500"] = yahoo_data.get_sp500_data(timeframe)
-        logger.info(f"  S&P500: {raw_data['sp500'].get('current_price', 'ERROR')}")
+        logger.info(
+            "  S&P500: %s (obs=%s fetched=%s)",
+            raw_data["sp500"].get("current_price", "ERROR"),
+            raw_data["sp500"].get("observed_at") or raw_data["sp500"].get("data_as_of"),
+            raw_data["sp500"].get("fetched_at"),
+        )
+        _warn_if_delayed("S&P 500", raw_data["sp500"])
     except Exception as e:
         logger.error(f"  S&P500 fetch FAILED: {e}")
         raw_data["sp500"] = {"error": str(e)}
     
     try:
         raw_data["gold"] = yahoo_data.get_gold_data(timeframe)
-        logger.info(f"  Gold: {raw_data['gold'].get('current_price', 'ERROR')}")
+        logger.info(
+            "  Gold: %s (obs=%s fetched=%s)",
+            raw_data["gold"].get("current_price", "ERROR"),
+            raw_data["gold"].get("observed_at") or raw_data["gold"].get("data_as_of"),
+            raw_data["gold"].get("fetched_at"),
+        )
+        _warn_if_delayed("Gold", raw_data["gold"])
     except Exception as e:
         logger.error(f"  Gold fetch FAILED: {e}")
         raw_data["gold"] = {"error": str(e)}
 
     try:
         raw_data["oil"] = fred_data.get_oil_data(timeframe)
-        logger.info(f"  Oil (WTI): ${raw_data['oil'].get('current_price', 'ERROR')}")
+        logger.info(
+            "  Oil (WTI): $%s (obs=%s fetched=%s)",
+            raw_data["oil"].get("current_price", "ERROR"),
+            raw_data["oil"].get("observed_at") or raw_data["oil"].get("data_as_of") or raw_data["oil"].get("latest_date"),
+            raw_data["oil"].get("fetched_at"),
+        )
+        _warn_if_delayed("WTI", raw_data["oil"])
     except Exception as e:
         logger.error(f"  Oil fetch FAILED: {e}")
         raw_data["oil"] = {"error": str(e)}
@@ -523,7 +577,13 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
                 raw_data["btc"] = coingecko_data.get_btc_spot_kraken(timeframe)
         else:
             raw_data["btc"] = coingecko_data.get_btc_price(timeframe)
-        logger.info(f"  BTC: ${raw_data['btc'].get('price_usd', 'ERROR')}")
+        logger.info(
+            "  BTC: $%s (obs=%s fetched=%s)",
+            raw_data["btc"].get("price_usd", "ERROR"),
+            raw_data["btc"].get("date"),
+            raw_data["btc"].get("fetched_at"),
+        )
+        _warn_if_delayed("BTC", raw_data["btc"])
     except Exception as e:
         logger.error(f"  BTC fetch FAILED: {e}")
         raw_data["btc"] = {"error": str(e)}
@@ -1202,6 +1262,8 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "oil_change_label": raw_data.get("oil", {}).get("change_label"),
         "oil_change_unit": raw_data.get("oil", {}).get("change_unit"),
         "oil_price": raw_data.get("oil", {}).get("current_price"),
+        "oil_observed_at": raw_data.get("oil", {}).get("observed_at") or raw_data.get("oil", {}).get("data_as_of"),
+        "oil_fetched_at": raw_data.get("oil", {}).get("fetched_at"),
         "oil_trend": raw_data.get("oil", {}).get("trend"),
         "oil_source": raw_data.get("oil", {}).get("source"),
         "dxy_value": dxy_api_val,
@@ -1214,12 +1276,16 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "dxy_comparison_date_rolling_1m": raw_data["dxy"].get("comparison_date_rolling_1m"),
         "dxy_trend": raw_data["dxy"].get("trend"),
         "dxy_source": raw_data["dxy"].get("source"),
+        "dxy_observed_at": raw_data["dxy"].get("observed_at") or raw_data["dxy"].get("data_as_of"),
+        "dxy_fetched_at": raw_data["dxy"].get("fetched_at"),
         "vix": vix_val,
         "vix_change": raw_data["vix"].get("change"),
         "vix_change_label": raw_data["vix"].get("change_label"),
         "vix_change_unit": raw_data["vix"].get("change_unit"),
         "vix_trend": raw_data["vix"].get("trend"),
         "vix_source": raw_data["vix"].get("source"),
+        "vix_observed_at": raw_data["vix"].get("observed_at") or raw_data["vix"].get("data_as_of"),
+        "vix_fetched_at": raw_data["vix"].get("fetched_at"),
         "ten_year_yield": yield_10y,
         "ten_year_yield_trend": raw_data["yields"].get("yield_10y", {}).get("trend"),
         "two_year_yield": raw_data["yields"].get("yield_2y", {}).get("value"),
@@ -1237,16 +1303,22 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "sp500_price": raw_data["sp500"].get("current_price"),
         "sp500_trend": raw_data["sp500"].get("trend"),
         "sp500_source": raw_data["sp500"].get("source"),
+        "sp500_observed_at": raw_data["sp500"].get("observed_at") or raw_data["sp500"].get("data_as_of"),
+        "sp500_fetched_at": raw_data["sp500"].get("fetched_at"),
         "gold_price": raw_data["gold"].get("current_price"),
         "gold_change": gold_change_val,
         "gold_change_label": raw_data["gold"].get("change_label"),
         "gold_change_unit": raw_data["gold"].get("change_unit"),
         "gold_trend": raw_data["gold"].get("trend"),
         "gold_source": raw_data["gold"].get("source"),
+        "gold_observed_at": raw_data["gold"].get("observed_at") or raw_data["gold"].get("data_as_of"),
+        "gold_fetched_at": raw_data["gold"].get("fetched_at"),
         "btc_price": raw_data["btc"].get("price_usd"),
         "btc_change": raw_data["btc"].get("change"),
         "btc_change_24h": raw_data["btc"].get("change_24h"),
         "btc_change_7d": raw_data["btc"].get("change_7d"),
+        "btc_observed_at": raw_data["btc"].get("date"),
+        "btc_fetched_at": raw_data["btc"].get("fetched_at"),
         "fed_funds_rate": fed_rate_val,
         "fed_rate_trend": fed_rate_trend,
         "fed_rate_stance": fed_rate_stance,

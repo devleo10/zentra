@@ -113,10 +113,16 @@ export interface V2AnalysisResult {
   dxy_trend: string | null
   /** Yahoo symbol, EURUSD proxy, FRED_DTWEXBGS, last_snapshot, etc. */
   dxy_source?: string | null
+  dxy_observed_at?: string | null
+  dxy_fetched_at?: string | null
   vix: number | null
+  vix_observed_at?: string | null
+  vix_fetched_at?: string | null
   ten_year_yield: number | null
   ten_year_yield_trend: string | null
   oil_price: number | null
+  oil_observed_at?: string | null
+  oil_fetched_at?: string | null
   oil_change: number | null
   oil_change_label?: string | null
   oil_change_unit?: "percent" | "points" | null
@@ -160,7 +166,11 @@ export interface V2AnalysisResult {
   sp500_change_unit?: "percent" | "points" | null
   sp500_trend: string | null
   sp500_source?: string | null
+  sp500_observed_at?: string | null
+  sp500_fetched_at?: string | null
   gold_price: number | null
+  gold_observed_at?: string | null
+  gold_fetched_at?: string | null
   gold_change: number | null
   gold_change_label?: string | null
   gold_change_unit?: "percent" | "points" | null
@@ -215,6 +225,8 @@ export interface V2AnalysisResult {
   stablecoin_dominance_change_source?: string | null
   btc_ma200: number | null
   btc_realized_vol_30d: number | null
+  btc_observed_at?: string | null
+  btc_fetched_at?: string | null
   btc_etf_volume: number | null
   btc_etf_net_flow_musd?: number | null
   btc_etf_flow_date?: string | null

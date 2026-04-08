@@ -40,7 +40,7 @@ except Exception:
 DXY_VALIDATION_TOLERANCE_PCT = float(_CFG.get("dxy_tolerance_pct", 0.05))
 FALLBACK_MAX_SNAPSHOT_AGE_HOURS = int(_CFG.get("fallback_max_snapshot_age_hours", 48))
 USE_LAST_SNAPSHOT_FOR_FALLBACK = bool(_CFG.get("use_last_snapshot_for_fallback", True))
-STRICT_LIVE_OFFICIAL_ONLY = os.getenv("STRICT_LIVE_OFFICIAL_ONLY", "1").strip().lower() not in {"0", "false", "no"}
+STRICT_LIVE_OFFICIAL_ONLY = os.getenv("STRICT_LIVE_OFFICIAL_ONLY", "0").strip().lower() not in {"0", "false", "no"}
 ECB_API_BASE_URL = "https://data-api.ecb.europa.eu/service/data/EXR"
 LBMA_TODAY_URL = "https://prices.lbma.org.uk/json/today.json"
 TRADINGVIEW_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
@@ -55,6 +55,28 @@ def _safe_date_str(ts) -> str:
         return str(ts)[:10]
     except Exception:
         return datetime.now().strftime("%Y-%m-%d")
+
+
+def _safe_iso(ts) -> Optional[str]:
+    """Return ISO-8601 string for observation timestamps (date or datetime)."""
+    if ts is None:
+        return None
+    try:
+        if hasattr(ts, "to_pydatetime"):
+            return ts.to_pydatetime().isoformat()
+        if hasattr(ts, "isoformat"):
+            return ts.isoformat()
+        return str(ts)
+    except Exception:
+        return None
+
+
+def _with_obs_fetch(payload: Dict[str, Any], observation_ts) -> Dict[str, Any]:
+    """Attach observation and fetch timestamps for auditing."""
+    result = dict(payload)
+    result["observed_at"] = _safe_iso(observation_ts)
+    result["fetched_at"] = datetime.utcnow().isoformat()
+    return result
 
 
 def _get_latest_snapshot():
@@ -912,7 +934,7 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
                 symbol, current_price
             )
 
-        return result
+        return _with_obs_fetch(result, latest.name)
     except Exception as e:
         logger.warning("DXY primary fetch error: %s; trying proxies", e)
         basket = _dxy_from_fx_basket(timeframe)
@@ -1014,7 +1036,7 @@ def get_vix_data(timeframe: str = "current") -> Dict:
             "timeframe": timeframe,
             "source": symbol,
         }
-        return result
+        return _with_obs_fetch(result, latest.name)
     except Exception as e:
         return {"error": f"VIX fetch error: {str(e)}", "timeframe": timeframe}
 
@@ -1095,7 +1117,7 @@ def get_sp500_data(timeframe: str = "current") -> Dict:
             "timeframe": timeframe,
             "source": symbol,
         }
-        return result
+        return _with_obs_fetch(result, latest.name)
     except Exception as e:
         return {"error": f"S&P 500 fetch error: {str(e)}", "timeframe": timeframe}
 
@@ -1176,7 +1198,7 @@ def get_gold_data(timeframe: str = "current") -> Dict:
             "timeframe": timeframe,
             "source": symbol,
         }
-        return result
+        return _with_obs_fetch(result, latest.name)
     except Exception as e:
         return {"error": f"Gold fetch error: {str(e)}", "timeframe": timeframe}
 

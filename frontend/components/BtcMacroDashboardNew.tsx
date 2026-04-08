@@ -99,6 +99,19 @@ function formatDateLabel(value: string | null | undefined): string {
   }).format(parsed)
 }
 
+function formatAsOf(value: string | null | undefined): string | null {
+  if (!value) return null
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(parsed)
+}
+
 function directionFromNumber(value: number | null | undefined, epsilon = 0.01): Direction {
   if (value == null || !Number.isFinite(value)) return "flat"
   if (value > epsilon) return "up"
@@ -766,7 +779,12 @@ export default function BtcMacroDashboardNew() {
                   label="WTI"
                   value={formatPrice(result.oil_price, 2)}
                   direction={directionFromNumber(result.oil_change)}
-                  detail={`Change: ${formatPercent(result.oil_change, 2)}`}
+                  detail={[
+                    `Change: ${formatPercent(result.oil_change, 2)}`,
+                    formatAsOf(result.oil_observed_at) ? `As of ${formatAsOf(result.oil_observed_at)}` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
                 />
                 <MetricRow
                   label="Natural Gas"
@@ -789,7 +807,7 @@ export default function BtcMacroDashboardNew() {
                     result.dxy_change != null
                       ? formatPercent(result.dxy_change, 2)
                       : formatPercent(result.dxy_change_7d, 2)
-                  }`}
+                  }${formatAsOf(result.dxy_observed_at) ? ` · As of ${formatAsOf(result.dxy_observed_at)}` : ""}`}
                 />
                 <MetricRow
                   label="NQEM / EEM"
@@ -810,7 +828,9 @@ export default function BtcMacroDashboardNew() {
                   label="S&P 500"
                   value={formatNumber(result.sp500_price, 0)}
                   direction={directionFromNumber(result.sp500_change)}
-                  detail={`Change: ${formatPercent(result.sp500_change, 2)}`}
+                  detail={`Change: ${formatPercent(result.sp500_change, 2)}${
+                    formatAsOf(result.sp500_observed_at) ? ` · As of ${formatAsOf(result.sp500_observed_at)}` : ""
+                  }`}
                 />
                 <MetricRow
                   label="Gold"
@@ -818,15 +838,21 @@ export default function BtcMacroDashboardNew() {
                   direction={directionFromNumber(result.gold_change)}
                   detail={
                     result.gold_change != null && Number.isFinite(result.gold_change)
-                      ? `Change: ${formatPercent(result.gold_change, 2)}`
-                      : `Change: N/A (${result.gold_source ? result.gold_source : "no overlay"})`
+                      ? `Change: ${formatPercent(result.gold_change, 2)}${
+                          formatAsOf(result.gold_observed_at) ? ` · As of ${formatAsOf(result.gold_observed_at)}` : ""
+                        }`
+                      : `Change: N/A (${result.gold_source ? result.gold_source : "no overlay"})${
+                          formatAsOf(result.gold_observed_at) ? ` · As of ${formatAsOf(result.gold_observed_at)}` : ""
+                        }`
                   }
                 />
                 <MetricRow
                   label="VIX"
                   value={formatNumber(result.vix, 2)}
                   direction={directionFromNumber(result.vix_change)}
-                  detail={`Change: ${formatPercent(result.vix_change, 2)}`}
+                  detail={`Change: ${formatPercent(result.vix_change, 2)}${
+                    formatAsOf(result.vix_observed_at) ? ` · As of ${formatAsOf(result.vix_observed_at)}` : ""
+                  }`}
                 />
               </div>
             </SectionCard>
@@ -841,7 +867,11 @@ export default function BtcMacroDashboardNew() {
                   label="BTC"
                   value={formatPrice(result.btc_price, 0)}
                   direction={btcTfPct != null ? directionFromNumber(btcTfPct) : directionFromArrow(result.btc_market_arrow)}
-                  detail={`Change (${timeframe === "current" ? "~24h" : timeframe === "week" ? "~7d" : "~1M"}): ${formatPercent(btcTfPct, 2)}`}
+                  detail={`Change (${
+                    timeframe === "current" ? "~24h" : timeframe === "week" ? "~7d" : "~1M"
+                  }): ${formatPercent(btcTfPct, 2)}${
+                    formatAsOf(result.btc_observed_at) ? ` · As of ${formatAsOf(result.btc_observed_at)}` : ""
+                  }`}
                 />
                 <MetricRow
                   label="BTC.D"
