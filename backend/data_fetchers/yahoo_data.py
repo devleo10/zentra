@@ -1371,6 +1371,7 @@ def get_btc_spot_yahoo(timeframe: str = "current") -> Dict:
             "change_7d": change_7d,
             "change": eff_change,
             "date": datetime.now().strftime("%Y-%m-%d"),
+            "observed_at": _safe_iso(latest.name),
             "bar_as_of": _safe_date_str(latest.name),
             "timeframe": timeframe,
             "_source": "yahoo_btc_usd",

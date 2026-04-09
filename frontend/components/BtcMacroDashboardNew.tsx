@@ -101,11 +101,25 @@ function formatDateLabel(value: string | null | undefined): string {
 
 function formatAsOf(value: string | null | undefined): string | null {
   if (!value) return null
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim())
+  if (dateOnly) {
+    const year = Number(dateOnly[1])
+    const month = Number(dateOnly[2])
+    const day = Number(dateOnly[3])
+    const stableDate = new Date(Date.UTC(year, month - 1, day))
+    return new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+      timeZone: "UTC",
+    }).format(stableDate)
+  }
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return value
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "2-digit",
+    year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
     timeZoneName: "short",
@@ -179,13 +193,112 @@ function pickLatestCheckDate(result: V2AnalysisResult | null, patterns: string[]
   return [...matchedDates].sort().at(-1) ?? null
 }
 
-function estimateNextReleaseDate(latestDate: string | null, cadenceMonths: number): string | null {
-  if (!latestDate) return null
-  const parsed = new Date(latestDate)
+function parseIsoDateUtc(value: string | null | undefined): Date | null {
+  if (!value) return null
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value.trim())
+  if (match) {
+    return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+  }
+  const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return null
-  const next = new Date(parsed)
-  next.setMonth(next.getMonth() + cadenceMonths)
-  return next.toISOString().slice(0, 10)
+  return new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()))
+}
+
+function formatIsoDateUtc(date: Date): string {
+  return date.toISOString().slice(0, 10)
+}
+
+function utcToday(): Date {
+  const now = new Date()
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+}
+
+function addUtcMonths(date: Date, months: number): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1))
+}
+
+function nextBusinessDayUtc(date: Date): Date {
+  const result = new Date(date.getTime())
+  while (result.getUTCDay() === 0 || result.getUTCDay() === 6) {
+    result.setUTCDate(result.getUTCDate() + 1)
+  }
+  return result
+}
+
+function firstBusinessDayOfUtcMonth(year: number, monthIndex: number): Date {
+  return nextBusinessDayUtc(new Date(Date.UTC(year, monthIndex, 1)))
+}
+
+function lastBusinessDayOfUtcMonth(year: number, monthIndex: number): Date {
+  const result = new Date(Date.UTC(year, monthIndex + 1, 0))
+  while (result.getUTCDay() === 0 || result.getUTCDay() === 6) {
+    result.setUTCDate(result.getUTCDate() - 1)
+  }
+  return result
+}
+
+function nthWeekdayOfUtcMonth(year: number, monthIndex: number, weekday: number, occurrence: number): Date {
+  const result = new Date(Date.UTC(year, monthIndex, 1))
+  while (result.getUTCDay() !== weekday) {
+    result.setUTCDate(result.getUTCDate() + 1)
+  }
+  result.setUTCDate(result.getUTCDate() + 7 * Math.max(0, occurrence - 1))
+  return result
+}
+
+function estimateFutureReleaseDate(
+  latestKnownDate: string | null,
+  periodStepMonths: number,
+  releaseForReferencePeriod: (referencePeriod: Date) => Date,
+): string | null {
+  const latest = parseIsoDateUtc(latestKnownDate)
+  if (!latest) return null
+  const today = utcToday()
+  let referencePeriod = new Date(latest.getTime())
+  for (let i = 0; i < 24; i += 1) {
+    referencePeriod = addUtcMonths(referencePeriod, periodStepMonths)
+    const releaseDate = releaseForReferencePeriod(referencePeriod)
+    if (releaseDate.getTime() >= today.getTime()) {
+      return formatIsoDateUtc(releaseDate)
+    }
+  }
+  return null
+}
+
+function estimateCpiReleaseDate(latestKnownDate: string | null): string | null {
+  return estimateFutureReleaseDate(latestKnownDate, 1, (referencePeriod) =>
+    nextBusinessDayUtc(new Date(Date.UTC(referencePeriod.getUTCFullYear(), referencePeriod.getUTCMonth() + 1, 12))),
+  )
+}
+
+function estimatePceReleaseDate(latestKnownDate: string | null): string | null {
+  return estimateFutureReleaseDate(latestKnownDate, 1, (referencePeriod) =>
+    lastBusinessDayOfUtcMonth(referencePeriod.getUTCFullYear(), referencePeriod.getUTCMonth() + 1),
+  )
+}
+
+function estimatePmiReleaseDate(latestKnownDate: string | null): string | null {
+  return estimateFutureReleaseDate(latestKnownDate, 1, (referencePeriod) =>
+    firstBusinessDayOfUtcMonth(referencePeriod.getUTCFullYear(), referencePeriod.getUTCMonth() + 1),
+  )
+}
+
+function estimateJobsReleaseDate(latestKnownDate: string | null): string | null {
+  return estimateFutureReleaseDate(latestKnownDate, 1, (referencePeriod) =>
+    nthWeekdayOfUtcMonth(referencePeriod.getUTCFullYear(), referencePeriod.getUTCMonth() + 1, 5, 1),
+  )
+}
+
+function estimateM2ReleaseDate(latestKnownDate: string | null): string | null {
+  return estimateFutureReleaseDate(latestKnownDate, 1, (referencePeriod) =>
+    lastBusinessDayOfUtcMonth(referencePeriod.getUTCFullYear(), referencePeriod.getUTCMonth() + 1),
+  )
+}
+
+function estimateGdpReleaseDate(latestKnownDate: string | null): string | null {
+  return estimateFutureReleaseDate(latestKnownDate, 3, (referencePeriod) =>
+    lastBusinessDayOfUtcMonth(referencePeriod.getUTCFullYear(), referencePeriod.getUTCMonth() + 3),
+  )
 }
 
 function spreadCondition(spread: number | null | undefined): string {
@@ -396,7 +509,6 @@ export default function BtcMacroDashboardNew() {
   }, [activeHeadlines])
 
   const fedLatestDate = pickLatestCheckDate(nonChangeableResult, ["fed", "fomc", "balance", "policy"])
-  const fedNextReleaseDate = estimateNextReleaseDate(fedLatestDate, 1)
 
   const releaseRows: ReleaseRow[] = useMemo(() => {
     const cpiLatest = pickLatestCheckDate(nonChangeableResult, ["cpi"])
@@ -409,37 +521,37 @@ export default function BtcMacroDashboardNew() {
     return [
       {
         indicator: "CPI (MoM)",
-        nextReleaseDate: estimateNextReleaseDate(cpiLatest, 1),
+        nextReleaseDate: estimateCpiReleaseDate(cpiLatest),
         latestKnownDate: cpiLatest,
       },
       {
         indicator: "Core CPI (MoM)",
-        nextReleaseDate: estimateNextReleaseDate(cpiLatest, 1),
+        nextReleaseDate: estimateCpiReleaseDate(cpiLatest),
         latestKnownDate: cpiLatest,
       },
       {
         indicator: "PCE (MoM)",
-        nextReleaseDate: estimateNextReleaseDate(pceLatest, 1),
+        nextReleaseDate: estimatePceReleaseDate(pceLatest),
         latestKnownDate: pceLatest,
       },
       {
         indicator: "GDP (Quarterly)",
-        nextReleaseDate: estimateNextReleaseDate(gdpLatest, 3),
+        nextReleaseDate: estimateGdpReleaseDate(gdpLatest),
         latestKnownDate: gdpLatest,
       },
       {
         indicator: "PMI (MoM)",
-        nextReleaseDate: estimateNextReleaseDate(pmiLatest, 1),
+        nextReleaseDate: estimatePmiReleaseDate(pmiLatest),
         latestKnownDate: pmiLatest,
       },
       {
         indicator: "M2 (MoM)",
-        nextReleaseDate: estimateNextReleaseDate(m2Latest, 1),
+        nextReleaseDate: estimateM2ReleaseDate(m2Latest),
         latestKnownDate: m2Latest,
       },
       {
         indicator: "Unemployment Rate",
-        nextReleaseDate: estimateNextReleaseDate(unemploymentLatest, 1),
+        nextReleaseDate: estimateJobsReleaseDate(unemploymentLatest),
         latestKnownDate: unemploymentLatest,
       },
     ]
@@ -540,18 +652,22 @@ export default function BtcMacroDashboardNew() {
             <SectionCard
               number={2}
               title="Key Macro Events News of FED"
-              note={`Next release date: ${formatDateLabel(fedNextReleaseDate)}`}
+              note={`Latest policy check date: ${formatDateLabel(fedLatestDate)}`}
             >
               <NewsList items={fedNews} emptyLabel="No FED event headlines in current snapshot." />
             </SectionCard>
 
-            <SectionCard number={3} title="Next Release Date of Key Economic Indicators">
+            <SectionCard
+              number={3}
+              title="Next Release Date of Key Economic Indicators"
+              note="Estimated from latest known data period"
+            >
               <div className="overflow-x-auto">
                 <table className="min-w-full text-left text-sm">
                   <thead className="text-xs uppercase tracking-wide text-gray-400">
                     <tr>
                       <th className="pb-2 pr-4">Indicator</th>
-                      <th className="pb-2 pr-4">Next release date</th>
+                      <th className="pb-2 pr-4">Estimated next release date</th>
                       <th className="pb-2">Latest known data date</th>
                     </tr>
                   </thead>

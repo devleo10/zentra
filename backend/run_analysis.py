@@ -1331,7 +1331,7 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "btc_change": raw_data["btc"].get("change"),
         "btc_change_24h": raw_data["btc"].get("change_24h"),
         "btc_change_7d": raw_data["btc"].get("change_7d"),
-        "btc_observed_at": raw_data["btc"].get("date"),
+        "btc_observed_at": raw_data["btc"].get("observed_at") or raw_data["btc"].get("bar_as_of") or raw_data["btc"].get("date"),
         "btc_fetched_at": raw_data["btc"].get("fetched_at"),
         "fed_funds_rate": fed_rate_val,
         "fed_rate_trend": fed_rate_trend,

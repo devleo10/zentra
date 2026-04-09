@@ -302,22 +302,36 @@ def _three_month_mom_stats_from_bls_rows(rows: list, prefix: str) -> Dict:
     """3-month average of published monthly changes; BLS rows are newest-first."""
     if not rows or len(rows) < 4:
         return {}
-    moms = []
-    for i, row in enumerate(rows[:24]):
+    cleaned = []
+    for row in rows[:24]:
+        period = str(row.get("period") or "")
+        if period and (not period.startswith("M") or period == "M13"):
+            continue
         try:
-            pct_changes = row.get("calculations", {}).get("pct_changes", {})
+            value = float(row.get("value"))
+        except Exception:
+            value = None
+        pct_changes = row.get("calculations", {}).get("pct_changes", {}) or {}
+        published_mom = None
+        try:
             if "1" in pct_changes:
-                moms.append(float(pct_changes["1"]))
-                continue
+                published_mom = float(pct_changes["1"])
         except Exception:
-            pass
-        try:
-            curr = float(row["value"])
-            prev = float(rows[i + 1]["value"])
-        except Exception:
-            break
-        if prev:
-            moms.append((curr - prev) / prev * 100.0)
+            published_mom = None
+        if value is None and published_mom is None:
+            continue
+        cleaned.append({"value": value, "mom": published_mom})
+
+    moms = []
+    for i, row in enumerate(cleaned):
+        if row["mom"] is not None:
+            moms.append(row["mom"])
+            continue
+        curr = row["value"]
+        prev = cleaned[i + 1]["value"] if i + 1 < len(cleaned) else None
+        if curr is None or prev in (None, 0):
+            continue
+        moms.append((curr - prev) / prev * 100.0)
     if len(moms) < 3:
         return {}
     avg3 = sum(moms[:3]) / 3.0

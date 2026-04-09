@@ -75,6 +75,24 @@ def test_bls_core_cpi_three_month_average_uses_published_mom_changes():
     assert stats["core_cpi_mom_avg_3m_trend"] == "rising"
 
 
+def test_bls_three_month_average_skips_dirty_rows_and_still_computes_prior():
+    rows = [
+        {"period": "M02", "value": "327.460", "calculations": {"pct_changes": {"1": "0.50"}}},
+        {"period": "M01", "value": "326.588", "calculations": {"pct_changes": {"1": "0.40"}}},
+        {"period": "M12", "value": "326.031", "calculations": {"pct_changes": {"1": "0.30"}}},
+        {"period": "M11", "value": "-"},
+        {"period": "M10", "value": "-"},
+        {"period": "M09", "value": "324.888", "calculations": {"pct_changes": {"1": "0.20"}}},
+        {"period": "M08", "value": "324.500", "calculations": {"pct_changes": {"1": "0.10"}}},
+        {"period": "M07", "value": "324.100", "calculations": {"pct_changes": {"1": "0.00"}}},
+    ]
+
+    stats = fred_data._three_month_mom_stats_from_bls_rows(rows, "cpi")
+
+    assert stats["cpi_mom_avg_3m"] == 0.4
+    assert stats["cpi_mom_avg_3m_prior"] == 0.1
+
+
 def test_bls_cpi_three_month_value_average_exposes_value_avg_fields():
     headline = [
         {"value": "327.460"},

@@ -660,6 +660,7 @@ def get_btc_spot_binance(timeframe: str = "current") -> Dict:
             "change_7d": change_7d,
             "change": ch,
             "date": datetime.now().strftime("%Y-%m-%d"),
+            "observed_at": latest_dt.isoformat(),
             "timeframe": timeframe,
             "_source": "binance_public",
         }
