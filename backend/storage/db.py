@@ -55,17 +55,36 @@ def _ensure_schema(conn: sqlite3.Connection):
             pce_mom_avg_3m_trend TEXT,
             oil_change REAL,
             oil_price REAL,
+            oil_observed_at TEXT,
+            oil_fetched_at TEXT,
             fed_funds_rate REAL,
             fed_rate_trend TEXT,
             dxy_value REAL,
+            dxy_change REAL,
             dxy_change_7d REAL,
+            dxy_source TEXT,
+            dxy_observed_at TEXT,
+            dxy_fetched_at TEXT,
             vix REAL,
+            vix_source TEXT,
+            vix_observed_at TEXT,
+            vix_fetched_at TEXT,
             ten_year_yield REAL,
             yield_curve_spread REAL,
             fed_balance_sheet_trend TEXT,
             sp500_change REAL,
+            sp500_price REAL,
+            sp500_source TEXT,
+            sp500_observed_at TEXT,
+            sp500_fetched_at TEXT,
+            gold_price REAL,
             gold_change REAL,
+            gold_source TEXT,
+            gold_observed_at TEXT,
+            gold_fetched_at TEXT,
             btc_price REAL,
+            btc_observed_at TEXT,
+            btc_fetched_at TEXT,
 
             -- Per-section scores (JSON dict)
             section_scores TEXT NOT NULL,
@@ -114,7 +133,10 @@ def _ensure_schema(conn: sqlite3.Connection):
             -- LLM narrative output
             narrative TEXT,
             key_risk TEXT,
-            catalyst_to_watch TEXT
+            catalyst_to_watch TEXT,
+
+            -- Full API payload for forward-compatible snapshot reads
+            full_payload TEXT
         )
     """)
 
@@ -141,9 +163,28 @@ def _ensure_schema(conn: sqlite3.Connection):
         ("pce_mom_avg_3m",        "REAL"),
         ("pce_mom_avg_3m_prior",  "REAL"),
         ("pce_mom_avg_3m_trend",  "TEXT"),
+        ("oil_observed_at",       "TEXT"),
+        ("oil_fetched_at",        "TEXT"),
         ("oil_price",             "REAL"),
         ("fed_funds_rate",        "REAL"),
         ("fed_rate_trend",        "TEXT"),
+        ("dxy_change",            "REAL"),
+        ("dxy_source",            "TEXT"),
+        ("dxy_observed_at",       "TEXT"),
+        ("dxy_fetched_at",        "TEXT"),
+        ("vix_source",            "TEXT"),
+        ("vix_observed_at",       "TEXT"),
+        ("vix_fetched_at",        "TEXT"),
+        ("sp500_price",           "REAL"),
+        ("sp500_source",          "TEXT"),
+        ("sp500_observed_at",     "TEXT"),
+        ("sp500_fetched_at",      "TEXT"),
+        ("gold_price",            "REAL"),
+        ("gold_source",           "TEXT"),
+        ("gold_observed_at",      "TEXT"),
+        ("gold_fetched_at",       "TEXT"),
+        ("btc_observed_at",       "TEXT"),
+        ("btc_fetched_at",        "TEXT"),
         ("timeframe",             "TEXT"),
         ("headline_report",       "TEXT"),
         ("headline_report_meta",  "TEXT"),
@@ -152,6 +193,7 @@ def _ensure_schema(conn: sqlite3.Connection):
         ("narrative",               "TEXT"),
         ("key_risk",                "TEXT"),
         ("catalyst_to_watch",       "TEXT"),
+        ("full_payload",            "TEXT"),
         ("natgas_price",            "REAL"),
         ("natgas_change",           "REAL"),
         ("natgas_trend",            "TEXT"),
@@ -205,11 +247,14 @@ def save_snapshot(snapshot: Dict[str, Any]) -> int:
                 core_cpi_mom_avg_3m, core_cpi_mom_avg_3m_prior, core_cpi_mom_avg_3m_trend,
                 cpi_source,
                 pce_mom_change, pce_mom_avg_3m, pce_mom_avg_3m_prior, pce_mom_avg_3m_trend,
-                oil_change, oil_price,
+                oil_change, oil_price, oil_observed_at, oil_fetched_at,
                 fed_funds_rate, fed_rate_trend,
-                dxy_value, dxy_change_7d,
-                vix, ten_year_yield, yield_curve_spread, fed_balance_sheet_trend,
-                sp500_change, gold_change, btc_price, btc_change, btc_change_24h, btc_change_7d,
+                dxy_value, dxy_change, dxy_change_7d, dxy_source, dxy_observed_at, dxy_fetched_at,
+                vix, vix_source, vix_observed_at, vix_fetched_at,
+                ten_year_yield, yield_curve_spread, fed_balance_sheet_trend,
+                sp500_change, sp500_price, sp500_source, sp500_observed_at, sp500_fetched_at,
+                gold_price, gold_change, gold_source, gold_observed_at, gold_fetched_at,
+                btc_price, btc_observed_at, btc_fetched_at, btc_change, btc_change_24h, btc_change_7d,
                 section_scores, section_reasoning,
                 weighted_numeric_score, score_breakdown,
                 weighted_numeric_stale_downweight, coherence_adjustment, coherence_reasoning,
@@ -236,10 +281,13 @@ def save_snapshot(snapshot: Dict[str, Any]) -> int:
                 ?, ?, ?,
                 ?,
                 ?, ?, ?, ?,
-                ?, ?,
-                ?, ?,
-                ?, ?,
                 ?, ?, ?, ?,
+                ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?,
                 ?, ?,
                 ?, ?,
@@ -280,17 +328,36 @@ def save_snapshot(snapshot: Dict[str, Any]) -> int:
             snapshot.get("pce_mom_avg_3m_trend"),
             snapshot.get("oil_change"),
             snapshot.get("oil_price"),
+            snapshot.get("oil_observed_at"),
+            snapshot.get("oil_fetched_at"),
             snapshot.get("fed_funds_rate"),
             snapshot.get("fed_rate_trend"),
             snapshot.get("dxy_value"),
+            snapshot.get("dxy_change"),
             snapshot.get("dxy_change_7d"),
+            snapshot.get("dxy_source"),
+            snapshot.get("dxy_observed_at"),
+            snapshot.get("dxy_fetched_at"),
             snapshot.get("vix"),
+            snapshot.get("vix_source"),
+            snapshot.get("vix_observed_at"),
+            snapshot.get("vix_fetched_at"),
             snapshot.get("ten_year_yield"),
             snapshot.get("yield_curve_spread"),
             snapshot.get("fed_balance_sheet_trend"),
             snapshot.get("sp500_change"),
+            snapshot.get("sp500_price"),
+            snapshot.get("sp500_source"),
+            snapshot.get("sp500_observed_at"),
+            snapshot.get("sp500_fetched_at"),
+            snapshot.get("gold_price"),
             snapshot.get("gold_change"),
+            snapshot.get("gold_source"),
+            snapshot.get("gold_observed_at"),
+            snapshot.get("gold_fetched_at"),
             snapshot.get("btc_price"),
+            snapshot.get("btc_observed_at"),
+            snapshot.get("btc_fetched_at"),
             snapshot.get("btc_change"),
             snapshot.get("btc_change_24h"),
             snapshot.get("btc_change_7d"),
@@ -344,8 +411,12 @@ def save_snapshot(snapshot: Dict[str, Any]) -> int:
             snapshot.get("geopolitics_risk_level"),
             snapshot.get("fed_tone"),
         ))
-        conn.commit()
         row_id = cursor.lastrowid
+        conn.execute(
+            "UPDATE macro_snapshots SET full_payload = ? WHERE id = ?",
+            (json.dumps(snapshot), row_id),
+        )
+        conn.commit()
         logger.info(f"Snapshot saved: id={row_id}")
         return row_id
     finally:
@@ -360,7 +431,7 @@ def get_latest_snapshots(limit: int = 10) -> List[Dict[str, Any]]:
             "SELECT * FROM macro_snapshots ORDER BY id DESC LIMIT ?",
             (limit,)
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [_merge_full_payload(dict(row)) for row in rows]
     finally:
         conn.close()
 
@@ -373,6 +444,22 @@ def get_snapshot_by_id(snapshot_id: int) -> Optional[Dict[str, Any]]:
             "SELECT * FROM macro_snapshots WHERE id = ?",
             (snapshot_id,)
         ).fetchone()
-        return dict(row) if row else None
+        return _merge_full_payload(dict(row)) if row else None
     finally:
         conn.close()
+
+
+def _merge_full_payload(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge the stored full payload JSON into a DB row for API reads."""
+    payload_raw = row.get("full_payload")
+    if isinstance(payload_raw, str) and payload_raw.strip():
+        try:
+            payload = json.loads(payload_raw)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Snapshot id=%s has unreadable full_payload", row.get("id"))
+            return row
+        if isinstance(payload, dict):
+            merged = {**row, **payload}
+            merged["id"] = row.get("id")
+            return merged
+    return row

@@ -80,7 +80,7 @@ MONETARY_EXPLICIT_CONFIDENCE_BOOST_TYPES = frozenset(
     ("rate_hike", "rate_cut", "rate_hold", "fomc_doc")
 )
 
-STRICT_LIVE_OFFICIAL_ONLY = os.getenv("STRICT_LIVE_OFFICIAL_ONLY", "1").strip().lower() not in {"0", "false", "no"}
+STRICT_LIVE_OFFICIAL_ONLY = os.getenv("STRICT_LIVE_OFFICIAL_ONLY", "0").strip().lower() not in {"0", "false", "no"}
 
 _STRICT_METRIC_LABELS = {
     "cpi": "CPI",

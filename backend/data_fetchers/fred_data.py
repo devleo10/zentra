@@ -872,7 +872,10 @@ def get_oil_data(timeframe: str = "current") -> Dict:
             import yfinance as yf
             ticker = yf.Ticker("CL=F")
             period_map = {"current": "1mo", "week": "1mo", "month": "3mo", "year": "2y"}
-            hist = ticker.history(period=period_map.get(timeframe, "1mo"))
+            if timeframe == "current":
+                hist = ticker.history(period="5d", interval="1m", prepost=True)
+            else:
+                hist = ticker.history(period=period_map.get(timeframe, "1mo"))
             if not hist.empty:
                 h = hist.copy()
                 idx = pd.to_datetime(h.index)

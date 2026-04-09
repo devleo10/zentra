@@ -1,7 +1,7 @@
 /**
  * API client for backend — v2 (Deterministic Engine) + Legacy v1
  */
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001"
 
 export type TimeFrame = "current" | "week" | "month"
 

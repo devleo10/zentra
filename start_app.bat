@@ -15,14 +15,14 @@ if not exist "backend\.env" (
 
 REM Check if frontend .env.local exists (optional but recommended)
 if not exist "frontend\.env.local" (
-    echo [WARNING] frontend\.env.local not found. Using default localhost:8000
+    echo [WARNING] frontend\.env.local not found. Using default localhost:8001
     echo.
 )
 
 echo [1/4] Starting Backend Server...
 echo.
 cd backend
-start "BTC Backend Server" cmd /k "python -m main"
+start "BTC Backend Server" cmd /k "python -m uvicorn main_v2:app --reload --host 0.0.0.0 --port 8001"
 timeout /t 3 /nobreak >nul
 
 echo [2/4] Waiting for backend to initialize...
@@ -32,7 +32,7 @@ echo.
 echo [3/4] Starting Frontend Server...
 echo.
 cd ..\frontend
-start "BTC Frontend Server" cmd /k "bun run dev"
+start "BTC Frontend Server" cmd /k "npm run dev"
 timeout /t 3 /nobreak >nul
 
 echo.
@@ -45,7 +45,7 @@ echo ====================================
 echo  Application Started Successfully!
 echo ====================================
 echo.
-echo Backend:  http://localhost:8000
+echo Backend:  http://localhost:8001
 echo Frontend: http://localhost:3000
 echo.
 echo Press any key to stop all servers...

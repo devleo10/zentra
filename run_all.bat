@@ -41,7 +41,7 @@ if %INGEST_ERR% neq 0 (
 
 echo [2/4] Starting backend (FastAPI v2)...
 echo.
-start "BTC Backend" cmd /k "call .venv\Scripts\activate.bat && python -m uvicorn backend.main_v2:app --reload --host 0.0.0.0 --port 8000"
+start "BTC Backend" cmd /k "call .venv\Scripts\activate.bat && python -m uvicorn backend.main_v2:app --reload --host 0.0.0.0 --port 8001"
 timeout /t 3 /nobreak >nul
 
 echo [3/4] Starting frontend (Next.js)...
@@ -63,9 +63,9 @@ echo.
 echo ============================================
 echo  All services started
 echo ============================================
-echo   Backend:  http://localhost:8000
+echo   Backend:  http://localhost:8001
 echo   Frontend: http://localhost:3000
-echo   API docs: http://localhost:8000/docs
+echo   API docs: http://localhost:8001/docs
 echo ============================================
 echo.
 echo Close the Backend and Frontend windows to stop servers.

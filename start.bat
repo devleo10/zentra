@@ -13,7 +13,7 @@ echo  Root:    %ROOT%
 echo.
 
 REM --- Ports (override before launch: set BACKEND_PORT=8080 ^&^& start.bat) ---
-if not defined BACKEND_PORT set "BACKEND_PORT=8000"
+if not defined BACKEND_PORT set "BACKEND_PORT=8001"
 if not defined FRONTEND_PORT set "FRONTEND_PORT=3000"
 
 REM --- Preflight ---

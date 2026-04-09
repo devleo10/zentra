@@ -711,6 +711,72 @@ def _select_same_scale_yahoo_history(
     return None, pd.DataFrame()
 
 
+def _current_intraday_yahoo_metric(
+    symbols: Tuple[str, ...],
+    *,
+    response_key: str = "current_price",
+    change_unit: str = "percent",
+    trend_up: str = "rising",
+    trend_down: str = "falling",
+    extra_fields: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Best-effort current intraday quote from Yahoo minute bars."""
+    hist = pd.DataFrame()
+    symbol_used: Optional[str] = None
+    last_err: Optional[Exception] = None
+
+    for symbol in symbols:
+        ticker = yf.Ticker(symbol)
+        for attempt in range(2):
+            try:
+                hist = ticker.history(period="5d", interval="1m", prepost=True)
+                if hist is not None and not hist.empty:
+                    symbol_used = symbol
+                    break
+            except Exception as e:
+                last_err = e
+            if attempt < 1:
+                time.sleep(1.0 + attempt)
+        if symbol_used:
+            break
+
+    if hist is None or hist.empty or not symbol_used:
+        if last_err:
+            logger.debug("Current intraday Yahoo metric failed for %s: %s", symbols, last_err)
+        return None
+
+    latest, comparison = _latest_and_comparison_for_timeframe(hist, "current", default_days=1)
+    current_value = float(latest["Close"])
+    comparison_value = float(comparison["Close"])
+    if not math.isfinite(current_value) or current_value <= 0:
+        return None
+    if not math.isfinite(comparison_value) or comparison_value <= 0:
+        comparison_value = current_value
+
+    if change_unit == "points":
+        change = current_value - comparison_value
+        threshold = 0.1
+    else:
+        change = ((current_value - comparison_value) / comparison_value) * 100.0 if comparison_value else 0.0
+        threshold = 0.05
+
+    payload = {
+        response_key: round(current_value, 2),
+        "date": _safe_date_str(latest.name),
+        "data_as_of": _safe_date_str(latest.name),
+        "comparison_date": _safe_date_str(comparison.name),
+        "change": round(change, 2),
+        "change_label": _change_label("current"),
+        "change_unit": change_unit,
+        "trend": trend_up if change > threshold else trend_down if change < -threshold else "stable",
+        "timeframe": "current",
+        "source": symbol_used,
+    }
+    if extra_fields:
+        payload.update(extra_fields)
+    return _with_obs_fetch(payload, latest.name)
+
+
 def _fred_series_market_fallback(
     series_id: str,
     timeframe: str,
@@ -807,6 +873,20 @@ def get_dxy_data(timeframe: str = "current") -> Dict:
             if ecb:
                 return ecb
             return {"error": "Official DXY FX basket source unavailable", "timeframe": timeframe}
+
+        if timeframe == "current":
+            intraday = _current_intraday_yahoo_metric(
+                ("DX-Y.NYB", "DX=F", "DXY"),
+                response_key="current_price",
+                change_unit="percent",
+                trend_up="strengthening",
+                trend_down="weakening",
+            )
+            if intraday:
+                return intraday
+            trusted = _trusted_dxy_fallback(timeframe)
+            if trusted:
+                return trusted
 
         # Try multiple DXY ticker symbols as availability varies
         # Preferred order: market DXY futures or index symbols commonly used by yfinance
@@ -974,6 +1054,20 @@ def get_vix_data(timeframe: str = "current") -> Dict:
                 return fred_fallback
             return {"error": "Official VIX source unavailable", "timeframe": timeframe}
 
+        if timeframe == "current":
+            intraday = _current_intraday_yahoo_metric(
+                ("^VIX", "VIX"),
+                response_key="current_value",
+                change_unit="points",
+            )
+            if intraday:
+                current_vix = float(intraday["current_value"])
+                intraday["level"] = "high" if current_vix > 20 else "moderate" if current_vix > 15 else "low"
+                return intraday
+            trusted = _trusted_vix_fallback(timeframe)
+            if trusted:
+                return trusted
+
         symbol, hist = _select_same_scale_yahoo_history(("^VIX", "VIX"), timeframe, period="1mo", attempts=2)
         if hist.empty:
             trusted = _trusted_vix_fallback(timeframe)
@@ -1060,6 +1154,18 @@ def get_sp500_data(timeframe: str = "current") -> Dict:
                 return fred_fallback
             return {"error": "Official S&P 500 source unavailable", "timeframe": timeframe}
 
+        if timeframe == "current":
+            intraday = _current_intraday_yahoo_metric(
+                ("^GSPC",),
+                response_key="current_price",
+                change_unit="percent",
+            )
+            if intraday:
+                return intraday
+            trusted = _trusted_sp500_fallback(timeframe)
+            if trusted:
+                return trusted
+
         symbol, hist = _select_same_scale_yahoo_history(("^GSPC",), timeframe)
         if hist.empty:
             trusted = _trusted_sp500_fallback(timeframe)
@@ -1144,6 +1250,18 @@ def get_gold_data(timeframe: str = "current") -> Dict:
                         }
                 return lbma
             return {"error": "Official gold source unavailable", "timeframe": timeframe}
+
+        if timeframe == "current":
+            intraday = _current_intraday_yahoo_metric(
+                ("GC=F", "XAUUSD=X"),
+                response_key="current_price",
+                change_unit="percent",
+            )
+            if intraday:
+                return intraday
+            trusted = _trusted_gold_fallback(timeframe)
+            if trusted:
+                return trusted
 
         symbol, hist = _select_same_scale_yahoo_history(("XAUUSD=X", "GC=F"), timeframe)
         if hist.empty:
@@ -1501,11 +1619,15 @@ def _trusted_quote_metric_payload(
     threshold = 0.1 if change_unit == "points" else 0.05
     trend = trend_up if change > threshold else trend_down if change < -threshold else "stable"
 
-    as_of = str(quote.get("date") or datetime.now().strftime("%Y-%m-%d"))[:10]
+    observed_at = quote.get("observed_at")
+    fetched_at = datetime.utcnow().isoformat()
+    as_of = str((observed_at or quote.get("date") or datetime.now().strftime("%Y-%m-%d")))[:10]
     return {
         response_key: round(current_value, 2),
         "date": as_of,
         "data_as_of": as_of,
+        "observed_at": observed_at,
+        "fetched_at": fetched_at,
         "comparison_date": comparison_date,
         "change": round(change, 2),
         "change_label": _change_label(timeframe),
@@ -1515,6 +1637,108 @@ def _trusted_quote_metric_payload(
         "source": str(quote.get("source") or "trusted_provider"),
         "_fallback": True,
     }
+
+
+def _trusted_dxy_fallback(timeframe: str) -> Optional[Dict[str, Any]]:
+    if trusted_market_apis is None:
+        return None
+
+    for symbol in ("DX-Y.NYB", "DX=F", "DXY"):
+        quote = trusted_market_apis.get_fmp_quote(symbol)
+        out = _trusted_quote_metric_payload(
+            quote or {},
+            timeframe=timeframe,
+            response_key="current_price",
+            change_unit="percent",
+            baseline_snapshot_field="dxy_value",
+            trend_up="strengthening",
+            trend_down="weakening",
+        )
+        if out:
+            return out
+
+    te_quote = trusted_market_apis.get_tradingeconomics_quote_from_search(
+        "u.s. dollar index",
+        preferred_symbol="DXY:CUR",
+        preferred_ticker="DXY",
+    )
+    out = _trusted_quote_metric_payload(
+        te_quote or {},
+        timeframe=timeframe,
+        response_key="current_price",
+        change_unit="percent",
+        baseline_snapshot_field="dxy_value",
+        trend_up="strengthening",
+        trend_down="weakening",
+    )
+    if out:
+        return out
+
+    for query in ("DXY", "US Dollar Index"):
+        eod_quote = trusted_market_apis.get_eodhd_quote_from_search(query, asset_type="index")
+        out = _trusted_quote_metric_payload(
+            eod_quote or {},
+            timeframe=timeframe,
+            response_key="current_price",
+            change_unit="percent",
+            baseline_snapshot_field="dxy_value",
+            trend_up="strengthening",
+            trend_down="weakening",
+        )
+        if out:
+            return out
+
+    return None
+
+
+def _trusted_gold_fallback(timeframe: str) -> Optional[Dict[str, Any]]:
+    if trusted_market_apis is None:
+        return None
+
+    for symbol in ("GCUSD", "XAUUSD", "GC=F"):
+        quote = trusted_market_apis.get_fmp_quote(symbol)
+        out = _trusted_quote_metric_payload(
+            quote or {},
+            timeframe=timeframe,
+            response_key="current_price",
+            change_unit="percent",
+            baseline_snapshot_field="gold_price",
+        )
+        if out:
+            return out
+
+    for query, preferred_symbol, preferred_ticker in (
+        ("gold", "XAUUSD:CUR", "XAUUSD"),
+        ("gold", "XAUUSD", "XAUUSD"),
+    ):
+        te_quote = trusted_market_apis.get_tradingeconomics_quote_from_search(
+            query,
+            preferred_symbol=preferred_symbol,
+            preferred_ticker=preferred_ticker,
+        )
+        out = _trusted_quote_metric_payload(
+            te_quote or {},
+            timeframe=timeframe,
+            response_key="current_price",
+            change_unit="percent",
+            baseline_snapshot_field="gold_price",
+        )
+        if out:
+            return out
+
+    for asset_type in ("commodity", "forex", "index"):
+        eod_quote = trusted_market_apis.get_eodhd_quote_from_search("gold", asset_type=asset_type)
+        out = _trusted_quote_metric_payload(
+            eod_quote or {},
+            timeframe=timeframe,
+            response_key="current_price",
+            change_unit="percent",
+            baseline_snapshot_field="gold_price",
+        )
+        if out:
+            return out
+
+    return None
 
 
 def _trusted_move_fallback(timeframe: str) -> Optional[Dict[str, Any]]:

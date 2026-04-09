@@ -56,6 +56,16 @@ def _date_from_epoch(value: Any) -> Optional[str]:
         return None
 
 
+def _iso_from_epoch(value: Any) -> Optional[str]:
+    ts = _safe_float(value)
+    if ts is None or ts <= 0:
+        return None
+    try:
+        return datetime.utcfromtimestamp(ts).isoformat()
+    except Exception:
+        return None
+
+
 def _date_from_any(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -78,6 +88,28 @@ def _date_from_any(value: Any) -> Optional[str]:
 
     # Fallback for strings that begin with YYYY-MM-DD
     return raw[:10]
+
+
+def _iso_from_any(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    ms_match = re.search(r"/Date\((\d+)\)/", raw)
+    if ms_match:
+        try:
+            return datetime.utcfromtimestamp(int(ms_match.group(1)) / 1000.0).isoformat()
+        except Exception:
+            pass
+
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).isoformat()
+    except Exception:
+        pass
+
+    return None
 
 
 def _request_json(url: str, *, params: Optional[Dict[str, Any]] = None, timeout: int = _DEFAULT_TIMEOUT) -> Any:
@@ -121,7 +153,8 @@ def get_fmp_quote(symbol: str) -> Optional[Dict[str, Any]]:
         change_pct = _safe_float(row.get("changePercentage"))
         change_pts = _safe_float(row.get("change"))
         volume = _safe_float(row.get("volume"))
-        dt = _date_from_epoch(row.get("timestamp")) or datetime.utcnow().strftime("%Y-%m-%d")
+        observed_at = _iso_from_epoch(row.get("timestamp"))
+        dt = (observed_at or _date_from_epoch(row.get("timestamp")) or datetime.utcnow().strftime("%Y-%m-%d"))[:10]
 
         return {
             "symbol": str(row.get("symbol") or symbol),
@@ -130,6 +163,7 @@ def get_fmp_quote(symbol: str) -> Optional[Dict[str, Any]]:
             "change_points": change_pts,
             "volume": int(volume) if volume is not None else None,
             "date": dt,
+            "observed_at": observed_at,
             "source": f"FMP:{str(row.get('symbol') or symbol)}",
         }
     except Exception as e:
@@ -164,13 +198,15 @@ def get_fmp_batch_quotes(symbols: Sequence[str]) -> Dict[str, Dict[str, Any]]:
             volume = _safe_float(row.get("volume"))
             if price is None and volume is None:
                 continue
+            observed_at = _iso_from_epoch(row.get("timestamp"))
             out[symbol.upper()] = {
                 "symbol": symbol,
                 "price": price,
                 "change_percent": _safe_float(row.get("changePercentage")),
                 "change_points": _safe_float(row.get("change")),
                 "volume": int(volume) if volume is not None else None,
-                "date": _date_from_epoch(row.get("timestamp")) or datetime.utcnow().strftime("%Y-%m-%d"),
+                "date": (observed_at or _date_from_epoch(row.get("timestamp")) or datetime.utcnow().strftime("%Y-%m-%d"))[:10],
+                "observed_at": observed_at,
                 "source": f"FMP:{symbol}",
             }
         return out
@@ -230,8 +266,9 @@ def get_tradingeconomics_quote_from_search(
                     change_pct = ((last - prev) / prev) * 100.0
 
         symbol = str(picked.get("Symbol") or preferred_symbol or query)
+        observed_at = _iso_from_any(picked.get("Date"))
         date_raw = str(picked.get("Date") or "").strip()
-        date = date_raw[:10] if date_raw else datetime.utcnow().strftime("%Y-%m-%d")
+        date = (observed_at or date_raw or datetime.utcnow().strftime("%Y-%m-%d"))[:10]
 
         return {
             "symbol": symbol,
@@ -240,6 +277,7 @@ def get_tradingeconomics_quote_from_search(
             "change_points": change_pts,
             "volume": None,
             "date": date,
+            "observed_at": observed_at,
             "source": f"TradingEconomics:{symbol}",
         }
     except Exception as e:
@@ -307,7 +345,8 @@ def get_eodhd_quote_from_search(query: str, *, asset_type: str = "index") -> Opt
             if change_pct is None and prev not in (None, 0):
                 change_pct = ((price - prev) / prev) * 100.0
 
-            dt = _date_from_epoch(rt.get("timestamp")) or datetime.utcnow().strftime("%Y-%m-%d")
+            observed_at = _iso_from_epoch(rt.get("timestamp"))
+            dt = (observed_at or _date_from_epoch(rt.get("timestamp")) or datetime.utcnow().strftime("%Y-%m-%d"))[:10]
             vol = _safe_float(rt.get("volume"))
             return {
                 "symbol": symbol,
@@ -316,6 +355,7 @@ def get_eodhd_quote_from_search(query: str, *, asset_type: str = "index") -> Opt
                 "change_points": change_pts,
                 "volume": int(vol) if vol is not None else None,
                 "date": dt,
+                "observed_at": observed_at,
                 "source": f"EODHD:{symbol}",
             }
         except Exception as e:

@@ -15,7 +15,7 @@ if not exist "backend\.env" (
 
 REM Check if frontend .env.local exists (optional but recommended)
 if not exist "frontend\.env.local" (
-    echo [WARNING] frontend\.env.local not found. Using default localhost:8000
+    echo [WARNING] frontend\.env.local not found. Using default localhost:8001
     echo.
 )
 
@@ -73,7 +73,7 @@ if errorlevel 1 (
 
 echo [5/6] Starting Backend Server...
 echo.
-start "BTC Backend Server" cmd /k "call .venv\Scripts\activate.bat && python -m uvicorn backend.main_v2:app --reload --host 0.0.0.0 --port 8000"
+start "BTC Backend Server" cmd /k "call .venv\Scripts\activate.bat && python -m uvicorn backend.main_v2:app --reload --host 0.0.0.0 --port 8001"
 timeout /t 3 /nobreak >nul
 
 echo [6/6] Starting Frontend Server...
@@ -88,7 +88,7 @@ echo ====================================
 echo  Application Started Successfully!
 echo ====================================
 echo.
-echo Backend:  http://localhost:8000
+echo Backend:  http://localhost:8001
 echo Frontend: http://localhost:3000
 echo.
 echo Opening browser in 5 seconds...
