@@ -10,7 +10,7 @@ import re
 import requests
 import pandas as pd
 
-from utils.http_retry import get_with_retries
+from utils.http_retry import get_with_retries, post_with_retries
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Literal, Tuple
 from dotenv import load_dotenv
@@ -266,6 +266,32 @@ def _three_month_mom_stats_from_fred_df(df: pd.DataFrame, prefix: str) -> Dict:
         f"{prefix}_mom_avg_3m_trend": tr,
     }
 
+def _three_month_value_stats_from_fred_df(df: pd.DataFrame, prefix: str) -> Dict:
+    """3-month average of the underlying *value* series vs prior 3 months.
+
+    This is for displaying the average index/level itself (not the MoM %).
+    """
+    if df is None or len(df) < 3:
+        return {}
+    d = df.sort_values("date").copy()
+    try:
+        vals = [float(v) for v in d["value"].tolist() if pd.notna(v)]
+    except Exception:
+        return {}
+    if len(vals) < 3:
+        return {}
+    last3 = vals[-3:]
+    avg3 = sum(last3) / 3.0
+    prior3 = None
+    if len(vals) >= 6:
+        prior = vals[-6:-3]
+        if len(prior) == 3:
+            prior3 = sum(prior) / 3.0
+    return {
+        f"{prefix}_value_avg_3m": round(avg3, 3),
+        f"{prefix}_value_avg_3m_prior": round(prior3, 3) if prior3 is not None else None,
+    }
+
 
 def _cpi_three_month_mom_stats_from_bls_headline(headline: list) -> Dict:
     """Same 3-month MoM average logic; BLS `headline` rows are newest-first."""
@@ -319,6 +345,33 @@ def _three_month_mom_stats_from_bls_rows(rows: list, prefix: str) -> Dict:
         f"{prefix}_mom_avg_3m": round(avg3, 3),
         f"{prefix}_mom_avg_3m_prior": round(prior3, 3) if prior3 is not None else None,
         f"{prefix}_mom_avg_3m_trend": tr,
+    }
+
+def _three_month_value_stats_from_bls_rows(rows: list, prefix: str) -> Dict:
+    """3-month average of the underlying *value* series vs prior 3 months.
+
+    BLS rows are newest-first.
+    """
+    if not rows or len(rows) < 3:
+        return {}
+    vals = []
+    for row in rows[:24]:
+        try:
+            v = float(row.get("value"))
+        except Exception:
+            continue
+        vals.append(v)
+        if len(vals) >= 6:
+            break
+    if len(vals) < 3:
+        return {}
+    avg3 = sum(vals[:3]) / 3.0
+    prior3 = None
+    if len(vals) >= 6:
+        prior3 = sum(vals[3:6]) / 3.0
+    return {
+        f"{prefix}_value_avg_3m": round(avg3, 3),
+        f"{prefix}_value_avg_3m_prior": round(prior3, 3) if prior3 is not None else None,
     }
 
 
@@ -383,8 +436,7 @@ def get_fred_series(series_id: str, timeframe: str = "current") -> Dict:
         if not FRED_API_KEY:
             logger.warning("FRED API key missing; cannot fetch %s", series_id)
             return {"error": "missing_api_key"}
-        resp = requests.get(FRED_BASE_URL, params=params, timeout=15)
-        resp.raise_for_status()
+        resp = get_with_retries(FRED_BASE_URL, params=params, timeout=15)
         data = resp.json()
         obs = data.get("observations", [])
         if not obs:
@@ -500,13 +552,14 @@ def _get_cpi_from_bls() -> Optional[Dict]:
     }
 
     try:
-        resp = requests.post(
+        resp = post_with_retries(
             BLS_API_URL,
             json=payload,
             headers={"Content-Type": "application/json"},
             timeout=20,
+            max_attempts=3,
+            backoff_base=2.0,
         )
-        resp.raise_for_status()
         data = resp.json()
 
         if data.get("status") != "REQUEST_SUCCEEDED":
@@ -565,6 +618,9 @@ def _get_cpi_from_bls() -> Optional[Dict]:
         }
         result.update(_cpi_three_month_mom_stats_from_bls_headline(headline))
         result.update(_three_month_mom_stats_from_bls_rows(core, "core_cpi"))
+        # Average of the index levels themselves (not MoM %) for display.
+        result.update(_three_month_value_stats_from_bls_rows(headline, "cpi"))
+        result.update(_three_month_value_stats_from_bls_rows(core, "core_cpi"))
         logger.info(
             "BLS CPI: index=%.3f MoM=%+.3f%% YoY=%.2f%% Core MoM=%s%% Core YoY=%s%% (date=%s)",
             latest_value, mom_change, yoy_rate,
@@ -670,6 +726,7 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
             core_year_ago = core_df.iloc[-13]
             result["core_yoy_rate"] = round(((core_latest["value"] - core_year_ago["value"]) / core_year_ago["value"]) * 100, 2)
         result.update(_three_month_mom_stats_from_fred_df(core_df, "core_cpi"))
+        result.update(_three_month_value_stats_from_fred_df(core_df, "core_cpi"))
 
     # Basic plausibility checks
     validation = {"validated": True, "reasons": []}
@@ -686,6 +743,7 @@ def get_cpi_data(timeframe: str = "current") -> Dict:
         logger.warning("CPI validation failed: %s", validation["reasons"])
 
     result.update(_cpi_three_month_mom_stats_from_fred_df(df))
+    result.update(_three_month_value_stats_from_fred_df(df, "cpi"))
 
     logger.info(
         "CPI fetched: index=%s MoM=%+.2f%% YoY=%s%% (date=%s)",
@@ -753,6 +811,7 @@ def get_pce_data(timeframe: str = "current") -> Dict:
         "timeframe": timeframe
     }
     result.update(_three_month_mom_stats_from_fred_df(df, "pce"))
+    result.update(_three_month_value_stats_from_fred_df(df, "pce"))
 
     validation = {"validated": True, "reasons": []}
     if result["latest_value"] is None:

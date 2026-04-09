@@ -587,7 +587,13 @@ export default function BtcMacroDashboardNew() {
                           (nonChangeableResult?.cpi_mom_avg_3m ?? 0) - (nonChangeableResult?.cpi_mom_avg_3m_prior ?? 0),
                         )
                   }
-                      detail={`Prior: ${formatPercent(nonChangeableResult?.cpi_mom_avg_3m_prior)} | Value: ${formatNumber(nonChangeableResult?.cpi_value, 3)}`}
+                  detail={
+                    `Prior: ${formatPercent(nonChangeableResult?.cpi_mom_avg_3m_prior)}` +
+                    ` | 3m avg value: ${formatNumber(nonChangeableResult?.cpi_value_avg_3m, 3)}` +
+                    (nonChangeableResult?.cpi_value_avg_3m_prior != null
+                      ? ` (prior: ${formatNumber(nonChangeableResult?.cpi_value_avg_3m_prior, 3)})`
+                      : "")
+                  }
                 />
 
                 <h3 className="pt-2 text-xs font-semibold uppercase tracking-wide text-gray-400">B) Core CPI (MoM)</h3>
@@ -608,7 +614,13 @@ export default function BtcMacroDashboardNew() {
                             (nonChangeableResult?.core_cpi_mom_avg_3m_prior ?? 0),
                         )
                   }
-                  detail={`Prior: ${formatPercent(nonChangeableResult?.core_cpi_mom_avg_3m_prior)} | Value: ${formatNumber(nonChangeableResult?.core_cpi_value, 3)}`}
+                  detail={
+                    `Prior: ${formatPercent(nonChangeableResult?.core_cpi_mom_avg_3m_prior)}` +
+                    ` | 3m avg value: ${formatNumber(nonChangeableResult?.core_cpi_value_avg_3m, 3)}` +
+                    (nonChangeableResult?.core_cpi_value_avg_3m_prior != null
+                      ? ` (prior: ${formatNumber(nonChangeableResult?.core_cpi_value_avg_3m_prior, 3)})`
+                      : "")
+                  }
                 />
 
                 <h3 className="pt-2 text-xs font-semibold uppercase tracking-wide text-gray-400">C) PCE (MoM)</h3>
@@ -628,7 +640,13 @@ export default function BtcMacroDashboardNew() {
                           (nonChangeableResult?.pce_mom_avg_3m ?? 0) - (nonChangeableResult?.pce_mom_avg_3m_prior ?? 0),
                         )
                   }
-                  detail={`Prior: ${formatPercent(nonChangeableResult?.pce_mom_avg_3m_prior)} | Value: ${formatNumber(nonChangeableResult?.pce_value, 3)}`}
+                  detail={
+                    `Prior: ${formatPercent(nonChangeableResult?.pce_mom_avg_3m_prior)}` +
+                    ` | 3m avg value: ${formatNumber(nonChangeableResult?.pce_value_avg_3m, 3)}` +
+                    (nonChangeableResult?.pce_value_avg_3m_prior != null
+                      ? ` (prior: ${formatNumber(nonChangeableResult?.pce_value_avg_3m_prior, 3)})`
+                      : "")
+                  }
                 />
               </SectionCard>
 

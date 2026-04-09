@@ -75,6 +75,22 @@ def test_bls_core_cpi_three_month_average_uses_published_mom_changes():
     assert stats["core_cpi_mom_avg_3m_trend"] == "rising"
 
 
+def test_bls_cpi_three_month_value_average_exposes_value_avg_fields():
+    headline = [
+        {"value": "327.460"},
+        {"value": "326.588"},
+        {"value": "326.031"},
+        {"value": "325.063"},
+        {"value": "324.888"},
+        {"value": "324.500"},
+    ]
+
+    stats = fred_data._three_month_value_stats_from_bls_rows(headline, "cpi")
+
+    assert stats["cpi_value_avg_3m"] == round((327.460 + 326.588 + 326.031) / 3.0, 3)
+    assert stats["cpi_value_avg_3m_prior"] == round((325.063 + 324.888 + 324.500) / 3.0, 3)
+
+
 def test_pce_week_change_uses_latest_mom_print(monkeypatch):
     df = pd.DataFrame(
         {
@@ -105,6 +121,7 @@ def test_pce_exposes_three_month_average(monkeypatch):
 
     assert out["pce_mom_avg_3m"] is not None
     assert out["pce_mom_avg_3m_prior"] is not None
+    assert out["pce_value_avg_3m"] is not None
 
 
 def test_fed_balance_sheet_week_uses_calendar_anchor(monkeypatch):

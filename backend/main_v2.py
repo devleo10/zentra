@@ -29,6 +29,13 @@ load_dotenv()
 
 logger = logging.getLogger("btc_macro.api")
 
+# Guard against broken system proxy env vars (e.g. HTTP_PROXY=http://127.0.0.1:9)
+try:
+    from utils.proxy_guard import sanitize_proxy_env
+    sanitize_proxy_env()
+except Exception:
+    pass
+
 from auth_dashboard import (
     dashboard_auth_enabled,
     issue_token,

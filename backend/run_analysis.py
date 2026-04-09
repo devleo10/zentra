@@ -48,6 +48,14 @@ logger = logging.getLogger("btc_macro")
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
+# Guard against broken system proxy env vars (e.g. HTTP_PROXY=http://127.0.0.1:9)
+try:
+    from utils.proxy_guard import sanitize_proxy_env
+    sanitize_proxy_env()
+except Exception:
+    # Never fail analysis due to proxy-guard issues.
+    pass
+
 from data_fetchers import fred_data, yahoo_data, coingecko_data, news_data
 from scoring_engine.numeric_scorer import (
     score_inflation, score_fed_policy, score_liquidity,
@@ -1239,9 +1247,13 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "timestamp": timestamp,
         "timeframe": timeframe,
         "cpi_value": raw_data["cpi"].get("latest_value"),
+        "cpi_value_avg_3m": raw_data["cpi"].get("cpi_value_avg_3m"),
+        "cpi_value_avg_3m_prior": raw_data["cpi"].get("cpi_value_avg_3m_prior"),
         "cpi_mom_change": cpi_change,
         "cpi_yoy_rate": raw_data["cpi"].get("yoy_rate"),
         "core_cpi_value": raw_data["cpi"].get("core_latest_value"),
+        "core_cpi_value_avg_3m": raw_data["cpi"].get("core_cpi_value_avg_3m"),
+        "core_cpi_value_avg_3m_prior": raw_data["cpi"].get("core_cpi_value_avg_3m_prior"),
         "cpi_core_mom_change": raw_data["cpi"].get("core_mom_change"),
         "cpi_core_yoy_rate": raw_data["cpi"].get("core_yoy_rate"),
         "cpi_trend": raw_data["cpi"].get("trend"),
@@ -1253,6 +1265,8 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "core_cpi_mom_avg_3m_prior": raw_data["cpi"].get("core_cpi_mom_avg_3m_prior"),
         "core_cpi_mom_avg_3m_trend": raw_data["cpi"].get("core_cpi_mom_avg_3m_trend"),
         "pce_value": raw_data["pce"].get("latest_value"),
+        "pce_value_avg_3m": raw_data["pce"].get("pce_value_avg_3m"),
+        "pce_value_avg_3m_prior": raw_data["pce"].get("pce_value_avg_3m_prior"),
         "pce_latest_date": raw_data["pce"].get("latest_date"),
         "pce_mom_change": pce_change,
         "pce_mom_avg_3m": raw_data["pce"].get("pce_mom_avg_3m"),

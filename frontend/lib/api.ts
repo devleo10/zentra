@@ -142,11 +142,17 @@ export interface V2AnalysisResult {
   unemployment_history_3: Array<{ date: string; rate: number }> | null
   nfp_change: number | null
   cpi_value?: number | null
+  cpi_value_avg_3m?: number | null
+  cpi_value_avg_3m_prior?: number | null
   core_cpi_value?: number | null
+  core_cpi_value_avg_3m?: number | null
+  core_cpi_value_avg_3m_prior?: number | null
   gdp_growth_rate: number | null
   gdp_trend: string | null
   gdp_latest_date?: string | null
   pce_value?: number | null
+  pce_value_avg_3m?: number | null
+  pce_value_avg_3m_prior?: number | null
   pce_latest_date?: string | null
   pmi_value: number | null
   pmi_previous_value?: number | null
