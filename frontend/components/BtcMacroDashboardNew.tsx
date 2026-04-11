@@ -246,6 +246,10 @@ function nthWeekdayOfUtcMonth(year: number, monthIndex: number, weekday: number,
   return result
 }
 
+function fourthTuesdayOfUtcMonth(year: number, monthIndex: number): Date {
+  return nthWeekdayOfUtcMonth(year, monthIndex, 2, 4)
+}
+
 function estimateFutureReleaseDate(
   latestKnownDate: string | null,
   periodStepMonths: number,
@@ -291,7 +295,7 @@ function estimateJobsReleaseDate(latestKnownDate: string | null): string | null 
 
 function estimateM2ReleaseDate(latestKnownDate: string | null): string | null {
   return estimateFutureReleaseDate(latestKnownDate, 1, (referencePeriod) =>
-    lastBusinessDayOfUtcMonth(referencePeriod.getUTCFullYear(), referencePeriod.getUTCMonth() + 1),
+    fourthTuesdayOfUtcMonth(referencePeriod.getUTCFullYear(), referencePeriod.getUTCMonth() + 1),
   )
 }
 
@@ -511,47 +515,54 @@ export default function BtcMacroDashboardNew() {
   const fedLatestDate = pickLatestCheckDate(nonChangeableResult, ["fed", "fomc", "balance", "policy"])
 
   const releaseRows: ReleaseRow[] = useMemo(() => {
-    const cpiLatest = pickLatestCheckDate(nonChangeableResult, ["cpi"])
-    const pceLatest = pickLatestCheckDate(nonChangeableResult, ["pce"])
-    const gdpLatest = pickLatestCheckDate(nonChangeableResult, ["gdp"])
-    const pmiLatest = pickLatestCheckDate(nonChangeableResult, ["pmi", "ism"])
-    const m2Latest = pickLatestCheckDate(nonChangeableResult, ["m2"])
-    const unemploymentLatest = pickLatestCheckDate(nonChangeableResult, ["unemployment", "jobs"])
+    const cpiLatest = nonChangeableResult?.cpi_latest_date ?? pickLatestCheckDate(nonChangeableResult, ["cpi"])
+    const pceLatest = nonChangeableResult?.pce_latest_date ?? pickLatestCheckDate(nonChangeableResult, ["pce"])
+    const gdpLatest = nonChangeableResult?.gdp_latest_date ?? pickLatestCheckDate(nonChangeableResult, ["gdp"])
+    const pmiLatest = nonChangeableResult?.pmi_latest_date ?? pickLatestCheckDate(nonChangeableResult, ["pmi", "ism"])
+    const m2Latest = nonChangeableResult?.m2_latest_date ?? pickLatestCheckDate(nonChangeableResult, ["m2"])
+    const unemploymentLatest =
+      nonChangeableResult?.jobs_latest_date ?? pickLatestCheckDate(nonChangeableResult, ["unemployment", "jobs"])
+
+    const releaseCalendar = nonChangeableResult?.release_calendar ?? {}
+    const fromCalendar = (key: string): string | null => {
+      const nextDate = releaseCalendar[key]?.next_release_date
+      return typeof nextDate === "string" && nextDate ? nextDate : null
+    }
 
     return [
       {
         indicator: "CPI (MoM)",
-        nextReleaseDate: estimateCpiReleaseDate(cpiLatest),
+        nextReleaseDate: fromCalendar("cpi_mom") ?? estimateCpiReleaseDate(cpiLatest),
         latestKnownDate: cpiLatest,
       },
       {
         indicator: "Core CPI (MoM)",
-        nextReleaseDate: estimateCpiReleaseDate(cpiLatest),
+        nextReleaseDate: fromCalendar("core_cpi_mom") ?? estimateCpiReleaseDate(cpiLatest),
         latestKnownDate: cpiLatest,
       },
       {
         indicator: "PCE (MoM)",
-        nextReleaseDate: estimatePceReleaseDate(pceLatest),
+        nextReleaseDate: fromCalendar("pce_mom") ?? estimatePceReleaseDate(pceLatest),
         latestKnownDate: pceLatest,
       },
       {
         indicator: "GDP (Quarterly)",
-        nextReleaseDate: estimateGdpReleaseDate(gdpLatest),
+        nextReleaseDate: fromCalendar("gdp_quarterly") ?? estimateGdpReleaseDate(gdpLatest),
         latestKnownDate: gdpLatest,
       },
       {
         indicator: "PMI (MoM)",
-        nextReleaseDate: estimatePmiReleaseDate(pmiLatest),
+        nextReleaseDate: fromCalendar("pmi_mom") ?? estimatePmiReleaseDate(pmiLatest),
         latestKnownDate: pmiLatest,
       },
       {
         indicator: "M2 (MoM)",
-        nextReleaseDate: estimateM2ReleaseDate(m2Latest),
+        nextReleaseDate: fromCalendar("m2_mom") ?? estimateM2ReleaseDate(m2Latest),
         latestKnownDate: m2Latest,
       },
       {
         indicator: "Unemployment Rate",
-        nextReleaseDate: estimateJobsReleaseDate(unemploymentLatest),
+        nextReleaseDate: fromCalendar("unemployment_rate") ?? estimateJobsReleaseDate(unemploymentLatest),
         latestKnownDate: unemploymentLatest,
       },
     ]
@@ -660,14 +671,14 @@ export default function BtcMacroDashboardNew() {
             <SectionCard
               number={3}
               title="Next Release Date of Key Economic Indicators"
-              note="Estimated from latest known data period"
+              note="Official schedules where available; fallback rules otherwise"
             >
               <div className="overflow-x-auto">
                 <table className="min-w-full text-left text-sm">
                   <thead className="text-xs uppercase tracking-wide text-gray-400">
                     <tr>
                       <th className="pb-2 pr-4">Indicator</th>
-                      <th className="pb-2 pr-4">Estimated next release date</th>
+                      <th className="pb-2 pr-4">Next release date</th>
                       <th className="pb-2">Latest known data date</th>
                     </tr>
                   </thead>

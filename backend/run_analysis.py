@@ -75,6 +75,7 @@ from headline_engine.classifier import HeadlineClassifier
 from headline_engine.report import generate_market_report
 from storage.db import save_snapshot
 from storage.metric_cache import clear_cached_metric, get_cached_metric, put_cached_metric
+from utils.release_calendar import build_release_calendar_snapshot
 
 
 _GEO_KEYWORDS = {
@@ -1242,6 +1243,17 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
 
     dxy_api_val, dxy_api_chg = _dxy_api_fields(raw_data["dxy"])
     freshness_payload = freshness_report.to_dict()
+    release_calendar = build_release_calendar_snapshot(
+        {
+            "cpi_mom": (raw_data.get("cpi") or {}).get("latest_date"),
+            "core_cpi_mom": (raw_data.get("cpi") or {}).get("latest_date"),
+            "pce_mom": (raw_data.get("pce") or {}).get("latest_date"),
+            "gdp_quarterly": (raw_data.get("gdp") or {}).get("latest_date"),
+            "pmi_mom": (raw_data.get("pmi") or {}).get("latest_date"),
+            "m2_mom": (raw_data.get("m2") or {}).get("latest_date"),
+            "unemployment_rate": (raw_data.get("jobs") or {}).get("unemployment_date"),
+        }
+    )
 
     snapshot = {
         "timestamp": timestamp,
@@ -1250,8 +1262,10 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "cpi_value_avg_3m": raw_data["cpi"].get("cpi_value_avg_3m"),
         "cpi_value_avg_3m_prior": raw_data["cpi"].get("cpi_value_avg_3m_prior"),
         "cpi_mom_change": cpi_change,
+        "cpi_latest_date": raw_data["cpi"].get("latest_date"),
         "cpi_yoy_rate": raw_data["cpi"].get("yoy_rate"),
         "core_cpi_value": raw_data["cpi"].get("core_latest_value"),
+        "core_cpi_latest_date": raw_data["cpi"].get("latest_date"),
         "core_cpi_value_avg_3m": raw_data["cpi"].get("core_cpi_value_avg_3m"),
         "core_cpi_value_avg_3m_prior": raw_data["cpi"].get("core_cpi_value_avg_3m_prior"),
         "cpi_core_mom_change": raw_data["cpi"].get("core_mom_change"),
@@ -1338,6 +1352,7 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "fed_rate_stance": fed_rate_stance,
         "fed_rate_type": raw_data.get("fed_rate", {}).get("rate_type"),
         "unemployment_rate": unemployment_rate,
+        "jobs_latest_date": raw_data.get("jobs", {}).get("unemployment_date"),
         "unemployment_trend": unemployment_trend,
         "unemployment_trend_mom": raw_data.get("jobs", {}).get("unemployment_trend"),
         "unemployment_trend_3m": raw_data.get("jobs", {}).get("unemployment_trend_3m"),
@@ -1356,6 +1371,7 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "pmi_source": raw_data.get("pmi", {}).get("source"),
         "pmi_proxy_note": raw_data.get("pmi", {}).get("_proxy_note"),
         "m2_trend": m2_trend,
+        "m2_latest_date": raw_data.get("m2", {}).get("latest_date"),
         "m2_change": raw_data.get("m2", {}).get("m2_change"),
         "m2_yoy_change": raw_data.get("m2", {}).get("m2_yoy_change"),
         "section_scores": section_scores,
@@ -1404,6 +1420,7 @@ def run_analysis(timeframe: str = "current", fresh: bool = False):
         "cross_signal_adjustment": cross_adj,
         "cross_signal_reasoning": cross_reasoning,
         "signals_to_watch": signals_to_watch,
+        "release_calendar": release_calendar,
         "narrative": narrative_data.get("narrative", ""),
         "key_risk": narrative_data.get("key_risk", ""),
         "catalyst_to_watch": narrative_data.get("catalyst_to_watch", ""),

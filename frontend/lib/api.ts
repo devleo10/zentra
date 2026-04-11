@@ -35,6 +35,13 @@ export interface V2HeadlineClassification {
   reason: string
 }
 
+export interface V2ReleaseCalendarEntry {
+  next_release_date: string | null
+  latest_known_date?: string | null
+  source?: string | null
+  method?: string | null
+}
+
 export interface V2AnalysisResult {
   timestamp: string
   btc_price: number | null
@@ -87,7 +94,9 @@ export interface V2AnalysisResult {
   hawkish_keyword_count: number
   pivot_keyword_count: number
   cpi_mom_change: number | null
+  cpi_latest_date?: string | null
   cpi_yoy_rate: number | null
+  core_cpi_latest_date?: string | null
   cpi_core_mom_change: number | null
   cpi_core_yoy_rate: number | null
   cpi_trend: string | null
@@ -135,6 +144,7 @@ export interface V2AnalysisResult {
   catalyst_to_watch: string
   // Economy indicators
   unemployment_rate: number | null
+  jobs_latest_date?: string | null
   unemployment_trend: string | null
   unemployment_trend_mom: string | null
   unemployment_trend_3m: string | null
@@ -163,8 +173,10 @@ export interface V2AnalysisResult {
   pmi_source?: string | null
   pmi_proxy_note?: string | null
   m2_trend: string | null
+  m2_latest_date?: string | null
   m2_change: number | null
   m2_yoy_change: number | null
+  release_calendar?: Record<string, V2ReleaseCalendarEntry>
   // Gold & VIX trends
   sp500_price: number | null
   sp500_change: number | null
